@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07 · 前端设计系统 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">07 · 前端设计系统</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item active" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 07</div><h1>前端设计系统</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10 · 适用：<code>apps/web</code> + <code>packages/ui</code>
+注：原计划用 <code>/frontentdesign</code> skill，该 skill 在当前环境不可用，本文为自建规范。若后续引入该 skill，以其输出覆盖本文的令牌部分，结构与组件清单可保留。</p>
+</blockquote>
+<h2 id="1.-这是什么类型的界面">1. 这是什么类型的界面<a aria-label="链接到此节" class="anchor" href="#1.-这是什么类型的界面">#</a></h2>
+<p>不是内容网站，是<strong>生产工具</strong>——同类参照是 DaVinci Resolve、Linear、Vercel Dashboard，而不是 Netflix。这个定位决定了三条基本取向：</p>
+<ol>
+<li><strong>暗色优先</strong>。用户长时间盯着视频缩略图，浅色背景会干扰对画面明暗的判断。视频工具没有浅色的传统是有原因的。</li>
+<li><strong>信息密度高于呼吸感</strong>。一屏要能看到 24 个镜头的状态，而不是 6 个大卡片。留白服务于分组，不服务于美观。</li>
+<li><strong>状态与成本永远可见</strong>。这是花真钱的工具。任何时候用户都应该能立刻回答「现在有多少任务在跑、今天花了多少」。</li>
+</ol>
+<h2 id="2.-三条硬规则">2. 三条硬规则<a aria-label="链接到此节" class="anchor" href="#2.-三条硬规则">#</a></h2>
+<p>这三条比任何视觉细节都重要，违反了界面就不可用：</p>
+<p><strong>R1 · 进度必须可读。</strong> 生成任务耗时几十秒到几分钟。任何超过 2 秒的操作都必须有真实进度（百分比 + ETA），不能只是转圈。转圈在这里等于「系统卡死」。</p>
+<p><strong>R2 · 花钱操作必须二次确认且显示金额。</strong> 「生成整集」这类按钮，确认弹窗上必须写清「24 个镜头，预估 $3.60」。永远不要让用户在不知道价格的情况下点下去。</p>
+<p><strong>R3 · 失败必须可操作。</strong> 报错不能只说「生成失败」。要说明失败码、是否可重试、以及一个明确的下一步按钮（重试 / 改 prompt / 换 provider）。</p>
+<h2 id="3.-色彩令牌">3. 色彩令牌<a aria-label="链接到此节" class="anchor" href="#3.-色彩令牌">#</a></h2>
+<p>暗色为主模式，浅色为可选。以 CSS 变量定义在 <code>packages/ui/src/tokens.css</code>。</p>
+<h3 id="3.1-表面与文字">3.1 表面与文字<a aria-label="链接到此节" class="anchor" href="#3.1-表面与文字">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>角色</th>
+<th>Dark（默认）</th>
+<th>Light</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--bg-base</code></td>
+<td><code>#0c0c0e</code></td>
+<td><code>#fafaf9</code></td>
+<td>页面底</td>
+</tr>
+<tr>
+<td><code>--bg-surface</code></td>
+<td><code>#151518</code></td>
+<td><code>#ffffff</code></td>
+<td>卡片、面板</td>
+</tr>
+<tr>
+<td><code>--bg-raised</code></td>
+<td><code>#1d1d21</code></td>
+<td><code>#f4f4f2</code></td>
+<td>悬浮层、下拉、模态</td>
+</tr>
+<tr>
+<td><code>--bg-inset</code></td>
+<td><code>#09090b</code></td>
+<td><code>#f0f0ee</code></td>
+<td>输入框、代码块、视频容器</td>
+</tr>
+<tr>
+<td><code>--border</code></td>
+<td><code>#2a2a30</code></td>
+<td><code>#e2e1dc</code></td>
+<td>常规描边</td>
+</tr>
+<tr>
+<td><code>--border-strong</code></td>
+<td><code>#3a3a42</code></td>
+<td><code>#c9c8c1</code></td>
+<td>强调描边、分隔</td>
+</tr>
+<tr>
+<td><code>--text-primary</code></td>
+<td><code>#f2f2f0</code></td>
+<td><code>#0b0b0b</code></td>
+<td>正文</td>
+</tr>
+<tr>
+<td><code>--text-secondary</code></td>
+<td><code>#a1a1aa</code></td>
+<td><code>#52514e</code></td>
+<td>次要说明</td>
+</tr>
+<tr>
+<td><code>--text-muted</code></td>
+<td><code>#6b6b75</code></td>
+<td><code>#8a8984</code></td>
+<td>标签、时间戳</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="3.2-品牌与强调">3.2 品牌与强调<a aria-label="链接到此节" class="anchor" href="#3.2-品牌与强调">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>角色</th>
+<th>Dark</th>
+<th>Light</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--accent</code></td>
+<td><code>#3987e5</code></td>
+<td><code>#2a78d6</code></td>
+</tr>
+<tr>
+<td><code>--accent-hover</code></td>
+<td><code>#4d95ea</code></td>
+<td><code>#1f68c0</code></td>
+</tr>
+<tr>
+<td><code>--accent-subtle</code></td>
+<td><code>#16233a</code></td>
+<td><code>#eef4fc</code></td>
+</tr>
+<tr>
+<td><code>--accent-text</code></td>
+<td><code>#7db3f0</code></td>
+<td><code>#1f68c0</code></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="3.3-状态色语义固定禁止挪用">3.3 状态色（语义固定，禁止挪用）<a aria-label="链接到此节" class="anchor" href="#3.3-状态色语义固定禁止挪用">#</a></h3>
+<p>状态色只表达状态，<strong>永远不要拿来当装饰色或图表系列色</strong>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>状态</th>
+<th>Dark</th>
+<th>Light</th>
+<th>语义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--status-idle</code></td>
+<td><code>#6b6b75</code></td>
+<td><code>#8a8984</code></td>
+<td>draft / ready，未开始</td>
+</tr>
+<tr>
+<td><code>--status-running</code></td>
+<td><code>#3987e5</code></td>
+<td><code>#2a78d6</code></td>
+<td>generating / rendering</td>
+</tr>
+<tr>
+<td><code>--status-review</code></td>
+<td><code>#c98500</code></td>
+<td><code>#eda100</code></td>
+<td>待人工处理</td>
+</tr>
+<tr>
+<td><code>--status-success</code></td>
+<td><code>#0ca30c</code></td>
+<td><code>#006300</code></td>
+<td>locked / succeeded</td>
+</tr>
+<tr>
+<td><code>--status-error</code></td>
+<td><code>#e66767</code></td>
+<td><code>#d03b3b</code></td>
+<td>failed</td>
+</tr>
+<tr>
+<td><code>--status-cancelled</code></td>
+<td><code>#4a4a52</code></td>
+<td><code>#b0afa8</code></td>
+<td>cancelled / skipped</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>每个状态色必须配一个图标或文字标签</strong>——只靠颜色区分对色觉障碍用户不可用，何况 running 和 accent 是同一个蓝。</p>
+<h3 id="3.4-图表系列色">3.4 图表系列色<a aria-label="链接到此节" class="anchor" href="#3.4-图表系列色">#</a></h3>
+<p>数据图表（成本趋势、provider 对比）用固定顺序的分类色板，<strong>按 provider 身份分配，不按排名分配</strong>——筛选后剩下的系列不能变色，否则用户会误读。</p>
+<div class="codeblock"><pre><code>1 蓝 #3987e5   2 橙 #d95926   3 青 #199e70   4 黄 #c98500
+5 品红 #d55181  6 绿 #008300   7 紫 #9085e9   8 红 #e66767
+</code></pre></div>
+<p>超过 8 个 provider 时归入「其他」，不生成新颜色。</p>
+<h2 id="4.-排版">4. 排版<a aria-label="链接到此节" class="anchor" href="#4.-排版">#</a></h2>
+<p>系统字体栈，不引入 Web Font（工具类应用，加载速度优先于字体个性）：</p>
+<div class="codeblock"><span class="lang">css</span><pre><code class="language-css">--font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+--font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+</code></pre></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Token</th>
+<th>Size / Line</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--text-2xs</code></td>
+<td>11 / 16</td>
+<td>徽章、角标</td>
+</tr>
+<tr>
+<td><code>--text-xs</code></td>
+<td>12 / 18</td>
+<td>元数据、时间戳</td>
+</tr>
+<tr>
+<td><code>--text-sm</code></td>
+<td>13 / 20</td>
+<td><strong>界面默认字号</strong></td>
+</tr>
+<tr>
+<td><code>--text-base</code></td>
+<td>15 / 24</td>
+<td>正文、剧本编辑器</td>
+</tr>
+<tr>
+<td><code>--text-lg</code></td>
+<td>18 / 26</td>
+<td>区块标题</td>
+</tr>
+<tr>
+<td><code>--text-xl</code></td>
+<td>24 / 32</td>
+<td>页面标题</td>
+</tr>
+<tr>
+<td><code>--text-stat</code></td>
+<td>28 / 34</td>
+<td>统计数字</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>所有数字必须用 <code>font-variant-numeric: tabular-nums</code></strong>——成本、时长、进度百分比在列表里跳动时不能左右抖动。</p>
+<h2 id="5.-间距与圆角">5. 间距与圆角<a aria-label="链接到此节" class="anchor" href="#5.-间距与圆角">#</a></h2>
+<p>4px 基准栅格：<code>--space-1: 4px</code> 到 <code>--space-12: 48px</code>。</p>
+<p>圆角克制：<code>--radius-sm: 4px</code>（徽章、输入）、<code>--radius-md: 6px</code>（按钮、卡片）、<code>--radius-lg: 10px</code>（面板、模态）。视频缩略图用 <code>--radius-sm</code>，大圆角会让画面显得不专业。</p>
+<p>阴影只用两级，暗色模式下靠边框而非阴影建立层次：</p>
+<div class="codeblock"><span class="lang">css</span><pre><code class="language-css">--shadow-raised:  0 2px 8px rgba(0,0,0,.4);
+--shadow-overlay: 0 8px 32px rgba(0,0,0,.6);
+</code></pre></div>
+<h2 id="6.-组件清单">6. 组件清单<a aria-label="链接到此节" class="anchor" href="#6.-组件清单">#</a></h2>
+<p><code>packages/ui</code> 提供，按 Studio 的实际需要设计，不做通用组件库。</p>
+<h3 id="6.1-状态与进度">6.1 状态与进度<a aria-label="链接到此节" class="anchor" href="#6.1-状态与进度">#</a></h3>
+<p><strong><code>&lt;StatusPill&gt;</code></strong> — 状态胶囊，圆点 + 文字，绝不只有颜色。</p>
+<div class="codeblock"><pre><code>● Ready    ◐ Generating 62%    ⚑ Review 3    ✓ Locked    ✕ Failed
+</code></pre></div>
+<p><code>generating</code> 态圆点带脉冲动画；<code>review</code> 态显示待选数量。</p>
+<p><strong><code>&lt;ProgressBar variant="determinate|indeterminate"&gt;</code></strong> — 优先 determinate。indeterminate 只在「已提交但 provider 未回报进度」的短暂窗口使用，且必须配文字说明当前阶段（"已提交，等待 provider 排队"）。</p>
+<p><strong><code>&lt;CostMeter&gt;</code></strong> — 常驻顶栏。今日花费 / 预算，接近上限时进度条转 <code>--status-review</code>，超限转 <code>--status-error</code>。</p>
+<div class="codeblock is-diagram"><pre><code>今日 $2.14 / $5.00  ▓▓▓▓▓▓░░░░ 43%
+</code></pre></div>
+<p><strong><code>&lt;QueueIndicator&gt;</code></strong> — 顶栏，<code>⚡ 6 running · 18 queued</code>，点击展开队列面板。</p>
+<h3 id="6.2-内容">6.2 内容<a aria-label="链接到此节" class="anchor" href="#6.2-内容">#</a></h3>
+<p><strong><code>&lt;ShotCard&gt;</code></strong> — 最核心的组件，网格里出现几十次。结构自上而下：</p>
+<div class="codeblock is-diagram"><pre><code>┌──────────────────────┐
+│ ┌──────────────────┐ │  ← 缩略图 9:16，悬停自动播放静音预览
+│ │   [视频首帧]      │ │     右上角 StatusPill
+│ │              ● 3 │ │     右下角 take 数量徽章
+│ └──────────────────┘ │
+│ #12 · CU · 4.0s      │  ← 序号 · 景别 · 时长（tabular-nums）
+│ 林夏抬头看向门口      │  ← action，两行截断
+│ 🔵 vidu  $0.08       │  ← provider 徽章 + 本镜累计成本
+└──────────────────────┘
+</code></pre></div>
+<p>状态用左侧 3px 色条强化，扫视时能一眼看出整屏分布。</p>
+<p><strong><code>&lt;TakeComparer&gt;</code></strong> — 同一镜头多个候选并排对比，同步播放/暂停/进度条。选片是高频操作，快捷键 <code>1..9</code> 直选，<code>Enter</code> 确认。</p>
+<p><strong><code>&lt;TimelineStrip&gt;</code></strong> — 水平时间线，clip 宽度正比于时长，下方两条细轨显示配音与字幕覆盖情况。支持拖拽排序与边缘拖拽 trim。</p>
+<p><strong><code>&lt;AssetGrid&gt;</code></strong> — 虚拟滚动网格（<code>@tanstack/react-virtual</code>）。资产可能几千个，必须虚拟化。</p>
+<p><strong><code>&lt;PromptInspector&gt;</code></strong> — 折叠面板，展示最终 prompt、负向词、参考图缩略、seed、provider 参数。可复制、可覆盖。这是 R3 的落地：失败时用户第一件事就是看这里。</p>
+<h3 id="6.3-反馈">6.3 反馈<a aria-label="链接到此节" class="anchor" href="#6.3-反馈">#</a></h3>
+<p><strong><code>&lt;ConfirmSpend&gt;</code></strong> — 花钱确认弹窗（R2）。必须显示：影响镜头数、预估成本、provider、当前剩余预算。确认按钮文案是「生成 24 个镜头（约 $3.60）」而不是「确定」。</p>
+<p><strong><code>&lt;FailureCard&gt;</code></strong> — 失败卡片（R3）。失败码 + 人话解释 + 可操作按钮组。例：</p>
+<div class="codeblock"><pre><code>✕ 内容被 provider 过滤
+   该 prompt 被 vidu 的内容策略拒绝。重试同样会被拒。
+   [修改 Intent]  [换 self-host 生成]  [跳过此镜]
+</code></pre></div>
+<p><strong><code>&lt;Toast&gt;</code></strong> — 只用于「成功且无需后续动作」的短反馈。失败一律用 FailureCard 或 inline 错误，不用 toast——toast 会消失，错误信息不能消失。</p>
+<h2 id="7.-交互模式">7. 交互模式<a aria-label="链接到此节" class="anchor" href="#7.-交互模式">#</a></h2>
+<p><strong>乐观入队。</strong> 点「生成」立刻把卡片切到 <code>generating</code> 并插入队列面板，不等服务端 201。失败再回滚并提示。</p>
+<p><strong>批量选择。</strong> 镜头网格支持框选、<code>Shift</code> 连选、<code>Cmd/Ctrl</code> 点选，底部浮出批量操作条（批量生成 / 批量换 provider / 批量跳过）。</p>
+<p><strong>键盘优先。</strong> 选片和审片是重复几百次的操作，必须能脱离鼠标：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>键</th>
+<th>动作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>J / K</code></td>
+<td>上一个 / 下一个镜头</td>
+</tr>
+<tr>
+<td><code>Space</code></td>
+<td>播放 / 暂停预览</td>
+</tr>
+<tr>
+<td><code>1..9</code></td>
+<td>选中第 N 个 take</td>
+</tr>
+<tr>
+<td><code>Enter</code></td>
+<td>确认选片并跳到下一个待审镜头</td>
+</tr>
+<tr>
+<td><code>R</code></td>
+<td>重新生成当前镜头</td>
+</tr>
+<tr>
+<td><code>X</code></td>
+<td>拒绝当前 take</td>
+</tr>
+<tr>
+<td><code>Cmd/Ctrl + Enter</code></td>
+<td>生成整集（触发 ConfirmSpend）</td>
+</tr>
+<tr>
+<td><code>?</code></td>
+<td>快捷键帮助</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>长任务不阻塞导航。</strong> 任何生成任务开始后用户都能自由切页，进度由顶栏 QueueIndicator 与 SSE 维持。绝不出现「请勿关闭此页面」。</p>
+<h2 id="8.-可访问性底线">8. 可访问性底线<a aria-label="链接到此节" class="anchor" href="#8.-可访问性底线">#</a></h2>
+<ul>
+<li>所有状态色配图标/文字，不依赖颜色单独传意。</li>
+<li>正文对比度 ≥ 4.5:1，大字与图标 ≥ 3:1。</li>
+<li>焦点环 <code>2px solid var(--accent)</code> + <code>2px</code> 偏移，不许 <code>outline: none</code>。</li>
+<li>视频缩略图的自动播放预览一律静音，且尊重 <code>prefers-reduced-motion</code>（该设置下改为悬停显示静态首帧）。</li>
+<li>队列与进度变更通过 <code>aria-live="polite"</code> 播报。</li>
+</ul>
+<h2 id="9.-技术选型">9. 技术选型<a aria-label="链接到此节" class="anchor" href="#9.-技术选型">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>选择</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>样式</td>
+<td>Tailwind CSS v4 + CSS 变量令牌</td>
+<td>令牌集中，类名就地，暗浅色一处切换</td>
+</tr>
+<tr>
+<td>组件基座</td>
+<td>Radix UI Primitives</td>
+<td>无样式、可访问性到位，不背设计包袱</td>
+</tr>
+<tr>
+<td>图标</td>
+<td>Lucide</td>
+<td>覆盖全、线性风格统一</td>
+</tr>
+<tr>
+<td>表格/虚拟化</td>
+<td>TanStack Table + Virtual</td>
+<td>资产与 Ledger 列表需要</td>
+</tr>
+<tr>
+<td>图表</td>
+<td>Recharts</td>
+<td>成本与质量趋势，配 §3.4 色板</td>
+</tr>
+<tr>
+<td>状态</td>
+<td>TanStack Query（服务端态）+ Zustand（UI 态）</td>
+<td>严格区分两类状态，不混用</td>
+</tr>
+<tr>
+<td>播放器</td>
+<td>原生 <code>&lt;video&gt;</code> + hls.js</td>
+<td>不引入重播放器，母版是标准 MP4/HLS</td>
+</tr>
+<tr>
+<td>表单</td>
+<td>React Hook Form + zod resolver</td>
+<td>与 contracts 的 schema 直接复用</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="10.-目录约定">10. 目录约定<a aria-label="链接到此节" class="anchor" href="#10.-目录约定">#</a></h2>
+<div class="codeblock is-diagram"><pre><code>apps/web/
+├─ app/
+│  ├─ (studio)/
+│  │  ├─ projects/[id]/
+│  │  │  ├─ script/          剧本
+│  │  │  ├─ storyboard/      分镜网格（主战场）
+│  │  │  ├─ assets/          角色/场景/风格
+│  │  │  ├─ review/          选片
+│  │  │  ├─ timeline/        剪辑
+│  │  │  └─ insights/        成本与质量
+│  │  └─ layout.tsx          顶栏（CostMeter + QueueIndicator）+ 侧栏
+│  └─ (watch)/watch/[episodeId]/
+├─ components/               页面级组合组件
+└─ lib/
+   ├─ api.ts                 由 OpenAPI 生成的客户端
+   └─ events.ts              SSE 订阅与事件分发
+</code></pre></div>
+<p><code>packages/ui</code> 放纯展示、无数据依赖的组件；<code>apps/web/components</code> 放绑定了 API 的组合组件。这条边界要守住，否则 UI 包会被业务逻辑污染。</p><nav class="pager"><a href="06-api-spec.html"><div class="dir">← 上一篇</div><div class="name">06 · 控制面 API 规范</div></a><a class="next" href="08-screen-specs.html"><div class="dir">下一篇 →</div><div class="name">08 · 页面与交互规格</div></a></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-这是什么类型的界面">1. 这是什么类型的界面</a>
+<a class="lvl-2" href="#2.-三条硬规则">2. 三条硬规则</a>
+<a class="lvl-2" href="#3.-色彩令牌">3. 色彩令牌</a>
+<a class="lvl-3" href="#3.1-表面与文字">3.1 表面与文字</a>
+<a class="lvl-3" href="#3.2-品牌与强调">3.2 品牌与强调</a>
+<a class="lvl-3" href="#3.3-状态色语义固定禁止挪用">3.3 状态色（语义固定，禁止挪用）</a>
+<a class="lvl-3" href="#3.4-图表系列色">3.4 图表系列色</a>
+<a class="lvl-2" href="#4.-排版">4. 排版</a>
+<a class="lvl-2" href="#5.-间距与圆角">5. 间距与圆角</a>
+<a class="lvl-2" href="#6.-组件清单">6. 组件清单</a>
+<a class="lvl-3" href="#6.1-状态与进度">6.1 状态与进度</a>
+<a class="lvl-3" href="#6.2-内容">6.2 内容</a>
+<a class="lvl-3" href="#6.3-反馈">6.3 反馈</a>
+<a class="lvl-2" href="#7.-交互模式">7. 交互模式</a>
+<a class="lvl-2" href="#8.-可访问性底线">8. 可访问性底线</a>
+<a class="lvl-2" href="#9.-技术选型">9. 技术选型</a>
+<a class="lvl-2" href="#10.-目录约定">10. 目录约定</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+</body>
+</html>

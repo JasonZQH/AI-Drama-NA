@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 · 媒体存储、拼接与音频 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">10 · 媒体存储、拼接与音频</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item active" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 10</div><h1>媒体存储、拼接与音频</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a>、<a href="09-python-worker.html" title="Python 生成 Worker 与远程 GPU 部署"><code>09-python-worker.md</code></a> · 对应 ADR-0004</p>
+</blockquote>
+<h2 id="1.-存储从第一天就当成-s3">1. 存储：从第一天就当成 S3<a aria-label="链接到此节" class="anchor" href="#1.-存储从第一天就当成-s3">#</a></h2>
+<p>本地用 MinIO 提供 S3 API。代码里<strong>永远只有 S3 SDK</strong>，没有 <code>fs.writeFile</code>。这样将来换云存储是改一个 endpoint 的事，而不是重写整个媒体层。</p>
+<div class="codeblock"><span class="lang">yaml</span><pre><code class="language-yaml"># infra/docker-compose.yml 片段
+minio:
+  image: minio/minio:latest
+  command: server /data --console-address ":9001"
+  environment:
+    MINIO_ROOT_USER: adminlocal
+    MINIO_ROOT_PASSWORD: adminlocal123
+  ports: ["9000:9000", "9001:9001"]
+  volumes: ["./.data/minio:/data"]
+</code></pre></div>
+<h3 id="1.1-bucket-与-key-规范">1.1 Bucket 与 key 规范<a aria-label="链接到此节" class="anchor" href="#1.1-bucket-与-key-规范">#</a></h3>
+<p>单 bucket <code>drama</code>，靠 key 前缀分区（见 <a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a> §5）：</p>
+<div class="codeblock"><pre><code>projects/{projectId}/refs/{characterId}/{assetId}.png
+projects/{projectId}/takes/{shotId}/{jobId}.mp4
+projects/{projectId}/audio/{shotId}/{takeId}-voice.wav
+projects/{projectId}/renders/{episodeId}/v{n}/master.mp4
+projects/{projectId}/renders/{episodeId}/v{n}/hls/index.m3u8
+</code></pre></div>
+<p>好处：按项目批量清理是一条 prefix 删除；按 shot 找产物不用查库。</p>
+<h3 id="1.2-三种访问模式">1.2 三种访问模式<a aria-label="链接到此节" class="anchor" href="#1.2-三种访问模式">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>场景</th>
+<th>方式</th>
+<th>TTL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>浏览器播放/预览</td>
+<td>控制面 302 到预签名 GET URL</td>
+<td>15 min</td>
+</tr>
+<tr>
+<td>Worker 上传产物</td>
+<td>控制面签发预签名 PUT URL</td>
+<td>1 h</td>
+</tr>
+<tr>
+<td>Provider 拉取参考图</td>
+<td>预签名 GET URL</td>
+<td>1 h</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>控制面绝不代理媒体字节流。</strong> 它只签 URL、只搬元数据。这条守住了，Mac 的带宽和内存就不会成为瓶颈。</p>
+<h3 id="1.3-内容寻址与去重">1.3 内容寻址与去重<a aria-label="链接到此节" class="anchor" href="#1.3-内容寻址与去重">#</a></h3>
+<p>所有资产入库前算 sha256。相同 hash 直接复用已有 asset 行（新建引用而非新建对象）——参考图和重复生成的场景下能省不少空间。</p>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">const sha = await sha256Stream(stream)
+const existing = await db.query.assets.findFirst({ where: eq(assets.sha256, sha) })
+if (existing) return existing   // 复用
+</code></pre></div>
+<h2 id="2.-ffmpeg-拼接">2. FFmpeg 拼接<a aria-label="链接到此节" class="anchor" href="#2.-ffmpeg-拼接">#</a></h2>
+<p>由 <code>workers/media</code>（CPU，本机 docker）执行。</p>
+<h3 id="2.1-为什么不用-concat-demuxer-直接拼">2.1 为什么不用 concat demuxer 直接拼<a aria-label="链接到此节" class="anchor" href="#2.1-为什么不用-concat-demuxer-直接拼">#</a></h3>
+<p>各镜头来自不同 provider，编码参数五花八门（不同 profile、不同 GOP、不同色彩空间）。<code>-c copy</code> 的无损拼接要求参数完全一致，实际做不到。</p>
+<p>方案是<strong>两段式</strong>：先把每个 clip 规范化到统一参数，再无损拼接。</p>
+<figure class="diagram"><div class="mermaid">flowchart LR
+    N["① NORMALIZE&lt;br/&gt;每个 take 统一 codec / 分辨率&lt;br/&gt;帧率 / SAR / 色彩空间 / 音频轨"]
+    C["② CONCAT&lt;br/&gt;concat demuxer + -c copy 无损拼接"]
+    O["③ OVERLAY&lt;br/&gt;字幕烧录（可选）+ BGM 混音"]
+    P["④ PACKAGE&lt;br/&gt;输出 MP4 + HLS"]
+    N --&gt; C --&gt; O --&gt; P
+    N -.-&gt;|"缓存 normalized/&lt;br/&gt;重渲染只跑变化的 clip"| N
+</div></figure>
+<p>第 ① 步产物缓存到 <code>renders/{episodeId}/normalized/{takeId}.mp4</code>，重渲染时只重跑变化的 clip。这让「改一个镜头重渲染整集」从几分钟降到几秒。</p>
+<h3 id="2.2-规范化命令">2.2 规范化命令<a aria-label="链接到此节" class="anchor" href="#2.2-规范化命令">#</a></h3>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash">ffmpeg -y -i "$IN" \
+  -vf "scale=1080:1920:force_original_aspect_ratio=increase,\
+crop=1080:1920,setsar=1,fps=24" \
+  -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
+  -profile:v high -level 4.1 -g 48 -keyint_min 48 -sc_threshold 0 \
+  -c:a aac -b:a 128k -ar 48000 -ac 2 \
+  -movflags +faststart \
+  "$OUT"
+</code></pre></div>
+<p>关键点说明：</p>
+<ul>
+<li><code>-g 48 -keyint_min 48 -sc_threshold 0</code>：固定 GOP = 2 秒，这是后续切 HLS 能对齐的前提。不固定的话切片会漂。</li>
+<li><code>setsar=1</code>：统一像素宽高比，否则拼接后画面会被拉伸。</li>
+<li><strong>没有音频的 clip 必须补静音轨</strong>，否则 concat 时音画会错位：
+  <code>bash
+  -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 -shortest</code></li>
+<li><code>-movflags +faststart</code>：moov box 前置，浏览器可边下边播。</li>
+</ul>
+<h3 id="2.3-拼接">2.3 拼接<a aria-label="链接到此节" class="anchor" href="#2.3-拼接">#</a></h3>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash"># concat_list.txt
+file 'normalized/take-a.mp4'
+inpoint 0.0
+outpoint 3.8
+file 'normalized/take-b.mp4'
+...
+
+ffmpeg -y -f concat -safe 0 -i concat_list.txt -c copy master_raw.mp4
+</code></pre></div>
+<p><code>inpoint/outpoint</code> 直接对应 <code>timeline_clips.trimStartSec/trimEndSec</code>。</p>
+<h3 id="2.4-转场">2.4 转场<a aria-label="链接到此节" class="anchor" href="#2.4-转场">#</a></h3>
+<p>MVP 只支持硬切（<code>cut</code>）——硬切在短剧里本来就是主流，节奏快。溶解/淡入淡出需要重编码相邻片段，M4 之后再加：</p>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash"># dissolve 示例（仅在需要时对相邻两 clip 单独处理）
+ffmpeg -i a.mp4 -i b.mp4 -filter_complex \
+  "[0][1]xfade=transition=fade:duration=0.4:offset=3.6[v]" -map "[v]" out.mp4
+</code></pre></div>
+<h3 id="2.45-分级-conform三层版本自动派生">2.45 分级 conform：三层版本自动派生<a aria-label="链接到此节" class="anchor" href="#2.45-分级-conform三层版本自动派生">#</a></h3>
+<p>L1/L0 <strong>不重新渲染整集，只做镜头替换</strong>。替换清单由分镜阶段产出（<a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §S3）：</p>
+<div class="codeblock"><span class="lang">jsonc</span><pre><code class="language-jsonc">// episode_012.conform.json
+{ "shot_047": { "L2": "take_a.mp4", "L1": "take_a_cover.mp4", "L0": "take_a_reaction.mp4" },
+  "shot_048": { "L2": "take_b.mp4", "L1": null, "L0": null } }   // null = 该层直接删除此镜
+</code></pre></div>
+<p>conform 服务读清单 → 换 concat 列表 → 复用已 normalize 的中间件 → <code>-c copy</code> 拼接。<strong>一个分级版本的渲染时间接近于零</strong>，因为 normalize 是最贵的一步且已缓存（§2.1）。</p>
+<p>三处分层控制点，按成本从低到高：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>控制点</th>
+<th>做法</th>
+<th>成本</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>对白粗口</strong></td>
+<td>对白 stem 单独存储，换一行 TTS 台词即可</td>
+<td><strong>接近零</strong>——这是 AI 短剧相对实拍最大的结构性优势，架构上必须兑现</td>
+</tr>
+<tr>
+<td><strong>暴力后果可见性</strong></td>
+<td>血迹/伤口/冲击瞬间做成独立合成层，整层可关</td>
+<td>低</td>
+</tr>
+<tr>
+<td><strong>尺度镜头</strong></td>
+<td>替换为覆盖镜头或直接删除</td>
+<td>低（前提是分镜阶段守住"剧情与尺度不同镜"）</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="2.5-字幕">2.5 字幕<a aria-label="链接到此节" class="anchor" href="#2.5-字幕">#</a></h3>
+<p><strong>烧录是渲染阶段的决策，不是制作阶段的决策。</strong> 所有正片一律以 <strong>clean 母版（不烧字幕）+ sidecar SRT/VTT</strong> 存储，任何烧录版本都是从这两者派生的渲染产物。否则每加一个平台或语言就要重剪。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>用途</th>
+<th>字幕形态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>App / Web 正片</td>
+<td><strong>不烧录</strong>，走 sidecar，可开关可换语言</td>
+</tr>
+<tr>
+<td>投放与自然切条素材</td>
+<td><strong>必须烧录</strong>——静音观看是常态。上三分之一、白色粗体高对比、≤8 词、避开平台 UI 安全区</td>
+</tr>
+<tr>
+<td>YouTube 长视频</td>
+<td>不烧录，上传 SRT 作 CC（利于搜索）</td>
+</tr>
+</tbody>
+</table></div>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash"># 生成 VTT：直接用 shots.dialogue + clip 时间轴，不做 ASR
+# 烧录：
+ffmpeg -i master_raw.mp4 -vf "subtitles=sub.srt:force_style=\
+'FontName=PingFang SC,FontSize=16,PrimaryColour=&amp;H00FFFFFF,\
+OutlineColour=&amp;H80000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=90'" \
+  -c:a copy master_sub.mp4
+</code></pre></div>
+<p><code>MarginV=90</code> 是竖屏适配——字幕要避开底部的播放控件与平台 UI 遮挡区。</p>
+<h3 id="2.6-音频混合">2.6 音频混合<a aria-label="链接到此节" class="anchor" href="#2.6-音频混合">#</a></h3>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash">ffmpeg -i video.mp4 -i voice.wav -i bgm.mp3 -filter_complex \
+  "[1:a]volume=1.0[v1];\
+   [2:a]volume=0.22,afade=t=in:d=1,afade=t=out:st=88:d=2[v2];\
+   [v1][v2]amix=inputs=2:duration=first:dropout_transition=0[a]" \
+  -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k out.mp4
+</code></pre></div>
+<p>BGM 压到 0.22 是经验值——短剧靠台词推进，音乐盖过人声是新手最常犯的错。进阶可用 <code>sidechaincompress</code> 做自动闪避（有人声时自动压低 BGM）：</p>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash">[bgm][voice]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=300[ducked]
+</code></pre></div>
+<h2 id="3.-hls-打包">3. HLS 打包<a aria-label="链接到此节" class="anchor" href="#3.-hls-打包">#</a></h2>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash">ffmpeg -i master.mp4 \
+  -c copy -f hls \
+  -hls_time 4 -hls_playlist_type vod \
+  -hls_segment_filename "hls/seg_%03d.ts" \
+  hls/index.m3u8
+</code></pre></div>
+<p><code>-hls_time 4</code> 与 §2.2 的 2 秒 GOP 对齐（4 = 2×2），切片边界正好落在关键帧上。</p>
+<p>MVP 单码率即可。多码率梯度（1080p/720p/480p）在需要模拟真实分发时再加，用 <code>-var_stream_map</code>。</p>
+<h2 id="4.-缩略图与预览">4. 缩略图与预览<a aria-label="链接到此节" class="anchor" href="#4.-缩略图与预览">#</a></h2>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash"># 首帧缩略图（列表用）
+ffmpeg -i take.mp4 -vf "select=eq(n\,0),scale=270:480" -vframes 1 thumb.jpg
+
+# 悬停预览：3 秒静音低码率片段
+ffmpeg -i take.mp4 -t 3 -an -vf "scale=270:480" -c:v libx264 -crf 32 -preset veryfast preview.mp4
+
+# 雪碧图（时间线 scrubbing 用）
+ffmpeg -i master.mp4 -vf "fps=1/2,scale=160:284,tile=10x10" sprite.jpg
+</code></pre></div>
+<p>缩略图与预览在 take 创建时<strong>异步生成</strong>，不阻塞主流程。分镜页几十个卡片同时加载原始 mp4 会把浏览器打爆——必须有轻量预览版本。</p>
+<h2 id="5.-tts-与配音">5. TTS 与配音<a aria-label="链接到此节" class="anchor" href="#5.-tts-与配音">#</a></h2>
+<h3 id="5.0-me-分层母版多语言的前提">5.0 M&amp;E 分层母版（多语言的前提）<a aria-label="链接到此节" class="anchor" href="#5.0-me-分层母版多语言的前提">#</a></h3>
+<p>每集必须输出<strong>分离的音轨 stem</strong>：对白 / 音乐 / 音效。理由有二：</p>
+<ol>
+<li><strong>分级需要</strong>：换一行粗口台词只需重合成对白 stem（见 §2.45）</li>
+<li><strong>多语言需要</strong>：拉美（西语/葡语）是北美之后的第一增量市场，没有 M&amp;E 轨就要整集重做</li>
+</ol>
+<p>配音优于字幕：同一内容母语观众看配音版的观看时长可达字幕版的数倍。这条对留存的影响远大于画面质量的边际提升。</p>
+<h3 id="5.1-流程">5.1 流程<a aria-label="链接到此节" class="anchor" href="#5.1-流程">#</a></h3>
+<figure class="diagram"><div class="mermaid">flowchart TD
+    A["shots.dialogue + characters.voiceId"]
+    B["q:tts 队列"]
+    C["TTS Provider · 适配器模式"]
+    D["audio asset&lt;br/&gt;wav 48kHz mono"]
+    E["挂到 timeline_clips.voiceAssetId"]
+    A --&gt; B --&gt; C --&gt; D --&gt; E
+</div></figure>
+<p>TTS 也用适配器抽象，与视频 provider 同构：</p>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export interface TTSProvider {
+  readonly id: string
+  synthesize(req: {
+    text: string; voiceId: string; speed?: number; emotion?: string
+  }): Promise&lt;{ storageKey: string; durationSec: number; costMicroUsd: number }&gt;
+  listVoices(): Promise&lt;Voice[]&gt;
+}
+</code></pre></div>
+<p>候选：本地 CosyVoice / Chatterbox（无内容限制、零边际成本）、云端 ElevenLabs（R 级台词在其政策内可用，暴力条款明确豁免虚构语境）。开发期用本地。</p>
+<p><strong>英语 R 级短剧的四条特殊要求</strong>：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>要求</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>美式口音为默认，且需<strong>口音多样性</strong></td>
+<td>南方口音标记蓝领、英式口音标记反派——北美观众对此高度敏感，是塑造角色的低成本手段</td>
+</tr>
+<tr>
+<td><strong>粗口不能被软化或吞掉</strong></td>
+<td>"frequent profanity" 是 R 级的分级特征之一，需要专门的发音词典与情绪标记</td>
+</tr>
+<tr>
+<td><strong>口型同步是 R 级硬指标</strong></td>
+<td>R 级依赖表演张力（愤怒、威胁、亲密），口型不同步会直接摧毁这些镜头。这与动态漫路线可以省掉口型的判断相反</td>
+</tr>
+<tr>
+<td>per-character 音色跨集锁定</td>
+<td>与 <code>characters.voiceId</code> 绑定，80–100 集不能漂</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="5.2-时长对齐">5.2 时长对齐<a aria-label="链接到此节" class="anchor" href="#5.2-时长对齐">#</a></h3>
+<p>TTS 输出时长常与镜头时长不匹配。三种处理，按优先级：</p>
+<ol>
+<li><strong>调整镜头时长</strong>（首选）：<code>timeline_clips.trimEndSec</code> 顺延，让画面等台词。短剧节奏容忍这个。</li>
+<li><strong>微调语速</strong>（±10% 以内）：<code>atempo=1.08</code>，超过 10% 人耳能听出不自然。</li>
+<li><strong>重写台词</strong>：太长就改短。这是最根本的解法，UI 上应提示「本镜台词预计 6.2s，镜头仅 4.0s」。</li>
+</ol>
+<p>第 3 点要在 S3 分镜阶段就做校验，而不是等到 S6 才发现——<a href="06-api-spec.html" title="控制面 API 规范"><code>06-api-spec.md</code></a> 的 <code>shotlist</code> 端点应当估算台词时长（英语按 2.8 词/秒（中文 4.5 字/秒））并回填。</p>
+<h2 id="6.-存储生命周期">6. 存储生命周期<a aria-label="链接到此节" class="anchor" href="#6.-存储生命周期">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>类别</th>
+<th>保留策略</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>参考图、LoRA、母版</td>
+<td><strong>永久</strong>，绝不自动删</td>
+</tr>
+<tr>
+<td>selected takes</td>
+<td>永久</td>
+</tr>
+<tr>
+<td>rejected/archived takes</td>
+<td>30 天后可清理（UI 提供批量清理，不自动执行）</td>
+</tr>
+<tr>
+<td>normalized 中间文件</td>
+<td>7 天，可随时重建</td>
+</tr>
+<tr>
+<td>缩略图/预览</td>
+<td>可随时重建，跟随源文件</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>永不自动删除已经花钱生成的东西</strong>——与 <a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §7 同一条原则。清理必须是人主动触发的显式动作，且要显示将释放多少空间、影响哪些资产。</p>
+<h2 id="7.-容量估算">7. 容量估算<a aria-label="链接到此节" class="anchor" href="#7.-容量估算">#</a></h2>
+<p>单集 60 镜、每镜 4 秒 720p：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>单个</th>
+<th>单集合计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原始 take（含 2.5 次平均尝试）</td>
+<td>~3 MB</td>
+<td>~450 MB</td>
+</tr>
+<tr>
+<td>normalized 中间件</td>
+<td>~4 MB</td>
+<td>~240 MB</td>
+</tr>
+<tr>
+<td>配音 wav</td>
+<td>~400 KB</td>
+<td>~24 MB</td>
+</tr>
+<tr>
+<td>母版 1080p</td>
+<td>—</td>
+<td>~90 MB</td>
+</tr>
+<tr>
+<td>HLS 切片</td>
+<td>—</td>
+<td>~90 MB</td>
+</tr>
+<tr>
+<td>缩略图/预览</td>
+<td>~200 KB</td>
+<td>~12 MB</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>~900 MB/集</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>一部 60 集的剧约 <strong>55 GB</strong>。Mac 本地盘要预留，或把 MinIO 的数据卷挂到外置 SSD。这个数字值得在项目开始前就知道——它决定了你是否需要立刻上外置存储。</p><nav class="pager"><a href="09-python-worker.html"><div class="dir">← 上一篇</div><div class="name">09 · Python 生成 Worker 与远程 GPU 部署</div></a><a class="next" href="11-dev-setup.html"><div class="dir">下一篇 →</div><div class="name">11 · 本地开发环境搭建</div></a></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-存储从第一天就当成-s3">1. 存储：从第一天就当成 S3</a>
+<a class="lvl-3" href="#1.1-bucket-与-key-规范">1.1 Bucket 与 key 规范</a>
+<a class="lvl-3" href="#1.2-三种访问模式">1.2 三种访问模式</a>
+<a class="lvl-3" href="#1.3-内容寻址与去重">1.3 内容寻址与去重</a>
+<a class="lvl-2" href="#2.-ffmpeg-拼接">2. FFmpeg 拼接</a>
+<a class="lvl-3" href="#2.1-为什么不用-concat-demuxer-直接拼">2.1 为什么不用 concat demuxer 直接拼</a>
+<a class="lvl-3" href="#2.2-规范化命令">2.2 规范化命令</a>
+<a class="lvl-3" href="#2.3-拼接">2.3 拼接</a>
+<a class="lvl-3" href="#2.4-转场">2.4 转场</a>
+<a class="lvl-3" href="#2.45-分级-conform三层版本自动派生">2.45 分级 conform：三层版本自动派生</a>
+<a class="lvl-3" href="#2.5-字幕">2.5 字幕</a>
+<a class="lvl-3" href="#2.6-音频混合">2.6 音频混合</a>
+<a class="lvl-2" href="#3.-hls-打包">3. HLS 打包</a>
+<a class="lvl-2" href="#4.-缩略图与预览">4. 缩略图与预览</a>
+<a class="lvl-2" href="#5.-tts-与配音">5. TTS 与配音</a>
+<a class="lvl-3" href="#5.0-me-分层母版多语言的前提">5.0 M&amp;E 分层母版（多语言的前提）</a>
+<a class="lvl-3" href="#5.1-流程">5.1 流程</a>
+<a class="lvl-3" href="#5.2-时长对齐">5.2 时长对齐</a>
+<a class="lvl-2" href="#6.-存储生命周期">6. 存储生命周期</a>
+<a class="lvl-2" href="#7.-容量估算">7. 容量估算</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+<script src="assets/mermaid.min.js"></script>
+<script>
+(function () {
+  if (typeof mermaid === 'undefined') return;
+  var FONT = 'system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+
+  var DARK = {
+    background: 'transparent',
+    primaryColor: '#1d1d21', primaryTextColor: '#f2f2f0', primaryBorderColor: '#3a3a42',
+    secondaryColor: '#16233a', secondaryTextColor: '#f2f2f0', secondaryBorderColor: '#2a4a72',
+    tertiaryColor: '#151518', tertiaryTextColor: '#a1a1aa', tertiaryBorderColor: '#2a2a30',
+    lineColor: '#6b6b75', textColor: '#c9c9cd',
+    mainBkg: '#1d1d21', nodeBorder: '#3a3a42', nodeTextColor: '#f2f2f0',
+    clusterBkg: 'rgba(57,135,229,.055)', clusterBorder: '#2a4a72',
+    edgeLabelBackground: '#0c0c0e', titleColor: '#f2f2f0'
+  };
+  var LIGHT = {
+    background: 'transparent',
+    primaryColor: '#ffffff', primaryTextColor: '#0b0b0b', primaryBorderColor: '#c9c8c1',
+    secondaryColor: '#eef4fc', secondaryTextColor: '#0b0b0b', secondaryBorderColor: '#a9c8ec',
+    tertiaryColor: '#f4f4f2', tertiaryTextColor: '#52514e', tertiaryBorderColor: '#e2e1dc',
+    lineColor: '#8a8984', textColor: '#33322f',
+    mainBkg: '#ffffff', nodeBorder: '#c9c8c1', nodeTextColor: '#0b0b0b',
+    clusterBkg: 'rgba(42,120,214,.05)', clusterBorder: '#a9c8ec',
+    edgeLabelBackground: '#fafaf9', titleColor: '#0b0b0b'
+  };
+
+  // 原始源码存起来，切主题时要用它重绘
+  var nodes = Array.prototype.slice.call(document.querySelectorAll('.mermaid'));
+  nodes.forEach(function (n) { n.dataset.src = n.textContent; });
+
+  function conf() {
+    var dark = document.documentElement.getAttribute('data-theme') !== 'light';
+    return {
+      startOnLoad: false, securityLevel: 'loose', theme: 'base',
+      fontFamily: FONT, fontSize: 13,
+      flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: true,
+                   padding: 11, nodeSpacing: 34, rankSpacing: 40, diagramPadding: 8 },
+      themeVariables: dark ? DARK : LIGHT
+    };
+  }
+
+  function draw() {
+    nodes.forEach(function (n) {
+      n.removeAttribute('data-processed');
+      n.innerHTML = n.dataset.src;
+    });
+    mermaid.initialize(conf());
+    mermaid.run({ nodes: nodes }).catch(function (e) { console.warn('mermaid:', e); });
+  }
+
+  draw();
+  window.addEventListener('ads-theme-change', draw);
+})();
+</script>
+
+</body>
+</html>

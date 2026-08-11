@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 · 控制面 API 规范 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">06 · 控制面 API 规范</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item active" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 06</div><h1>控制面 API 规范</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10 · Base URL: <code>http://localhost:4000</code> · 依赖：<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a></p>
+</blockquote>
+<h2 id="1.-约定">1. 约定<a aria-label="链接到此节" class="anchor" href="#1.-约定">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>规则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>风格</td>
+<td>REST + 资源嵌套；实时进度走 SSE</td>
+</tr>
+<tr>
+<td>格式</td>
+<td>JSON；时间一律 ISO-8601 UTC 字符串</td>
+</tr>
+<tr>
+<td>校验</td>
+<td>每个路由用 <code>packages/contracts</code> 的 zod schema 校验入参，校验失败返回 422</td>
+</tr>
+<tr>
+<td>分页</td>
+<td>游标分页 <code>?cursor=&amp;limit=</code>，响应含 <code>nextCursor</code></td>
+</tr>
+<tr>
+<td>幂等</td>
+<td>所有会产生费用的 POST 支持 <code>Idempotency-Key</code> 头</td>
+</tr>
+<tr>
+<td>错误</td>
+<td>统一错误体（见 §7）</td>
+</tr>
+<tr>
+<td>认证</td>
+<td>MVP 无认证（本地）。预留 <code>Authorization: Bearer</code>，中间件已挂载但默认放行</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="2.-项目与剧本">2. 项目与剧本<a aria-label="链接到此节" class="anchor" href="#2.-项目与剧本">#</a></h2>
+<div class="codeblock"><pre><code>GET    /api/projects                      列表
+POST   /api/projects                      创建 { title, synopsis?, aspectRatio?, language? }
+GET    /api/projects/:id                  详情（含统计摘要）
+PATCH  /api/projects/:id
+DELETE /api/projects/:id                  软删除
+
+GET    /api/projects/:id/episodes
+POST   /api/projects/:id/episodes         { index, title?, logline? }
+GET    /api/episodes/:id                  含 scenes + shots 树
+PATCH  /api/episodes/:id                  { scriptMd?, hook?, cliffhanger?, status? }
+
+GET    /api/episodes/:id/scenes
+POST   /api/episodes/:id/scenes
+PATCH  /api/scenes/:id
+DELETE /api/scenes/:id
+</code></pre></div>
+<h3 id="llm-辅助端点">LLM 辅助端点<a aria-label="链接到此节" class="anchor" href="#llm-辅助端点">#</a></h3>
+<p>这些端点封装 LLM 调用，返回<strong>结构化结果</strong>而非自由文本，前端拿到即可直接落库。</p>
+<div class="codeblock is-diagram"><pre><code>POST /api/ai/outline          { projectId, premise, episodeCount }
+     → { episodes: [{ index, logline, hook, cliffhanger }] }
+
+POST /api/ai/script           { episodeId, styleNotes? }
+     → { scriptMd, scenes: [{ index, summary, locationName, timeOfDay, stateIn, stateOut }] }
+
+POST /api/ai/shotlist         { sceneId, targetDurationSec? }
+     → { shots: ShotIntent[] }         // 见 03-pipeline.md §S3 的 schema
+
+POST /api/ai/prompt-preview   { shotId, providerId? }
+     → { prompt, negativePrompt, refImages: [{ role, assetId }] }
+</code></pre></div>
+<p><code>prompt-preview</code> 是<strong>调试利器</strong>：让人在花钱生成前先看清将要发出去的 prompt 长什么样。UI 的高级面板直接展示它。</p>
+<h2 id="3.-一致性资产">3. 一致性资产<a aria-label="链接到此节" class="anchor" href="#3.-一致性资产">#</a></h2>
+<div class="codeblock"><pre><code>GET    /api/projects/:id/characters
+POST   /api/projects/:id/characters       { name, description, voiceId? }
+PATCH  /api/characters/:id                改 description 会 version++
+POST   /api/characters/:id/references     { assetIds[] }  绑定参考图
+DELETE /api/characters/:id
+
+# locations / style-profiles 同构
+GET    /api/projects/:id/locations
+GET    /api/projects/:id/style-profiles
+</code></pre></div>
+<h2 id="4.-镜头与生成">4. 镜头与生成<a aria-label="链接到此节" class="anchor" href="#4.-镜头与生成">#</a></h2>
+<div class="codeblock"><pre><code>GET    /api/scenes/:id/shots
+POST   /api/scenes/:id/shots              创建单个 shot（Shot Intent）
+PATCH  /api/shots/:id                     改 intent；若已 locked 会重置为 ready
+DELETE /api/shots/:id
+POST   /api/shots/reorder                 { sceneId, orderedIds[] }
+</code></pre></div>
+<h3 id="生成">生成<a aria-label="链接到此节" class="anchor" href="#生成">#</a></h3>
+<div class="codeblock is-diagram"><pre><code>POST /api/shots/:id/generate
+Body: {
+  providerHint?: string,
+  overrides?: { seed?, durationSec?, resolution?, promptOverride? },
+  count?: number                 // 一次生成 N 个候选，默认 1
+}
+→ 202 { generationJobIds: string[] }
+</code></pre></div>
+<div class="codeblock is-diagram"><pre><code>POST /api/episodes/:id/generate-batch
+Body: {
+  scope: 'all' | 'ready' | 'failed' | { shotIds: string[] },
+  providerHint?: string,
+  dryRun?: boolean               // 只返回计划与成本预估，不入队
+}
+→ 202 {
+    planned: number,
+    blocked: number,             // 因连续性依赖未解锁而暂缓（见 03-pipeline §6）
+    estimatedCostMicroUsd: number,
+    batchId: string
+  }
+</code></pre></div>
+<p><code>dryRun: true</code> 是<strong>必须先用的</strong>——它把「这批要花多少钱、有几个镜头会被依赖阻塞」先算出来。UI 上「生成整集」按钮的确认弹窗就靠它。</p>
+<div class="codeblock"><pre><code>POST   /api/jobs/:id/cancel
+POST   /api/batches/:id/cancel            取消整批未开始的任务
+GET    /api/jobs/:id                      单个任务详情（含 provider 原始响应）
+GET    /api/shots/:id/jobs                该镜头的所有生成尝试（Ledger 视图）
+</code></pre></div>
+<h3 id="选片">选片<a aria-label="链接到此节" class="anchor" href="#选片">#</a></h3>
+<div class="codeblock is-diagram"><pre><code>GET    /api/shots/:id/takes
+POST   /api/takes/:id/select              设为 shot.selectedTakeId，shot → locked
+POST   /api/takes/:id/reject              → rejected
+PATCH  /api/takes/:id                     { humanNote? }
+</code></pre></div>
+<h2 id="5.-资产音频与渲染">5. 资产、音频与渲染<a aria-label="链接到此节" class="anchor" href="#5.-资产音频与渲染">#</a></h2>
+<div class="codeblock is-diagram"><pre><code>GET    /api/projects/:id/assets           ?kind=&amp;cursor=&amp;limit=
+POST   /api/projects/:id/assets/upload    multipart，用于手工上传参考图
+GET    /api/assets/:id                    元数据
+GET    /api/assets/:id/content            302 → MinIO 预签名 URL（TTL 15min）
+GET    /api/assets/:id/thumbnail          视频首帧缩略图，服务端缓存
+
+POST   /api/episodes/:id/tts              为所有有台词的镜头合成配音
+     → 202 { jobIds: string[] }
+
+GET    /api/episodes/:id/timeline         当前 timeline（不存在则按 locked shots 自动生成草稿）
+PUT    /api/episodes/:id/timeline         整体保存 clips 顺序与 trim
+POST   /api/episodes/:id/render
+Body: { quality?: 'preview' | 'final', burnSubtitles?: boolean }
+     → 202 { renderJobId }
+GET    /api/renders/:id                   { status, progressPct, outputAssetId?, ffmpegLog? }
+</code></pre></div>
+<h2 id="6.-播放与统计">6. 播放与统计<a aria-label="链接到此节" class="anchor" href="#6.-播放与统计">#</a></h2>
+<div class="codeblock is-diagram"><pre><code>GET /api/watch/:episodeId                 播放清单
+    → { title, index, masterAssetId, hlsUrl?, durationSec, subtitleUrl? }
+
+GET /api/projects/:id/stats
+    → {
+        shots:  { total, locked, review, failed, generating },
+        cost:   { todayMicroUsd, totalMicroUsd, byProvider: Record&lt;string, number&gt; },
+        quality:{ firstPassRate, avgAttempts, byProvider: [...] },
+        queue:  { depth, running }
+      }
+</code></pre></div>
+<h2 id="7.-sse">7. SSE<a aria-label="链接到此节" class="anchor" href="#7.-sse">#</a></h2>
+<div class="codeblock"><pre><code>GET /api/projects/:id/events        Accept: text/event-stream
+</code></pre></div>
+<div class="codeblock"><pre><code>event: shot.status
+data: {"shotId":"...","status":"review","ts":"2026-08-10T00:31:02Z"}
+
+event: job.progress
+data: {"jobId":"...","shotId":"...","pct":62,"etaMs":48000}
+
+event: batch.progress
+data: {"episodeId":"...","done":18,"total":24,"failed":1}
+</code></pre></div>
+<p>事件负载类型即 <a href="05-job-orchestration.html" title="任务编排：队列、重试、并发与记账"><code>05-job-orchestration.md</code></a> §7 的 <code>StudioEvent</code>。客户端用 <code>EventSource</code>，断线自带重连；服务端每 20s 发一次 <code>: keepalive</code> 注释帧防中间层超时断连。</p>
+<h2 id="8.-错误规范">8. 错误规范<a aria-label="链接到此节" class="anchor" href="#8.-错误规范">#</a></h2>
+<div class="codeblock"><span class="lang">json</span><pre><code class="language-json">{
+  "error": {
+    "code": "BUDGET_EXCEEDED",
+    "message": "Episode budget exhausted: $2.40 of $2.00 used",
+    "details": { "limitMicroUsd": 2000000, "spentMicroUsd": 2400000 },
+    "requestId": "req_01J..."
+  }
+}
+</code></pre></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>HTTP</th>
+<th>code 示例</th>
+<th>场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>400</td>
+<td><code>INVALID_STATE_TRANSITION</code></td>
+<td>对 draft 镜头调 generate</td>
+</tr>
+<tr>
+<td>404</td>
+<td><code>NOT_FOUND</code></td>
+<td></td>
+</tr>
+<tr>
+<td>409</td>
+<td><code>CONFLICT</code></td>
+<td>并发改同一 shot（乐观锁 <code>updatedAt</code> 不匹配）</td>
+</tr>
+<tr>
+<td>422</td>
+<td><code>VALIDATION_FAILED</code></td>
+<td>zod 校验失败，<code>details.issues</code> 给字段级错误</td>
+</tr>
+<tr>
+<td>429</td>
+<td><code>RATE_LIMITED</code></td>
+<td>全局或 provider 限流</td>
+</tr>
+<tr>
+<td>402</td>
+<td><code>BUDGET_EXCEEDED</code></td>
+<td>预算闸门拦截</td>
+</tr>
+<tr>
+<td>503</td>
+<td><code>NO_PROVIDER_AVAILABLE</code></td>
+<td>池内无健康且能力匹配的 provider</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>requestId</code> 贯穿日志，报错时截图给出即可定位全链路。</p>
+<h2 id="9.-openapi">9. OpenAPI<a aria-label="链接到此节" class="anchor" href="#9.-openapi">#</a></h2>
+<p>Fastify 挂 <code>@fastify/swagger</code>，schema 直接由 zod 转换（<code>fastify-type-provider-zod</code>）。</p>
+<ul>
+<li>开发环境 <code>GET /docs</code> 提供 Swagger UI。</li>
+<li><code>pnpm api:types</code> 从 OpenAPI 生成前端 fetch 客户端，<strong>前端不手写请求类型</strong>。</li>
+</ul>
+<p>这样 API 定义只有一处真相源（zod schema），文档、校验、前端类型三者自动同步。</p><nav class="pager"><a href="05-job-orchestration.html"><div class="dir">← 上一篇</div><div class="name">05 · 任务编排：队列、重试、并发与记账</div></a><a class="next" href="07-design-system.html"><div class="dir">下一篇 →</div><div class="name">07 · 前端设计系统</div></a></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-约定">1. 约定</a>
+<a class="lvl-2" href="#2.-项目与剧本">2. 项目与剧本</a>
+<a class="lvl-3" href="#llm-辅助端点">LLM 辅助端点</a>
+<a class="lvl-2" href="#3.-一致性资产">3. 一致性资产</a>
+<a class="lvl-2" href="#4.-镜头与生成">4. 镜头与生成</a>
+<a class="lvl-3" href="#生成">生成</a>
+<a class="lvl-3" href="#选片">选片</a>
+<a class="lvl-2" href="#5.-资产音频与渲染">5. 资产、音频与渲染</a>
+<a class="lvl-2" href="#6.-播放与统计">6. 播放与统计</a>
+<a class="lvl-2" href="#7.-sse">7. SSE</a>
+<a class="lvl-2" href="#8.-错误规范">8. 错误规范</a>
+<a class="lvl-2" href="#9.-openapi">9. OpenAPI</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+</body>
+</html>

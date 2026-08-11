@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12 · 里程碑与验收标准 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">12 · 里程碑与验收标准</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item active" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 12</div><h1>里程碑与验收标准</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10</p>
+</blockquote>
+<h2 id="原则">原则<a aria-label="链接到此节" class="anchor" href="#原则">#</a></h2>
+<p>每个里程碑都是<strong>可演示的完整链路</strong>，不是「完成了某个模块」。M0 就能从剧本走到播放，后面的里程碑只是把链路里的某一段从假换成真。这样任何时候中断，手上都有一个能跑的东西。</p>
+<div class="codeblock"><pre><code>M0 骨架          假生成 · 真流程        无 GPU / 无 key
+M1 真实生成      云 API · 真成本        一个 provider
+M2 自部署        远程 GPU worker        Worker Contract
+M3 成片          音频 + 拼接            clean 母版 + M&amp;E
+M4 素材产线      分级 conform + 切条     ★ 曝光优先，提前到闭环之前
+M5 闭环          播放器 + 分集           端到端
+M6 优化          自动评测 + 智能路由     数据驱动
+</code></pre></div>
+<p><strong>M4 为什么排在 M5 之前</strong>：北美的成本结构是营销约为制作的 9 倍，素材才是投出去的东西。<strong>先有能投的素材，才谈得上验证市场；播放器可以晚一点。</strong> 这是「先打曝光、再优化细节」在里程碑上的落地——把能产生外部反馈的能力尽早交付，把内部体验的打磨往后放。</p>
+<hr/>
+<h2 id="m0-骨架跑通">M0 · 骨架跑通<a aria-label="链接到此节" class="anchor" href="#m0-骨架跑通">#</a></h2>
+<p><strong>目标</strong>：无 GPU、无 API key，在 Mac 上从剧本走到可播放成片。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>交付</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>monorepo 骨架，<code>pnpm dev</code> 一键起 web + control + worker</td>
+</tr>
+<tr>
+<td>2</td>
+<td>docker-compose：postgres / redis / minio / media-worker</td>
+</tr>
+<tr>
+<td>3</td>
+<td>完整 schema + 迁移 + seed（1 集 / 12 镜 / 2 角色）</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>packages/contracts</code> 与 <code>contracts:build</code> 链路打通</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>MockProvider</code>，含 15% 失败率与确定性 seed 模式</td>
+</tr>
+<tr>
+<td>6</td>
+<td>镜头状态机 + BullMQ 五队列 + SSE 进度</td>
+</tr>
+<tr>
+<td>7</td>
+<td>分镜页、选片页两个核心界面可用</td>
+</tr>
+<tr>
+<td>8</td>
+<td>FFmpeg 规范化 + 拼接，产出可播 MP4</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收</strong></p>
+<ul class="task-list">
+<li class="task-list-item"><input disabled="" type="checkbox"/> 全新 clone 后 5 分钟内跑起来，无需任何外部凭证</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 「生成整集」→ 12 镜全部完成，含至少 1 次自动重试</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 选片 → 渲染 → 播放器能看完整一集</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 杀掉控制面进程再重启，在途任务能恢复（reconcile 生效）</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 状态机单测覆盖全部合法迁移与非法迁移</li>
+</ul>
+<hr/>
+<h2 id="m1-接入真实云-provider">M1 · 接入真实云 Provider<a aria-label="链接到此节" class="anchor" href="#m1-接入真实云-provider">#</a></h2>
+<p><strong>目标</strong>：同一条链路产出真实视频，成本可见。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>交付</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>一个云 provider 适配器（建议 Vidu：官方定价透明、多主体参考、错峰便宜）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>预算闸门 + <code>dryRun</code> 批量预估</td>
+</tr>
+<tr>
+<td>3</td>
+<td>产物转存与 sha256 校验</td>
+</tr>
+<tr>
+<td>4</td>
+<td>洞察页 v1：花费、通过率、每可用镜头成本</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>prompt-kit</code>：Shot Intent + 资产 → prompt 模板引擎</td>
+</tr>
+<tr>
+<td>6</td>
+<td>契约测试（录制回放，CI 不烧钱）</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收</strong></p>
+<ul class="task-list">
+<li class="task-list-item"><input disabled="" type="checkbox"/> 单镜头生成成功，成本正确回填且量级合理</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> <code>dryRun</code> 预估与实际花费误差 &lt; 20%</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 预算超限被 <code>block</code> 拦下，UI 明确提示</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 12 镜一集的真实一次通过率有数据</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 切回 <code>DEFAULT_PROVIDER=mock</code> 仍完全可用（未被真实 provider 污染）</li>
+</ul>
+<hr/>
+<h2 id="m2-自部署-worker">M2 · 自部署 Worker<a aria-label="链接到此节" class="anchor" href="#m2-自部署-worker">#</a></h2>
+<p><strong>目标</strong>：验证 Worker Contract 与远程 GPU 路径。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>交付</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>workers/video</code>：FastAPI + Wan2.2 引擎 + 进度回调</td>
+</tr>
+<tr>
+<td>2</td>
+<td>预签名 PUT 直写存储</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>SelfHostProvider</code> 适配器</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Tailscale 联通与部署脚本</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>gpu_seconds</code> → 成本折算，与云 API 同口径对比</td>
+</tr>
+<tr>
+<td>6</td>
+<td>CPU mock 引擎（Mac 上验证契约）</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收</strong></p>
+<ul class="task-list">
+<li class="task-list-item"><input disabled="" type="checkbox"/> Mac 上用 mock 引擎跑通 Worker Contract（含上传）</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 远程 GPU 真实产出视频，进度百分比真实推进</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 洞察页能并排比较云 API 与自部署的每可用镜头成本</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> worker 崩溃/OOM 时控制面正确标记失败并重试</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> <code>IDLE_SHUTDOWN_MIN</code> 生效，不会忘关烧钱</li>
+</ul>
+<hr/>
+<h2 id="m3-音频与成片">M3 · 音频与成片<a aria-label="链接到此节" class="anchor" href="#m3-音频与成片">#</a></h2>
+<p><strong>目标</strong>：产出带配音字幕的完整一集。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>交付</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>TTS 适配器 + 多角色音色绑定</td>
+</tr>
+<tr>
+<td>2</td>
+<td>台词时长估算与超长告警（分镜阶段就提示）</td>
+</tr>
+<tr>
+<td>3</td>
+<td>时间线页：拖拽排序、trim、音轨可视化</td>
+</tr>
+<tr>
+<td>4</td>
+<td>字幕 VTT + 可选烧录</td>
+</tr>
+<tr>
+<td>5</td>
+<td>BGM 混音与自动闪避</td>
+</tr>
+<tr>
+<td>6</td>
+<td>规范化中间件缓存（改一镜快速重渲染）</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收</strong></p>
+<ul class="task-list">
+<li class="task-list-item"><input disabled="" type="checkbox"/> 一集 60 镜带配音字幕渲染完成，音画同步</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 改动单个镜头后重渲染 &lt; 30 秒</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 台词过长在分镜阶段被标出，而不是渲染后才发现</li>
+</ul>
+<hr/>
+<h2 id="m4-素材产线曝光优先">M4 · 素材产线（曝光优先）<a aria-label="链接到此节" class="anchor" href="#m4-素材产线曝光优先">#</a></h2>
+<p><strong>目标</strong>：一部剧能自动产出三个分级版本 + 可投放的素材矩阵。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>交付</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>分级 conform 服务：替换清单 → L1/L0 自动派生，复用 normalize 缓存</td>
+</tr>
+<tr>
+<td>2</td>
+<td>钩子概念抽取：从成片切出 40–60 条，带 hookType / themeTags / emotionTag</td>
+</tr>
+<tr>
+<td>3</td>
+<td>变体渲染矩阵：平台 × 时长 × 首帧 × 字幕 × 音轨 × CTA，单部 400–900 个</td>
+</tr>
+<tr>
+<td>4</td>
+<td>字幕烧录器：上三分之一、≤8 词、按平台 UI 安全区自动避让</td>
+</tr>
+<tr>
+<td>5</td>
+<td>商店资产独立生成器（4+ 安全，不从正片截帧）</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>renders</code> 表接投放回传，按标签维度看 ROAS</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收</strong></p>
+<ul class="task-list">
+<li class="task-list-item"><input disabled="" type="checkbox"/> 一部剧一键产出 L2 / L1 / L0 三版，L1/L0 渲染耗时 &lt; L2 的 20%</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 自动切出 ≥40 条概念，人工抽检钩子质量可用率 ≥60%</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 单概念自动派生 ≥8 个平台变体，规格全部通过平台自检</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 商店截图全部满足 4+，与正片资产完全隔离</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 素材标签能支撑「按题材 × 钩子类型看 D0 ROAS」的查询</li>
+</ul>
+<hr/>
+<h2 id="m5-端到端闭环">M5 · 端到端闭环<a aria-label="链接到此节" class="anchor" href="#m5-端到端闭环">#</a></h2>
+<p><strong>目标</strong>：多集管理与观众视角播放。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>交付</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>播放器页 + HLS 打包</td>
+</tr>
+<tr>
+<td>2</td>
+<td>分集管理、连载排期</td>
+</tr>
+<tr>
+<td>3</td>
+<td>资产页完整版（版本、影响范围、批量重做）</td>
+</tr>
+<tr>
+<td>4</td>
+<td>连续性：末帧接首帧、ContinuityState 注入</td>
+</tr>
+<tr>
+<td>5</td>
+<td>批量依赖拓扑排序与自动解锁</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收</strong></p>
+<ul class="task-list">
+<li class="task-list-item"><input disabled="" type="checkbox"/> 连续 5 集，主角与主场景在 100+ 镜头后仍可接受</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 一集从剧本到成片全程无需手工干预排队</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 更新角色参考图后，受影响镜头被正确标记</li>
+</ul>
+<hr/>
+<h2 id="m6-质量与成本优化">M6 · 质量与成本优化<a aria-label="链接到此节" class="anchor" href="#m6-质量与成本优化">#</a></h2>
+<p><strong>目标</strong>：从「能跑」到「划算」。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>交付</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>自动评测 T1–T3（检测、相似度、VLM）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>基于历史统计的智能路由</td>
+</tr>
+<tr>
+<td>3</td>
+<td>角色 LoRA 训练与挂载</td>
+</tr>
+<tr>
+<td>4</td>
+<td>错峰调度（低优先级批量推到便宜时段）</td>
+</tr>
+<tr>
+<td>5</td>
+<td>A/B 对比工具：同一 Shot 跨 provider 并排</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>验收</strong></p>
+<ul class="task-list">
+<li class="task-list-item"><input disabled="" type="checkbox"/> 自动评测把人工选片量减少 ≥ 50%</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 智能路由后每可用镜头成本较固定 provider 下降 ≥ 20%</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 有数据支撑的结论：什么镜头该用云 API、什么该自部署</li>
+</ul>
+<hr/>
+<h2 id="关键指标">关键指标<a aria-label="链接到此节" class="anchor" href="#关键指标">#</a></h2>
+<p>贯穿所有里程碑，每个阶段都要能回答：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>指标</th>
+<th>定义</th>
+<th>目标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>一次通过率</strong></td>
+<td>首次尝试即被采用的镜头占比</td>
+<td>M1 建立基线 → M5 ≥ 55%</td>
+</tr>
+<tr>
+<td><strong>每可用镜头成本</strong></td>
+<td>总花费 ÷ 被采用镜头数</td>
+<td>比「每秒单价」有意义得多</td>
+</tr>
+<tr>
+<td><strong>单集墙钟时间</strong></td>
+<td>从批量生成到成片</td>
+<td>M3 ≤ 2 小时</td>
+</tr>
+<tr>
+<td><strong>人工干预次数</strong></td>
+<td>每集需要人动手的次数</td>
+<td>M6 ≤ 15 次（主要是选片）</td>
+</tr>
+<tr>
+<td><strong>素材赢家率</strong></td>
+<td>上线渲染中成为投放赢家的比例</td>
+<td>行业基准约 5%；40–60 概念 ≈ 2–3 个赢家</td>
+</tr>
+<tr>
+<td><strong>单部剧交付物数</strong></td>
+<td>正片 + 素材 + 商店 + 联盟包</td>
+<td>600–1200 个</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>每可用镜头成本</code> 是最重要的一个——它把重试率、失败率、模型单价合成了一个数字。所有优化最终都体现在它身上。</p>
+<hr/>
+<h2 id="明确不做本阶段">明确不做（本阶段）<a aria-label="链接到此节" class="anchor" href="#明确不做本阶段">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>不做</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>支付、订阅、权益</td>
+<td>目标是生产链路；但 Web 结账在架构上须预留（TV-MA 完整版的唯一合法通道）</td>
+</tr>
+<tr>
+<td>多用户、协作、权限</td>
+<td>单人本地</td>
+</tr>
+<tr>
+<td>CDN、大规模分发</td>
+<td>本地文件服务足够</td>
+</tr>
+<tr>
+<td>内容审核闸门</td>
+<td>字段与钩子留好，逻辑后置</td>
+</tr>
+<tr>
+<td>移动 App</td>
+<td>Web 响应式够用</td>
+</tr>
+<tr>
+<td>Kubernetes</td>
+<td>单机 + 一台远程 GPU，上 K8s 是负担</td>
+</tr>
+</tbody>
+</table></div>
+<p>留位置不等于现在实现——<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a> §10 列了所有预留字段。</p><nav class="pager"><a href="11-dev-setup.html"><div class="dir">← 上一篇</div><div class="name">11 · 本地开发环境搭建</div></a><a class="next" href="13-character-assets.html"><div class="dir">下一篇 →</div><div class="name">13 · 角色资产与单镜头 Prompt</div></a></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#原则">原则</a>
+<a class="lvl-2" href="#m0-骨架跑通">M0 · 骨架跑通</a>
+<a class="lvl-2" href="#m1-接入真实云-provider">M1 · 接入真实云 Provider</a>
+<a class="lvl-2" href="#m2-自部署-worker">M2 · 自部署 Worker</a>
+<a class="lvl-2" href="#m3-音频与成片">M3 · 音频与成片</a>
+<a class="lvl-2" href="#m4-素材产线曝光优先">M4 · 素材产线（曝光优先）</a>
+<a class="lvl-2" href="#m5-端到端闭环">M5 · 端到端闭环</a>
+<a class="lvl-2" href="#m6-质量与成本优化">M6 · 质量与成本优化</a>
+<a class="lvl-2" href="#关键指标">关键指标</a>
+<a class="lvl-2" href="#明确不做本阶段">明确不做（本阶段）</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+</body>
+</html>

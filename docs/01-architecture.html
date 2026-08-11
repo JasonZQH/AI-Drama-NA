@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 · 系统架构 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">01 · 系统架构</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item active" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 01</div><h1>系统架构</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="00-overview.html" title="项目总览与范围定义"><code>00-overview.md</code></a></p>
+</blockquote>
+<h2 id="1.-三平面架构">1. 三平面架构<a aria-label="链接到此节" class="anchor" href="#1.-三平面架构">#</a></h2>
+<p>系统按<strong>职责边界</strong>而非技术栈切分为三个平面。跨平面只走 HTTP，绝不共享数据库连接或内存状态。</p>
+<figure class="diagram"><div class="mermaid">flowchart TD
+    PP["&lt;b&gt;PRESENTATION PLANE&lt;/b&gt; · Next.js 15 App Router · TS&lt;br/&gt;Studio UI · Player · 实时进度 SSE · 资产浏览"]
+    CP["&lt;b&gt;CONTROL PLANE&lt;/b&gt; · Fastify · TypeScript&lt;br/&gt;领域模型与业务规则 · 流水线状态机&lt;br/&gt;Provider 路由与适配器 · 队列生产与消费 BullMQ&lt;br/&gt;Generation Ledger 成本与质量记账&lt;br/&gt;—— 唯一拥有 Postgres 写权限的进程 ——"]
+    GP["&lt;b&gt;GENERATION PLANE&lt;/b&gt; · Python · FastAPI · 远程 GPU&lt;br/&gt;Wan2.2 · Hunyuan · TTS · Eval · FFmpeg worker"]
+    ST["&lt;b&gt;STORAGE&lt;/b&gt;&lt;br/&gt;MinIO S3&lt;br/&gt;媒体与母版"]
+    STATE["&lt;b&gt;STATE&lt;/b&gt;&lt;br/&gt;Postgres&lt;br/&gt;Redis queue"]
+    EXT["&lt;b&gt;外部云 API&lt;/b&gt;&lt;br/&gt;即梦 Seedance · Vidu&lt;br/&gt;Kling · ElevenLabs"]
+    PP --&gt;|"REST + SSE"| CP
+    CP --&gt;|"HTTP Worker Contract"| GP
+    CP --&gt;|"SQL / Redis"| STATE
+    CP --&gt;|"S3 API"| ST
+    CP -.-&gt;|"HTTPS"| EXT
+    GP --&gt;|"预签名 PUT 直写&lt;br/&gt;不经控制面中转"| ST
+</div></figure>
+<h3 id="为什么控制面是-typescript-而不是-python">为什么控制面是 TypeScript 而不是 Python<a aria-label="链接到此节" class="anchor" href="#为什么控制面是-typescript-而不是-python">#</a></h3>
+<p>领域逻辑（分集、分镜、状态机、路由、记账）和前端共享大量类型定义——Shot、Asset、JobStatus 这些类型在前后端各写一遍是纯粹的浪费和 bug 来源。用 TS 单一语言写这层，配合 monorepo 里的 <code>packages/contracts</code> 共享类型包，前端拿到的就是后端的真实类型。</p>
+<p>而模型推理、OpenCV、FFmpeg 复杂滤镜、embedding 计算这些，Python 生态无可替代。所以边界划在「业务 vs 计算」，不划在「前 vs 后」。</p>
+<h2 id="2.-进程拓扑">2. 进程拓扑<a aria-label="链接到此节" class="anchor" href="#2.-进程拓扑">#</a></h2>
+<h3 id="开发态mac-远程-gpu">开发态（Mac + 远程 GPU）<a aria-label="链接到此节" class="anchor" href="#开发态mac-远程-gpu">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>进程</th>
+<th>位置</th>
+<th>端口</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>apps/web</code></td>
+<td>Mac</td>
+<td>3000</td>
+<td>Next.js dev server</td>
+</tr>
+<tr>
+<td><code>apps/control</code></td>
+<td>Mac</td>
+<td>4000</td>
+<td>Fastify API</td>
+</tr>
+<tr>
+<td><code>apps/control</code> (worker mode)</td>
+<td>Mac</td>
+<td>—</td>
+<td>BullMQ 消费者，同代码不同入口</td>
+</tr>
+<tr>
+<td>Postgres</td>
+<td>Mac (docker)</td>
+<td>5432</td>
+<td></td>
+</tr>
+<tr>
+<td>Redis</td>
+<td>Mac (docker)</td>
+<td>6379</td>
+<td></td>
+</tr>
+<tr>
+<td>MinIO</td>
+<td>Mac (docker)</td>
+<td>9000/9001</td>
+<td>S3 API + 控制台</td>
+</tr>
+<tr>
+<td><code>workers/video</code></td>
+<td>远程 GPU</td>
+<td>8001</td>
+<td>Python FastAPI</td>
+</tr>
+<tr>
+<td><code>workers/media</code></td>
+<td>Mac (docker)</td>
+<td>8002</td>
+<td>FFmpeg，CPU 即可</td>
+</tr>
+</tbody>
+</table></div>
+<p>Mac 与远程 GPU 的连通用 <strong>Tailscale</strong>（推荐）或 SSH 反向隧道，见 <a href="11-dev-setup.html" title="本地开发环境搭建"><code>11-dev-setup.md</code></a>。GPU worker 直接向 MinIO 写产物——<strong>大文件绝不经过控制面中转</strong>，控制面只收到一个 S3 key。</p>
+<blockquote>
+<p>这条规则很重要：如果生成的视频要先传回 Mac 再上传存储，Mac 的上行带宽会成为整个流水线的瓶颈。Worker 直写存储，控制面只搬运元数据。</p>
+</blockquote>
+<h2 id="3.-monorepo-目录结构">3. Monorepo 目录结构<a aria-label="链接到此节" class="anchor" href="#3.-monorepo-目录结构">#</a></h2>
+<div class="codeblock is-diagram"><pre><code>ai-drama-studio/
+├─ apps/
+│  ├─ web/                    # Next.js 15 · Studio + Player
+│  │  ├─ app/
+│  │  │  ├─ (studio)/         # 生产界面路由组
+│  │  │  └─ (watch)/          # 播放器路由组
+│  │  ├─ components/
+│  │  └─ lib/
+│  └─ control/                # Fastify 控制面
+│     ├─ src/
+│     │  ├─ domain/           # 实体与业务规则（无 IO）
+│     │  ├─ pipeline/         # 状态机与编排
+│     │  ├─ providers/        # 生成后端适配器
+│     │  ├─ queue/            # BullMQ 定义与消费者
+│     │  ├─ routes/           # HTTP 路由
+│     │  └─ db/               # Drizzle schema 与迁移
+│     └─ src/worker.ts        # 队列消费者入口
+├─ packages/
+│  ├─ contracts/              # ★ 前后端 + Python 共享的类型与 JSON Schema
+│  │  ├─ src/*.ts             # TS 类型（唯一真相源）
+│  │  └─ generated/*.json     # 由 TS 导出的 JSON Schema，供 Python 校验
+│  ├─ ui/                     # 共享 React 组件与设计令牌
+│  └─ prompt-kit/             # Shot Intent → prompt 模板引擎
+├─ workers/
+│  ├─ video/                  # Python · 视频生成 worker
+│  ├─ media/                  # Python · FFmpeg 拼接/转码/字幕
+│  └─ eval/                   # Python · 自动评测（相似度/检测）
+├─ infra/
+│  ├─ docker-compose.yml      # postgres + redis + minio + media worker
+│  └─ gpu/                    # GPU worker 的 Dockerfile 与部署脚本
+├─ docs/
+└─ scripts/
+</code></pre></div>
+<h3 id="packagescontracts-是这个架构的枢纽"><code>packages/contracts</code> 是这个架构的枢纽<a aria-label="链接到此节" class="anchor" href="#packagescontracts-是这个架构的枢纽">#</a></h3>
+<p>三种语言要对齐同一套数据结构。做法是 <strong>TypeScript 为唯一真相源</strong>：</p>
+<figure class="diagram"><div class="mermaid">flowchart LR
+    A["contracts/src/*.ts&lt;br/&gt;zod schema · 唯一真相源"]
+    B["contracts/generated/*.json&lt;br/&gt;JSON Schema"]
+    W["apps/web&lt;br/&gt;直接 import 类型"]
+    C["apps/control&lt;br/&gt;import + zod 运行时校验"]
+    P["workers/*&lt;br/&gt;pydantic 由 JSON Schema 生成"]
+    A --&gt;|"zod-to-json-schema"| B
+    A --&gt; W
+    A --&gt; C
+    B --&gt; P
+</div></figure>
+<p>用 zod 定义 schema，一次定义得到三样东西：TS 类型、运行时校验、给 Python 的 JSON Schema。<code>pnpm contracts:build</code> 是 CI 的第一步。</p>
+<h2 id="4.-数据流一个镜头的一生">4. 数据流：一个镜头的一生<a aria-label="链接到此节" class="anchor" href="#4.-数据流一个镜头的一生">#</a></h2>
+<figure class="diagram"><div class="mermaid">flowchart TD
+    S1["&lt;b&gt;①②&lt;/b&gt; 用户在 Storyboard 点「生成」&lt;br/&gt;POST /api/shots/:id/generate"]
+    S2["&lt;b&gt;③④&lt;/b&gt; 读 Shot Intent + Character / Location / Style 资产&lt;br/&gt;prompt-kit → prompt + 参考图 S3 keys"]
+    S3["&lt;b&gt;⑤⑥&lt;/b&gt; Provider Router 按 shot_type / 预算 / 历史通过率选型&lt;br/&gt;写 generation_jobs（queued）→ 入队 BullMQ"]
+    S4["&lt;b&gt;⑦⑧&lt;/b&gt; Worker 消费 provider.submit 拿 handle&lt;br/&gt;轮询 poll → 进度写 Redis → SSE 推前端"]
+    S5["&lt;b&gt;⑨⑩&lt;/b&gt; 产物落 MinIO（云 API 转存 · 自部署直写）&lt;br/&gt;建 assets + takes，记录 hash / lineage / cost / latency"]
+    S6["&lt;b&gt;⑪&lt;/b&gt; Eval 链：T0 技术校验 → T1 T2 自动评分"]
+    D{"&lt;b&gt;⑫&lt;/b&gt; 通过？"}
+    S7["take = candidate，UI 亮起待选"]
+    R["按重试策略换 seed / 参数 / provider（上限 N 次）"]
+    S8["&lt;b&gt;⑬&lt;/b&gt; 人工选定 → shot.selected_take_id&lt;br/&gt;shot.status = locked"]
+    S1 --&gt; S2 --&gt; S3 --&gt; S4 --&gt; S5 --&gt; S6 --&gt; D
+    D --&gt;|"是"| S7 --&gt; S8
+    D --&gt;|"否"| R --&gt; S3
+</div></figure>
+<p>第 ⑤ 步的路由决策和第 ⑩ 步的记账，共同构成了「哪个模型在什么镜头上更划算」的数据基础。这是系统长期价值的来源，MVP 阶段就要写对。</p>
+<h2 id="5.-模块边界与依赖方向">5. 模块边界与依赖方向<a aria-label="链接到此节" class="anchor" href="#5.-模块边界与依赖方向">#</a></h2>
+<p>控制面是<strong>模块化单体</strong>（ADR-0009），内部模块走同进程函数调用，不走网络。边界的强制手段是<strong>构建期约束</strong>，不是运行时协议。</p>
+<h3 id="5.1-允许的依赖方向">5.1 允许的依赖方向<a aria-label="链接到此节" class="anchor" href="#5.1-允许的依赖方向">#</a></h3>
+<figure class="diagram"><div class="mermaid">flowchart TD
+    routes["routes/&lt;br/&gt;HTTP 路由 · 只做校验与调用"]
+    queue["queue/&lt;br/&gt;BullMQ 定义与消费者"]
+    pipeline["pipeline/&lt;br/&gt;状态机与编排"]
+    providers["providers/&lt;br/&gt;生成后端适配器"]
+    domain["domain/&lt;br/&gt;实体与业务规则 · &lt;b&gt;零 IO&lt;/b&gt;"]
+    db["db/&lt;br/&gt;Drizzle schema 与迁移"]
+    contracts["packages/contracts&lt;br/&gt;zod schema · 唯一真相源"]
+    routes --&gt; pipeline
+    routes --&gt; db
+    queue --&gt; pipeline
+    pipeline --&gt; domain
+    pipeline --&gt; providers
+    pipeline --&gt; db
+    providers --&gt; contracts
+    domain --&gt; contracts
+</div></figure>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>模块</th>
+<th>约束</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>domain/</code></td>
+<td><strong>零 IO</strong>。状态机是纯函数，副作用以 <code>Effect[]</code> 返回给调用方执行（<a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §3）。这让它可以被穷举测试而无需起数据库</td>
+</tr>
+<tr>
+<td><code>providers/</code></td>
+<td>只依赖 contracts 的接口；业务代码<strong>不得 import 任何厂商 SDK</strong>（ADR-0002）</td>
+</tr>
+<tr>
+<td><code>pipeline/</code></td>
+<td>只依赖 domain 与 providers 的接口，不直接摸 HTTP 层</td>
+</tr>
+<tr>
+<td><code>routes/</code></td>
+<td>只做参数校验与调用，<strong>不含业务逻辑</strong>；不得 import <code>domain/</code> 内部实现</td>
+</tr>
+<tr>
+<td><code>db/</code></td>
+<td>只有控制面进程可写（ADR-0003）</td>
+</tr>
+</tbody>
+</table></div>
+<p>两条禁止项（图中未画，因为它们是"不存在的边"）：<code>routes</code> 不得直连 <code>domain</code> 内部；<code>domain</code> 不得访问 <code>db</code>。</p>
+<p>核心规矩：<strong>模块之间只通过带显式类型的函数调用通信，不共享可变状态。</strong> 守住这条，将来抽服务就是把函数调用换成 HTTP 调用，不需要重构领域逻辑。</p>
+<h3 id="5.2-靠构建期强制不靠自觉">5.2 靠构建期强制，不靠自觉<a aria-label="链接到此节" class="anchor" href="#5.2-靠构建期强制不靠自觉">#</a></h3>
+<div class="codeblock"><span class="lang">jsonc</span><pre><code class="language-jsonc">// eslint.config.js —— 违规 import 直接 CI 失败
+"no-restricted-imports": ["error", { "patterns": [
+  { "group": ["**/domain/internal/*"],
+    "message": "domain 只能通过 index.ts 的公开导出访问" },
+  { "group": ["**/db/*"],
+    "message": "domain 必须零 IO，不得访问数据库层" },
+  { "group": ["@vidu/*", "@kling/*"],
+    "message": "厂商 SDK 只能出现在 providers/ 的适配器实现里（ADR-0002）" }
+]}]
+</code></pre></div>
+<p>更硬的一层是 <strong>pnpm workspace 包边界</strong>：把 <code>domain</code> 做成独立包、只导出该导出的，"导入内部实现"在物理上就不可能。这比任何运行时协议的约束都强，且零运行时代价。</p>
+<p>再配 <code>dependency-cruiser</code> 校验依赖方向，把 §5.1 那张图变成 CI 里的断言。</p>
+<h3 id="5.3-让边界对-ai-coding-agent-可读">5.3 让边界对 AI coding agent 可读<a aria-label="链接到此节" class="anchor" href="#5.3-让边界对-ai-coding-agent-可读">#</a></h3>
+<p>这套约束同时服务于一个现实目标：用编码 agent 写代码时边界要稳。四条按有效性排序：</p>
+<ol>
+<li><strong>仓库根 <code>CLAUDE.md</code></strong> 写清依赖方向与禁止事项 —— agent 每次都会读</li>
+<li><strong><code>packages/contracts</code> 保持唯一真相源</strong>，schema 里写足注释 —— zod 的 <code>.min()</code> / <code>.enum()</code> / <code>.url()</code> 携带的业务约束远多于纯类型声明</li>
+<li><strong>ESLint + dependency-cruiser 让非法依赖变成 CI 失败</strong> —— 写错立刻有反馈，比文档管用</li>
+<li><strong>每个 package 的 README 说明对外暴露什么、不暴露什么</strong></li>
+</ol>
+<p>这四条给出的边界清晰度高于引入 proto/gRPC，因为它们是<strong>可执行的约束</strong>而非描述（论证见 ADR-0010）。</p>
+<h2 id="6.-关键架构决策摘要">6. 关键架构决策摘要<a aria-label="链接到此节" class="anchor" href="#6.-关键架构决策摘要">#</a></h2>
+<p>完整论证见 <code>adr/</code>，此处只列结论：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>决策</th>
+<th>一句话理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0001</td>
+<td>Monorepo + TS/Python 双语言</td>
+<td>业务与计算的边界比前后端边界更本质</td>
+</tr>
+<tr>
+<td>0002</td>
+<td>Provider 适配器而非直连 SDK</td>
+<td>模型和价格每季度变，业务逻辑不能跟着变</td>
+</tr>
+<tr>
+<td>0003</td>
+<td>Postgres 为唯一真相源</td>
+<td>生成任务动辄几十分钟、几美元，不能放 Redis</td>
+</tr>
+<tr>
+<td>0004</td>
+<td>从第一天用 S3 兼容存储</td>
+<td>本地 MinIO 与云 S3 代码零差异</td>
+</tr>
+<tr>
+<td>0005</td>
+<td>GPU worker 用 HTTP 契约而非共享队列</td>
+<td>worker 可独立部署、独立扩缩、跨网络</td>
+</tr>
+<tr>
+<td>0006</td>
+<td>推理执行层用 ComfyUI 而非 diffusers</td>
+<td>性能不吃亏，而视频模型生态差距是决定性的</td>
+</tr>
+<tr>
+<td>0007</td>
+<td>编排留在 BullMQ，不上 Temporal</td>
+<td>难点在领域状态机而非编排引擎；已写明迁移触发条件</td>
+</tr>
+<tr>
+<td>0008</td>
+<td>角色资产按 face/body/wardrobe 三路分离</td>
+<td>三类资产的构图要求与失败模式完全不同，无法用一个数组表达</td>
+</tr>
+<tr>
+<td>0009</td>
+<td>模块化单体 + 无状态计算 worker，不上微服务</td>
+<td>worker 是硬件边界不是有界上下文；单写者 Postgres 与微服务互斥</td>
+</tr>
+<tr>
+<td>0010</td>
+<td>跨进程用 HTTP/JSON 而非 gRPC</td>
+<td>只覆盖三跳中的一跳；远程 GPU 场景下可调试性权重最高</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="7.-演进路径">7. 演进路径<a aria-label="链接到此节" class="anchor" href="#7.-演进路径">#</a></h2>
+<p>架构按「先跑通、后强化」推进，每一步都不推翻上一步：</p>
+<figure class="diagram"><div class="mermaid">flowchart LR
+    M0["M0 · mock provider&lt;br/&gt;验证状态机与 UI&lt;br/&gt;无需 GPU / API key"]
+    M1["M1 · 一个云 API provider&lt;br/&gt;真实生成与成本记账"]
+    M2["M2 · 远程 Python worker&lt;br/&gt;自部署与 Worker Contract"]
+    M3["M3 · 音频 + FFmpeg 拼接&lt;br/&gt;产出完整一集"]
+    M4["M4 · 播放器 + 分集管理&lt;br/&gt;端到端闭环"]
+    M5["M5 · 自动评测与智能路由&lt;br/&gt;质量与成本优化"]
+    M0 --&gt; M1 --&gt; M2 --&gt; M3 --&gt; M4 --&gt; M5
+</div></figure><nav class="pager"><a href="00-overview.html"><div class="dir">← 上一篇</div><div class="name">00 · 项目总览与范围定义</div></a><a class="next" href="02-data-model.html"><div class="dir">下一篇 →</div><div class="name">02 · 数据模型</div></a></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-三平面架构">1. 三平面架构</a>
+<a class="lvl-3" href="#为什么控制面是-typescript-而不是-python">为什么控制面是 TypeScript 而不是 Python</a>
+<a class="lvl-2" href="#2.-进程拓扑">2. 进程拓扑</a>
+<a class="lvl-3" href="#开发态mac-远程-gpu">开发态（Mac + 远程 GPU）</a>
+<a class="lvl-2" href="#3.-monorepo-目录结构">3. Monorepo 目录结构</a>
+<a class="lvl-3" href="#packagescontracts-是这个架构的枢纽">packages/contracts 是这个架构的枢纽</a>
+<a class="lvl-2" href="#4.-数据流一个镜头的一生">4. 数据流：一个镜头的一生</a>
+<a class="lvl-2" href="#5.-模块边界与依赖方向">5. 模块边界与依赖方向</a>
+<a class="lvl-3" href="#5.1-允许的依赖方向">5.1 允许的依赖方向</a>
+<a class="lvl-3" href="#5.2-靠构建期强制不靠自觉">5.2 靠构建期强制，不靠自觉</a>
+<a class="lvl-3" href="#5.3-让边界对-ai-coding-agent-可读">5.3 让边界对 AI coding agent 可读</a>
+<a class="lvl-2" href="#6.-关键架构决策摘要">6. 关键架构决策摘要</a>
+<a class="lvl-2" href="#7.-演进路径">7. 演进路径</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+<script src="assets/mermaid.min.js"></script>
+<script>
+(function () {
+  if (typeof mermaid === 'undefined') return;
+  var FONT = 'system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+
+  var DARK = {
+    background: 'transparent',
+    primaryColor: '#1d1d21', primaryTextColor: '#f2f2f0', primaryBorderColor: '#3a3a42',
+    secondaryColor: '#16233a', secondaryTextColor: '#f2f2f0', secondaryBorderColor: '#2a4a72',
+    tertiaryColor: '#151518', tertiaryTextColor: '#a1a1aa', tertiaryBorderColor: '#2a2a30',
+    lineColor: '#6b6b75', textColor: '#c9c9cd',
+    mainBkg: '#1d1d21', nodeBorder: '#3a3a42', nodeTextColor: '#f2f2f0',
+    clusterBkg: 'rgba(57,135,229,.055)', clusterBorder: '#2a4a72',
+    edgeLabelBackground: '#0c0c0e', titleColor: '#f2f2f0'
+  };
+  var LIGHT = {
+    background: 'transparent',
+    primaryColor: '#ffffff', primaryTextColor: '#0b0b0b', primaryBorderColor: '#c9c8c1',
+    secondaryColor: '#eef4fc', secondaryTextColor: '#0b0b0b', secondaryBorderColor: '#a9c8ec',
+    tertiaryColor: '#f4f4f2', tertiaryTextColor: '#52514e', tertiaryBorderColor: '#e2e1dc',
+    lineColor: '#8a8984', textColor: '#33322f',
+    mainBkg: '#ffffff', nodeBorder: '#c9c8c1', nodeTextColor: '#0b0b0b',
+    clusterBkg: 'rgba(42,120,214,.05)', clusterBorder: '#a9c8ec',
+    edgeLabelBackground: '#fafaf9', titleColor: '#0b0b0b'
+  };
+
+  // 原始源码存起来，切主题时要用它重绘
+  var nodes = Array.prototype.slice.call(document.querySelectorAll('.mermaid'));
+  nodes.forEach(function (n) { n.dataset.src = n.textContent; });
+
+  function conf() {
+    var dark = document.documentElement.getAttribute('data-theme') !== 'light';
+    return {
+      startOnLoad: false, securityLevel: 'loose', theme: 'base',
+      fontFamily: FONT, fontSize: 13,
+      flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: true,
+                   padding: 11, nodeSpacing: 34, rankSpacing: 40, diagramPadding: 8 },
+      themeVariables: dark ? DARK : LIGHT
+    };
+  }
+
+  function draw() {
+    nodes.forEach(function (n) {
+      n.removeAttribute('data-processed');
+      n.innerHTML = n.dataset.src;
+    });
+    mermaid.initialize(conf());
+    mermaid.run({ nodes: nodes }).catch(function (e) { console.warn('mermaid:', e); });
+  }
+
+  draw();
+  window.addEventListener('ads-theme-change', draw);
+})();
+</script>
+
+</body>
+</html>

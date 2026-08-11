@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09 · Python 生成 Worker 与远程 GPU 部署 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">09 · Python 生成 Worker 与远程 GPU 部署</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item active" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 09</div><h1>Python 生成 Worker 与远程 GPU 部署</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="04-provider-adapter.html" title="Provider 适配器契约"><code>04-provider-adapter.md</code></a> · 对应 ADR-0005</p>
+</blockquote>
+<h2 id="1.-职责边界">1. 职责边界<a aria-label="链接到此节" class="anchor" href="#1.-职责边界">#</a></h2>
+<p>Python 侧只做一件事：<strong>把一个生成请求变成一个存储对象</strong>。它不知道 Project、Episode、Shot 是什么，不连 Postgres，不做业务判断。</p>
+<figure class="diagram"><div class="mermaid">flowchart LR
+    CTL["控制面 · TypeScript&lt;br/&gt;懂 Project / Episode / Shot"]
+    W["Worker · Python&lt;br/&gt;不连 Postgres · 不懂业务"]
+    S["MinIO / S3"]
+    CTL --&gt;|"只传 prompt / 参考图 URL / 参数"| W
+    W --&gt;|"预签名 PUT 直写"| S
+    W -.-&gt;|"只回 storage_key + 元数据"| CTL
+</div></figure>
+<p>这条边界让 worker 可以独立部署、独立扩缩、随时被 mock 掉，也让 GPU 机器不需要访问数据库（安全上也更干净）。</p>
+<h2 id="2.-worker-contract">2. Worker Contract<a aria-label="链接到此节" class="anchor" href="#2.-worker-contract">#</a></h2>
+<p>三个 worker 共用同一套协议骨架，只是 <code>/v1/generate</code> 的载荷不同：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Worker</th>
+<th>端口</th>
+<th>职责</th>
+<th>硬件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workers/video</code></td>
+<td>8001</td>
+<td>文生视频 / 图生视频</td>
+<td>GPU（远程）</td>
+</tr>
+<tr>
+<td><code>workers/media</code></td>
+<td>8002</td>
+<td>FFmpeg 拼接、转码、字幕烧录</td>
+<td>CPU（本机 docker）</td>
+</tr>
+<tr>
+<td><code>workers/eval</code></td>
+<td>8003</td>
+<td>T0–T2 自动评测</td>
+<td>CPU / 轻量 GPU</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="2.1-接口">2.1 接口<a aria-label="链接到此节" class="anchor" href="#2.1-接口">#</a></h3>
+<div class="codeblock is-diagram"><pre><code>POST   /v1/generate         提交任务 → { job_id }
+GET    /v1/jobs/{job_id}    查询状态
+POST   /v1/jobs/{job_id}/cancel
+GET    /v1/models           已加载模型清单
+GET    /v1/health           健康与容量
+</code></pre></div>
+<h3 id="2.2-请求体">2.2 请求体<a aria-label="链接到此节" class="anchor" href="#2.2-请求体">#</a></h3>
+<div class="codeblock"><span class="lang">python</span><pre><code class="language-python">class GenerateRequest(BaseModel):
+    request_id: str          # = generation_jobs.id，幂等键
+    mode: Literal['t2v', 'i2v', 'ref2v', 'extend']
+    model_id: str            # 'wan2.2-i2v-a14b' | 'hunyuan-1.5-t2v' | ...
+    prompt: str
+    negative_prompt: str | None = None
+    ref_images: list[RefImage] = []          # role + url（预签名，可直接拉取）
+    duration_sec: float = Field(ge=1, le=15)
+    resolution: Literal['480p', '720p', '1080p'] = '720p'
+    aspect_ratio: Literal['9:16', '16:9', '1:1'] = '9:16'
+    fps: int = 24
+    seed: int | None = None
+    steps: int | None = None                  # None → 用模型默认
+    guidance_scale: float | None = None
+    # 产物落点由控制面指定，worker 直写
+    output: OutputSpec                        # { bucket, key, presigned_put_url }
+</code></pre></div>
+<p><strong><code>presigned_put_url</code> 是关键设计</strong>：控制面预先签一个 PUT URL 给 worker，worker 直接上传。GPU 机器不需要任何 S3 凭证，也不需要能反连控制面的存储网络。</p>
+<h3 id="2.3-响应体">2.3 响应体<a aria-label="链接到此节" class="anchor" href="#2.3-响应体">#</a></h3>
+<div class="codeblock"><span class="lang">python</span><pre><code class="language-python">class JobState(BaseModel):
+    job_id: str
+    request_id: str
+    status: Literal['queued','running','uploading','succeeded','failed','cancelled']
+    progress_pct: float | None = None        # 0..100，来自 diffusion step 回调
+    stage: str | None = None                 # 'loading_model'|'denoising'|'decoding'|'uploading'
+    eta_ms: int | None = None
+    result: GenerateResult | None = None
+    error: WorkerError | None = None
+
+class GenerateResult(BaseModel):
+    storage_key: str
+    bytes: int
+    sha256: str
+    width_px: int
+    height_px: int
+    duration_sec: float
+    fps: float
+    seed_used: int
+    # 用于成本核算：控制面按 GPU 时价 × 秒数折算
+    gpu_seconds: float
+    gpu_model: str                            # 'H100-80GB' | 'RTX4090' | ...
+    model_version: str
+</code></pre></div>
+<p><code>gpu_seconds</code> 让自部署路径也能进 Generation Ledger 的成本对比——没有它，自部署 vs 云 API 的成本比较就无从谈起。</p>
+<h3 id="2.4-健康检查">2.4 健康检查<a aria-label="链接到此节" class="anchor" href="#2.4-健康检查">#</a></h3>
+<div class="codeblock"><span class="lang">python</span><pre><code class="language-python">class Health(BaseModel):
+    ok: bool
+    gpu_model: str
+    vram_total_mb: int
+    vram_free_mb: int
+    models_loaded: list[str]
+    queue_depth: int
+    max_concurrent: int
+    uptime_sec: int
+</code></pre></div>
+<p><code>SelfHostProvider.health()</code> 直接透传，路由器用 <code>vram_free_mb</code> 和 <code>queue_depth</code> 做容量感知调度。</p>
+<h2 id="3.-内部结构">3. 内部结构<a aria-label="链接到此节" class="anchor" href="#3.-内部结构">#</a></h2>
+<div class="codeblock is-diagram"><pre><code>workers/video/
+├─ app/
+│  ├─ main.py            FastAPI 入口
+│  ├─ api.py             路由
+│  ├─ schemas.py         pydantic 模型（由 contracts JSON Schema 生成）
+│  ├─ queue.py           进程内异步队列 + 信号量
+│  ├─ storage.py         预签名 PUT 上传 + sha256 流式计算
+│  └─ engines/
+│     ├─ base.py         Engine 抽象
+│     ├─ wan22.py        Wan2.2 (diffusers)
+│     ├─ hunyuan15.py    HunyuanVideo 1.5
+│     └─ mock.py         无 GPU 的假引擎，用于 CI
+├─ Dockerfile
+└─ pyproject.toml
+</code></pre></div>
+<h3 id="3.1-推理执行层comfyui见-adr-0006">3.1 推理执行层：ComfyUI（见 ADR-0006）<a aria-label="链接到此节" class="anchor" href="#3.1-推理执行层comfyui见-adr-0006">#</a></h3>
+<p>worker 内部不直接写 diffusers 推理代码，而是把 <strong>ComfyUI 作为无头服务</strong>跑在同一容器里，通过 HTTP 提交工作流。</p>
+<div class="codeblock is-diagram"><pre><code>Worker (你的代码 · 唯一对外接口)
+  │  localhost:8188（仅容器内，永不暴露）
+  ▼
+ComfyUI 进程
+</code></pre></div>
+<p><strong>为什么</strong>：性能不吃亏（实测常快于 diffusers）；Wan2.2 全系含 <strong>FLF2V 首尾帧</strong>、<strong>Wan Animate 2</strong>（参考角色 + 驱动表演 → 一致动画）、HunyuanVideo 1.5 都是官方原生节点，直接命中本项目最难的连续性与角色一致性问题；效果迭代可在 GUI 完成后导出 JSON，不占工程排期。完整论证与三条硬约束见 <code>adr/0006-comfyui-over-diffusers.md</code>。</p>
+<p><strong>交互的四个端点</strong>：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>端点</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /prompt</code></td>
+<td>提交工作流。<strong>同步返回图校验结果</strong>（缺模型、类型不匹配会立刻报 <code>node_errors</code>），可当 schema 校验用</td>
+</tr>
+<tr>
+<td><code>WS /ws?clientId=</code></td>
+<td>进度。收到 <code>executing</code> 且 <code>node is None</code> 即该任务结束</td>
+</tr>
+<tr>
+<td><code>GET /history/{prompt_id}</code></td>
+<td><strong>结果查询主力</strong>，也是 WS 断线的兜底——WS 无补发机制，必须双轨</td>
+</tr>
+<tr>
+<td><code>POST /free</code></td>
+<td><code>{"unload_models":true,"free_memory":true}</code>，显存治理</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>工作流即版本化工件</strong>。美术在 GUI 里迭代 → <code>Workflow &gt; Export (API)</code> 导出 <strong>API 格式</strong> JSON（与 UI 格式结构完全不同，UI 格式不能提交）→ 进 git，与镜像 tag 绑定。</p>
+<p><strong>参数注入不要硬编码 node id</strong>（改图就变）。约定把需暴露的节点重命名为 <code>@input.prompt</code> / <code>@input.seed</code> / <code>@input.ref_image</code>，worker 按 <code>_meta.title</code> 前缀寻址。<strong>seed 必须显式注入</strong>——节点里的 <code>control_after_generate</code> 是纯前端逻辑，API 模式下不生效。</p>
+<h3 id="3.2-运行时防护必须实现">3.2 运行时防护（必须实现）<a aria-label="链接到此节" class="anchor" href="#3.2-运行时防护必须实现">#</a></h3>
+<p>ComfyUI 的显存管理器是"自动挡"且<strong>在持续被重写</strong>，跨版本行为会变，直接表现为生产任务 OOM。五条防护：</p>
+<ol>
+<li><strong>OOM 后重启进程，而不是重试请求</strong> —— OOM 后显存状态不可靠</li>
+<li><strong>每 N 个任务（建议 20–50）计划性重启</strong> ComfyUI 子进程</li>
+<li><strong><code>/system_stats</code> 做显存 canary</strong> —— 空闲时 free VRAM 相比基线持续下降即判定泄漏</li>
+<li><strong>切换工作流类型时主动 <code>/free</code></strong></li>
+<li><strong>按模型分池调度</strong> —— 同一 worker 不要交替跑不同大模型，模型 swap 在异常路径下可退化到每次从磁盘重读（百秒级）。worker 打 tag，控制面按 tag 路由。<strong>这是最高 ROI 的一条</strong></li>
+</ol>
+<p><strong>边界</strong>：插帧、上采样、编码<strong>不放进 ComfyUI</strong>。它们是确定性后处理，放 worker 自己的代码里更好测试、可用更便宜的算力，且不占用串行队列里稀缺的大显存时间。</p>
+<h3 id="3.3-engine-抽象">3.3 Engine 抽象<a aria-label="链接到此节" class="anchor" href="#3.3-engine-抽象">#</a></h3>
+<div class="codeblock"><span class="lang">python</span><pre><code class="language-python">class VideoEngine(ABC):
+    model_id: str
+    @abstractmethod
+    def load(self) -&gt; None: ...
+    @abstractmethod
+    def generate(self, req: GenerateRequest,
+                 on_progress: Callable[[float, str], None]) -&gt; LocalArtifact: ...
+    @abstractmethod
+    def vram_required_mb(self) -&gt; int: ...
+</code></pre></div>
+<p><strong>模型常驻内存，不要每次请求加载。</strong> 冷启动加载 A14B 级模型要几十秒，占端到端时间的大头。worker 启动时按 <code>PRELOAD_MODELS</code> 预加载，并用信号量限制并发数（由显存决定，通常 1–2）。</p>
+<h3 id="3.4-并发与显存">3.4 并发与显存<a aria-label="链接到此节" class="anchor" href="#3.4-并发与显存">#</a></h3>
+<div class="codeblock"><span class="lang">python</span><pre><code class="language-python"># 单卡通常只跑 1 个大模型任务；小模型可以 2
+MAX_CONCURRENT = int(os.getenv('MAX_CONCURRENT', '1'))
+_sem = asyncio.Semaphore(MAX_CONCURRENT)
+</code></pre></div>
+<p>超出并发的请求进 worker 内部队列并在 <code>/v1/jobs/{id}</code> 返回 <code>queued</code> 状态。<strong>不要拒绝请求</strong>——控制面已经做过一层限流，worker 侧再拒绝会让重试逻辑复杂化。</p>
+<h3 id="3.5-进度回调">3.5 进度回调<a aria-label="链接到此节" class="anchor" href="#3.5-进度回调">#</a></h3>
+<p>diffusers 的 <code>callback_on_step_end</code> 直接映射到 <code>progress_pct</code>：</p>
+<div class="codeblock"><span class="lang">python</span><pre><code class="language-python">def _cb(pipe, step: int, timestep, kwargs):
+    on_progress(step / total_steps * 90, 'denoising')   # 留 10% 给解码与上传
+    return kwargs
+</code></pre></div>
+<p>有真实进度这件事对 UI 很重要（<a href="07-design-system.html" title="前端设计系统"><code>07-design-system.md</code></a> R1）——用户能看着百分比走，和干等转圈是完全不同的体验。</p>
+<h2 id="4.-模型选型与许可">4. 模型选型与许可<a aria-label="链接到此节" class="anchor" href="#4.-模型选型与许可">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>模型</th>
+<th>许可</th>
+<th>显存</th>
+<th>定位</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Wan2.2 TI2V-5B</strong></td>
+<td>Apache 2.0</td>
+<td>~24GB（720p）</td>
+<td>主力：单卡可跑，性价比最高</td>
+</tr>
+<tr>
+<td><strong>Wan2.2 I2V-A14B</strong></td>
+<td>Apache 2.0</td>
+<td>~80GB（或 offload）</td>
+<td>质量优先，H100 级</td>
+</tr>
+<tr>
+<td><strong>HunyuanVideo 1.5</strong></td>
+<td>腾讯社区许可</td>
+<td>~14GB（offload 开）</td>
+<td>备选：显存友好，4090 可跑</td>
+</tr>
+<tr>
+<td><strong>Index-AniSora</strong></td>
+<td>Apache 2.0</td>
+<td>视版本</td>
+<td>动画风专用</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p>许可注意：Wan 系列 Apache 2.0 最干净，官方声明不主张生成内容权利。HunyuanVideo 1.5 的社区许可<strong>排除欧盟/英国/韩国</strong>，且 MAU 超 1 亿需另行申请——纯本地开发无影响，但主体和服务器所在地要留意。Wan 2.5 之后转闭源，自部署路线锁定在 2.2 分支。</p>
+</blockquote>
+<p><code>engines/</code> 下每个实现的文件头必须注明许可与来源 URL，方便后续审计。</p>
+<h2 id="5.-部署远程-gpu">5. 部署：远程 GPU<a aria-label="链接到此节" class="anchor" href="#5.-部署远程-gpu">#</a></h2>
+<h3 id="5.1-拓扑">5.1 拓扑<a aria-label="链接到此节" class="anchor" href="#5.1-拓扑">#</a></h3>
+<figure class="diagram"><div class="mermaid">flowchart LR
+    subgraph MAC["Mac 开发机"]
+        WEB["web:3000"]
+        CTL["control:4000"]
+        DB["postgres / redis"]
+        MIN["minio:9000"]
+    end
+    subgraph GPU["远程 GPU 机器"]
+        VW["workers/video:8001&lt;br/&gt;Wan2.2 常驻"]
+        CACHE["模型缓存卷"]
+    end
+    CTL &lt;--&gt;|"Tailscale 私有网络"| VW
+    VW --&gt;|"预签名 PUT 直写&lt;br/&gt;不经 Mac 中转"| MIN
+    VW --- CACHE
+</div></figure>
+<p><strong>Tailscale 是推荐方案</strong>：装完两端都有稳定私有 IP，NAT 穿透自动完成，不用公网暴露端口，不用配置反向代理。</p>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash"># 两端各执行
+curl -fsSL https://tailscale.com/install.sh | sh &amp;&amp; sudo tailscale up
+# GPU 机器拿到 100.x.y.z 后，Mac 侧配置：
+SELFHOST_VIDEO_URL=http://100.x.y.z:8001
+</code></pre></div>
+<p>备选：SSH 反向隧道 <code>ssh -R 8001:localhost:8001 user@gpu-host</code>（临时可用，断线需重连，不推荐长期）。</p>
+<p><strong>MinIO 也要能被 GPU 机器访问</strong>——预签名 URL 的 host 必须是 Tailscale IP 而非 <code>localhost</code>，否则 worker 上传会失败。配置项：</p>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash">S3_PUBLIC_ENDPOINT=http://100.a.b.c:9000    # Mac 的 Tailscale IP，用于签发给 worker 的 URL
+S3_INTERNAL_ENDPOINT=http://localhost:9000  # 控制面自己用
+</code></pre></div>
+<p>这是远程 GPU 联调时<strong>最常见的坑</strong>，单独列出来。</p>
+<h3 id="5.2-docker-镜像">5.2 Docker 镜像<a aria-label="链接到此节" class="anchor" href="#5.2-docker-镜像">#</a></h3>
+<div class="codeblock"><span class="lang">dockerfile</span><pre><code class="language-dockerfile">FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+ENV PYTHONUNBUFFERED=1 HF_HOME=/models/hf
+RUN apt-get update &amp;&amp; apt-get install -y python3.11 python3-pip ffmpeg git &amp;&amp; rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN pip install uv &amp;&amp; uv sync --frozen
+COPY app ./app
+EXPOSE 8001
+CMD ["uv","run","uvicorn","app.main:app","--host","0.0.0.0","--port","8001"]
+</code></pre></div>
+<p>ComfyUI 的生产启动参数（<strong>官方无 Docker 镜像</strong>，需自建）：</p>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash">python main.py --listen 127.0.0.1 --port 8188 --disable-auto-launch \
+  --preview-method none --disable-metadata \
+  --disable-manager-ui --disable-api-nodes \
+  --disable-all-custom-nodes --whitelist-custom-nodes &lt;逐个列出&gt; \
+  --extra-model-paths-config /config/extra_model_paths.yaml
+</code></pre></div>
+<p><code>--disable-metadata</code> 对商业管线是必须的（不把完整工作流写进输出文件元数据）。<code>--disable-all-custom-nodes</code> + 白名单是安全与启动速度的双重收益。</p>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash">docker run -d --gpus all \
+  -p 8001:8001 \
+  -v /data/models:/models \                 # 模型缓存必须挂卷，否则每次重建都重下几十 GB
+  -e PRELOAD_MODELS=wan2.2-ti2v-5b \
+  -e MAX_CONCURRENT=1 \
+  --name adv-video ai-drama/video-worker:latest
+</code></pre></div>
+<h3 id="5.3-云-gpu-供应商注意事项">5.3 云 GPU 供应商注意事项<a aria-label="链接到此节" class="anchor" href="#5.3-云-gpu-供应商注意事项">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>供应商</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Lambda / CoreWeave</strong></td>
+<td>AUP 只禁非法类别，条款相对宽松；按需 H100 约 $2.5–3.4/hr</td>
+</tr>
+<tr>
+<td><strong>RunPod</strong></td>
+<td>便宜、启动快（4090 约 $0.35–0.69/hr），但 ToS 字面禁 "graphic adult content"——若将来做成熟向内容需先书面确认</td>
+</tr>
+<tr>
+<td><strong>AWS/GCP</strong></td>
+<td>贵 3–6 倍，除非已有额度否则不划算</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>成本控制</strong>：GPU 按小时计费，开发期务必配置<strong>空闲自动停机</strong>。跑一晚上忘关的 H100 是 $60。建议 worker 内置 <code>IDLE_SHUTDOWN_MIN=30</code>，超时无任务自行退出，配合供应商的自动伸缩。</p>
+<h2 id="6.-媒体-workercpu本机">6. 媒体 Worker（CPU，本机）<a aria-label="链接到此节" class="anchor" href="#6.-媒体-workercpu本机">#</a></h2>
+<p><code>workers/media</code> 不需要 GPU，直接在 Mac 上跑 docker：</p>
+<div class="codeblock is-diagram"><pre><code>POST /v1/render     时间线 JSON → 拼接渲染 → 母版
+POST /v1/probe      ffprobe 元数据提取（T0 评测用）
+POST /v1/thumbnail  抽首帧
+POST /v1/transcode  转 HLS
+</code></pre></div>
+<p>细节见 <a href="10-media-storage.html" title="媒体存储、拼接与音频"><code>10-media-storage.md</code></a>。它与 video worker 共用同一套 Worker Contract 骨架，只是引擎换成 FFmpeg 子进程。</p>
+<h2 id="7.-可靠性要求">7. 可靠性要求<a aria-label="链接到此节" class="anchor" href="#7.-可靠性要求">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>要求</th>
+<th>实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>幂等</strong></td>
+<td>同 <code>request_id</code> 重复提交返回既有 job，不重复计算。内存 LRU + 落盘 <code>jobs.json</code> 兜底</td>
+</tr>
+<tr>
+<td><strong>优雅退出</strong></td>
+<td>SIGTERM 时停止接新任务，等在途任务完成（上限 5 分钟）再退出</td>
+</tr>
+<tr>
+<td><strong>崩溃可见</strong></td>
+<td>OOM / CUDA error 映射为 <code>WorkerError{code}</code>，控制面据此决定重试还是降配</td>
+</tr>
+<tr>
+<td><strong>显存回收</strong></td>
+<td>每个任务结束 <code>torch.cuda.empty_cache()</code>；连续 N 次 OOM 后自动重启进程</td>
+</tr>
+<tr>
+<td><strong>日志</strong></td>
+<td>结构化 JSON，带 <code>request_id</code>，与控制面日志可对接</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="8.-本地开发无-gpu">8. 本地开发（无 GPU）<a aria-label="链接到此节" class="anchor" href="#8.-本地开发无-gpu">#</a></h2>
+<p>Mac 上不可能跑 Wan2.2。开发时 video worker 有两种降级模式：</p>
+<div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash"># 模式 A：完全不起 Python worker，控制面用 MockProvider（默认）
+DEFAULT_PROVIDER=mock
+
+# 模式 B：起 worker 但用 mock 引擎，验证 HTTP 契约本身
+docker run -p 8001:8001 -e ENGINE=mock ai-drama/video-worker:cpu
+SELFHOST_VIDEO_URL=http://localhost:8001
+</code></pre></div>
+<p>模式 B 很有价值：它能在没有 GPU 的情况下验证 Worker Contract、预签名上传、进度回调这些集成点，把真 GPU 上的调试范围缩小到「模型本身跑不跑得动」。<strong>契约层面的 bug 应该在 Mac 上就被发现，而不是在按小时收费的 GPU 上。</strong></p><nav class="pager"><a href="08-screen-specs.html"><div class="dir">← 上一篇</div><div class="name">08 · 页面与交互规格</div></a><a class="next" href="10-media-storage.html"><div class="dir">下一篇 →</div><div class="name">10 · 媒体存储、拼接与音频</div></a></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-职责边界">1. 职责边界</a>
+<a class="lvl-2" href="#2.-worker-contract">2. Worker Contract</a>
+<a class="lvl-3" href="#2.1-接口">2.1 接口</a>
+<a class="lvl-3" href="#2.2-请求体">2.2 请求体</a>
+<a class="lvl-3" href="#2.3-响应体">2.3 响应体</a>
+<a class="lvl-3" href="#2.4-健康检查">2.4 健康检查</a>
+<a class="lvl-2" href="#3.-内部结构">3. 内部结构</a>
+<a class="lvl-3" href="#3.1-推理执行层comfyui见-adr-0006">3.1 推理执行层：ComfyUI（见 ADR-0006）</a>
+<a class="lvl-3" href="#3.2-运行时防护必须实现">3.2 运行时防护（必须实现）</a>
+<a class="lvl-3" href="#3.3-engine-抽象">3.3 Engine 抽象</a>
+<a class="lvl-3" href="#3.4-并发与显存">3.4 并发与显存</a>
+<a class="lvl-3" href="#3.5-进度回调">3.5 进度回调</a>
+<a class="lvl-2" href="#4.-模型选型与许可">4. 模型选型与许可</a>
+<a class="lvl-2" href="#5.-部署远程-gpu">5. 部署：远程 GPU</a>
+<a class="lvl-3" href="#5.1-拓扑">5.1 拓扑</a>
+<a class="lvl-3" href="#5.2-docker-镜像">5.2 Docker 镜像</a>
+<a class="lvl-3" href="#5.3-云-gpu-供应商注意事项">5.3 云 GPU 供应商注意事项</a>
+<a class="lvl-2" href="#6.-媒体-workercpu本机">6. 媒体 Worker（CPU，本机）</a>
+<a class="lvl-2" href="#7.-可靠性要求">7. 可靠性要求</a>
+<a class="lvl-2" href="#8.-本地开发无-gpu">8. 本地开发（无 GPU）</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+<script src="assets/mermaid.min.js"></script>
+<script>
+(function () {
+  if (typeof mermaid === 'undefined') return;
+  var FONT = 'system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+
+  var DARK = {
+    background: 'transparent',
+    primaryColor: '#1d1d21', primaryTextColor: '#f2f2f0', primaryBorderColor: '#3a3a42',
+    secondaryColor: '#16233a', secondaryTextColor: '#f2f2f0', secondaryBorderColor: '#2a4a72',
+    tertiaryColor: '#151518', tertiaryTextColor: '#a1a1aa', tertiaryBorderColor: '#2a2a30',
+    lineColor: '#6b6b75', textColor: '#c9c9cd',
+    mainBkg: '#1d1d21', nodeBorder: '#3a3a42', nodeTextColor: '#f2f2f0',
+    clusterBkg: 'rgba(57,135,229,.055)', clusterBorder: '#2a4a72',
+    edgeLabelBackground: '#0c0c0e', titleColor: '#f2f2f0'
+  };
+  var LIGHT = {
+    background: 'transparent',
+    primaryColor: '#ffffff', primaryTextColor: '#0b0b0b', primaryBorderColor: '#c9c8c1',
+    secondaryColor: '#eef4fc', secondaryTextColor: '#0b0b0b', secondaryBorderColor: '#a9c8ec',
+    tertiaryColor: '#f4f4f2', tertiaryTextColor: '#52514e', tertiaryBorderColor: '#e2e1dc',
+    lineColor: '#8a8984', textColor: '#33322f',
+    mainBkg: '#ffffff', nodeBorder: '#c9c8c1', nodeTextColor: '#0b0b0b',
+    clusterBkg: 'rgba(42,120,214,.05)', clusterBorder: '#a9c8ec',
+    edgeLabelBackground: '#fafaf9', titleColor: '#0b0b0b'
+  };
+
+  // 原始源码存起来，切主题时要用它重绘
+  var nodes = Array.prototype.slice.call(document.querySelectorAll('.mermaid'));
+  nodes.forEach(function (n) { n.dataset.src = n.textContent; });
+
+  function conf() {
+    var dark = document.documentElement.getAttribute('data-theme') !== 'light';
+    return {
+      startOnLoad: false, securityLevel: 'loose', theme: 'base',
+      fontFamily: FONT, fontSize: 13,
+      flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: true,
+                   padding: 11, nodeSpacing: 34, rankSpacing: 40, diagramPadding: 8 },
+      themeVariables: dark ? DARK : LIGHT
+    };
+  }
+
+  function draw() {
+    nodes.forEach(function (n) {
+      n.removeAttribute('data-processed');
+      n.innerHTML = n.dataset.src;
+    });
+    mermaid.initialize(conf());
+    mermaid.run({ nodes: nodes }).catch(function (e) { console.warn('mermaid:', e); });
+  }
+
+  draw();
+  window.addEventListener('ads-theme-change', draw);
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>05 · 任务编排：队列、重试、并发与记账 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">05 · 任务编排：队列、重试、并发与记账</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item active" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 05</div><h1>任务编排：队列、重试、并发与记账</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a>、<a href="04-provider-adapter.html" title="Provider 适配器契约"><code>04-provider-adapter.md</code></a></p>
+</blockquote>
+<h2 id="1.-为什么需要一个真正的队列">1. 为什么需要一个真正的队列<a aria-label="链接到此节" class="anchor" href="#1.-为什么需要一个真正的队列">#</a></h2>
+<p>一次视频生成耗时几十秒到几分钟、花几毛到几美元、随时可能失败。这类任务有三个特点决定了不能用「HTTP 请求里 await」的写法：</p>
+<ul>
+<li><strong>长</strong>：远超 HTTP 超时，必须异步。</li>
+<li><strong>贵</strong>：进程重启不能丢，必须持久化，必须幂等。</li>
+<li><strong>多</strong>：一集 60 镜、一部剧 3000 镜，必须有并发控制和优先级。</li>
+</ul>
+<p>所以：<strong>BullMQ（Redis）做队列，Postgres 做真相源</strong>。Redis 里的任务可以丢——重启后从 Postgres 里 <code>status IN ('queued','submitted','running')</code> 的记录重建即可。反过来不行：<strong>永远不要把价值几美元的任务状态只存在 Redis 里</strong>。</p>
+<h2 id="2.-队列拓扑">2. 队列拓扑<a aria-label="链接到此节" class="anchor" href="#2.-队列拓扑">#</a></h2>
+<figure class="diagram"><div class="mermaid">flowchart TD
+    IN["API / 批量入口"]
+    QG["q:generate&lt;br/&gt;视频生成 · 重 慢 贵"]
+    QI["q:ingest&lt;br/&gt;下载 / 校验 / 转存 / 建 asset"]
+    QE["q:eval&lt;br/&gt;T0–T3 评测"]
+    QN["q:notify&lt;br/&gt;SSE 广播 + 状态落库"]
+    IN --&gt; QG
+    QG --&gt;|"成功"| QI --&gt; QE --&gt; QN
+    subgraph IND["独立队列 · 并发度需求不同故不合并"]
+        QT["q:tts&lt;br/&gt;配音合成"]
+        QR["q:render&lt;br/&gt;FFmpeg 拼接"]
+        QP["q:poll&lt;br/&gt;外部任务轮询"]
+    end
+    QG -.-&gt;|"提交后转轮询"| QP
+</div></figure>
+<p>拆成多队列而不是一个大队列的理由：<strong>并发度需求完全不同</strong>。<code>q:generate</code> 受 provider 配额约束（可能只有 4），<code>q:ingest</code> 是 IO 密集（可以 20），<code>q:render</code> 是 CPU 密集（等于核数）。混在一起就只能取最小值，浪费吞吐。</p>
+<h2 id="3.-并发控制三层限流">3. 并发控制：三层限流<a aria-label="链接到此节" class="anchor" href="#3.-并发控制三层限流">#</a></h2>
+<figure class="diagram"><div class="mermaid">flowchart TD
+    L1["① 全局闸门&lt;br/&gt;MAX_GLOBAL_CONCURRENT = 32"]
+    L2["② Provider 配额&lt;br/&gt;vidu 8 · kling 4 · selfhost-wan 2 · mock 16&lt;br/&gt;来自 capabilities.maxConcurrent"]
+    L3["③ 项目配额&lt;br/&gt;每 project 默认 12&lt;br/&gt;防止单项目饿死其他项目"]
+    L1 --&gt; L2 --&gt; L3
+</div></figure>
+<p>BullMQ 用 <code>Worker</code> 的 <code>concurrency</code> 实现第 ①③ 层；第 ② 层用 <strong>BullMQ Group / 自建信号量</strong>按 <code>providerId</code> 分组限流。</p>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">const generateWorker = new Worker&lt;GenerateJobData&gt;('q:generate', handler, {
+  connection,
+  concurrency: env.MAX_GLOBAL_CONCURRENT,
+  limiter: { max: 32, duration: 1000 },       // 令牌桶，防瞬时打爆
+})
+
+// provider 级信号量（Redis 实现，跨进程有效）
+await withProviderSlot(providerId, capabilities.maxConcurrent, async () =&gt; {
+  return provider.submit(req)
+})
+</code></pre></div>
+<h2 id="4.-轮询策略">4. 轮询策略<a aria-label="链接到此节" class="anchor" href="#4.-轮询策略">#</a></h2>
+<p>云 provider 大多不支持 webhook（或 webhook 需要公网回调，本地开发不可用），所以统一用<strong>轮询</strong>。</p>
+<p>关键设计：<strong>不要为每个任务开一个常驻轮询循环</strong>。一集 60 个镜头就是 60 个循环，Redis 连接和 CPU 都会被吃掉。</p>
+<p>做法是<strong>自重排的轮询任务</strong>：</p>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">// q:poll 的 handler
+async function pollHandler(job: Job&lt;PollJobData&gt;) {
+  const { generationJobId, handle, pollCount } = job.data
+  const res = await provider.poll(handle)
+
+  if (res.status === 'running' || res.status === 'submitted') {
+    // 指数退避重排自己：3s → 5s → 8s → ... 上限 30s
+    const delay = Math.min(3000 * Math.pow(1.4, pollCount), 30_000)
+    if (elapsed(handle) &gt; PROVIDER_TIMEOUT_MS) throw new TimeoutError()
+    await pollQueue.add('poll', { ...job.data, pollCount: pollCount + 1 }, { delay })
+    await publishProgress(generationJobId, res.progressPct)
+    return
+  }
+  // 终态：转交 q:ingest 或标记失败
+  await handleTerminal(generationJobId, res)
+}
+</code></pre></div>
+<p>同一时刻内存里没有任何挂起的循环，只有 Redis 里的延时任务。这样几千个并行任务也不会压垮进程。</p>
+<h2 id="5.-重试策略">5. 重试策略<a aria-label="链接到此节" class="anchor" href="#5.-重试策略">#</a></h2>
+<p>重试分两类，<strong>必须区别对待</strong>——这是最容易写错的地方。</p>
+<h3 id="5.1-基础设施重试同参数重放">5.1 基础设施重试（同参数重放）<a aria-label="链接到此节" class="anchor" href="#5.1-基础设施重试同参数重放">#</a></h3>
+<p>网络抖动、502、超时。<strong>同样的参数重试是合理的</strong>。</p>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">{ attempts: 3, backoff: { type: 'exponential', delay: 2000 } }   // 2s, 4s, 8s
+</code></pre></div>
+<p>由 BullMQ 自动处理，<strong>不增加</strong> <code>shots.attemptCount</code>，也不写新的 <code>generation_jobs</code> 行——它在语义上还是同一次生成尝试。</p>
+<h3 id="5.2-生成质量重试换参数重生成">5.2 生成质量重试（换参数重生成）<a aria-label="链接到此节" class="anchor" href="#5.2-生成质量重试换参数重生成">#</a></h3>
+<p>评测未通过、画面崩坏、角色跑偏。<strong>同样的参数重试毫无意义</strong>，必须改变输入。</p>
+<p>由状态机驱动，每次产生<strong>新的 <code>generation_jobs</code> 行</strong>，<code>attempt</code> 递增。变更策略按顺序升级：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>attempt</th>
+<th>策略</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>原参数（首次）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>换 seed</td>
+</tr>
+<tr>
+<td>3</td>
+<td>换 seed + 强化 prompt（追加质量词与负向词）</td>
+</tr>
+<tr>
+<td>4</td>
+<td>换 provider（按路由器次优选择）</td>
+</tr>
+<tr>
+<td>≥5</td>
+<td>停止，<code>shot.status = 'failed'</code>，等人工介入</td>
+</tr>
+</tbody>
+</table></div>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export function nextAttemptPlan(prev: GenerationJob, attempt: number): Partial&lt;GenerationRequest&gt; {
+  switch (attempt) {
+    case 2: return { seed: randomSeed() }
+    case 3: return { seed: randomSeed(), prompt: reinforce(prev.promptText),
+                     negativePrompt: mergeNegatives(prev.negativeText) }
+    case 4: return { seed: randomSeed(), /* provider 由路由器换 */ }
+    default: throw new MaxAttemptsExceeded()
+  }
+}
+</code></pre></div>
+<h3 id="5.3-不可重试的失败">5.3 不可重试的失败<a aria-label="链接到此节" class="anchor" href="#5.3-不可重试的失败">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>FailureCode</th>
+<th>为什么不重试</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>content_filtered</code></td>
+<td>同 prompt 必然再被拒，纯烧配额。需人工改 intent</td>
+</tr>
+<tr>
+<td><code>quota_exceeded</code></td>
+<td>重试加剧问题。应暂停该 provider 并告警</td>
+</tr>
+<tr>
+<td><code>invalid_output</code></td>
+<td>适配器 bug 或能力不匹配，重试无用，需修代码</td>
+</tr>
+</tbody>
+</table></div>
+<p>这三种直接进人工队列，<strong>不进重试循环</strong>。</p>
+<h2 id="6.-成本记账">6. 成本记账<a aria-label="链接到此节" class="anchor" href="#6.-成本记账">#</a></h2>
+<p>每个任务在三个时刻写成本：</p>
+<figure class="diagram"><div class="mermaid">flowchart LR
+    A["① 入队前&lt;br/&gt;estimateCost()&lt;br/&gt;预算闸门检查 · 不写库"]
+    B["② 提交后&lt;br/&gt;provider 回报实际计费&lt;br/&gt;→ generation_jobs.cost_micro_usd"]
+    C["③ 终态&lt;br/&gt;未回报则按价目表 × 实际时长回填&lt;br/&gt;标记 costEstimated"]
+    A --&gt; B --&gt; C
+</div></figure>
+<p><strong>预算闸门</strong>在项目级：</p>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export interface BudgetPolicy {
+  projectDailyLimitMicroUsd: number
+  episodeLimitMicroUsd:      number
+  onExceed: 'block' | 'warn' | 'downgrade_provider'
+}
+</code></pre></div>
+<p>超限时 <code>block</code> 会让批量入队直接失败并在 UI 弹出，而不是安静地烧钱。开发期默认 <code>projectDailyLimitMicroUsd = 5_000_000</code>（$5），<strong>防止一次误操作把整批任务打到云 API</strong>。这条在 M1 接真实 provider 时尤其重要。</p>
+<h2 id="7.-实时进度sse">7. 实时进度：SSE<a aria-label="链接到此节" class="anchor" href="#7.-实时进度sse">#</a></h2>
+<p>前端订阅 <code>GET /api/projects/:id/events</code>（SSE），控制面从 Redis pub/sub 转发。</p>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">type StudioEvent =
+  | { type: 'shot.status',    shotId: string, status: ShotStatus }
+  | { type: 'job.progress',   jobId: string, shotId: string, pct: number, etaMs?: number }
+  | { type: 'take.created',   shotId: string, takeId: string, thumbUrl: string }
+  | { type: 'batch.progress', episodeId: string, done: number, total: number, failed: number }
+  | { type: 'cost.updated',   projectId: string, spentMicroUsd: number }
+  | { type: 'error',          shotId?: string, code: FailureCode, message: string }
+</code></pre></div>
+<p>选 SSE 不选 WebSocket 的理由：进度是<strong>单向广播</strong>，SSE 够用且天然支持断线重连与 HTTP/2 多路复用，不需要维护双向连接的状态机。有交互需求（比如协同编辑）时再上 WS 不迟。</p>
+<p>节流：<code>job.progress</code> 每个 job 最多 1 秒 1 条，服务端合并后再发，避免几十个任务同时刷把浏览器打爆。</p>
+<h2 id="7.5-bullmq-生产加固三条必改的默认值">7.5 BullMQ 生产加固（三条必改的默认值）<a aria-label="链接到此节" class="anchor" href="#7.5-bullmq-生产加固三条必改的默认值">#</a></h2>
+<p>选型论证见 <code>adr/0007-bullmq-over-temporal.md</code>。留在 BullMQ 的前提是把这三个默认值改掉：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>默认值的问题</th>
+<th>改法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Redis 淘汰策略</strong></td>
+<td>默认会在内存压力下淘汰 key，队列直接损坏</td>
+<td><code>maxmemory-policy=noeviction</code>，并开 AOF；worker 侧 <code>maxRetriesPerRequest: null</code></td>
+</tr>
+<tr>
+<td><strong><code>maxStalledCount</code></strong></td>
+<td>默认 <strong>1</strong> —— 一次 stall 就直接判失败</td>
+<td>长任务场景调高，并确保 processor 不长时间阻塞 event loop</td>
+</tr>
+<tr>
+<td><strong>不要在 job 里同步等生成完成</strong></td>
+<td>占满 worker 槽位、lock 续期依赖 event loop 让出、网络抖动即丢任务（而 GPU 上钱已经花了）</td>
+<td><strong>提交即返回</strong>：job A 提交 → 写 Postgres(submitted) → 立刻完成；轮询走 <code>q:poll</code> 的自重排延时任务（§4）</td>
+</tr>
+</tbody>
+</table></div>
+<p>第三条本设计已经是对的（§4 的自重排轮询），此处显式写成规则，避免后续实现时退化。</p>
+<blockquote>
+<p>另一条边界：<strong>不要用 bullmq-python 连接 GPU worker</strong>。Python 版仍标 experimental，且语言边界走 HTTP 契约（<a href="09-python-worker.html" title="Python 生成 Worker 与远程 GPU 部署"><code>09-python-worker.md</code></a>）能让将来更换编排器时只动 TypeScript 一侧。</p>
+</blockquote>
+<h2 id="8.-崩溃恢复">8. 崩溃恢复<a aria-label="链接到此节" class="anchor" href="#8.-崩溃恢复">#</a></h2>
+<p>控制面重启时执行 reconcile：</p>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">async function reconcileOnBoot() {
+  // 1. 捞出所有非终态任务
+  const stuck = await db.select().from(generationJobs)
+    .where(inArray(generationJobs.status, ['queued','submitted','running','downloading','evaluating']))
+
+  for (const job of stuck) {
+    if (!job.providerJobRef) {
+      // 从未提交成功 → 直接重新入队（幂等键保证不会重复计费）
+      await generateQueue.add('generate', { generationJobId: job.id })
+    } else {
+      // 已提交 → 恢复轮询，不重新提交
+      await pollQueue.add('poll', { generationJobId: job.id, handle: rebuildHandle(job), pollCount: 0 })
+    }
+  }
+}
+</code></pre></div>
+<p><strong>幂等是这套恢复逻辑成立的前提</strong>——<a href="04-provider-adapter.html" title="Provider 适配器契约"><code>04-provider-adapter.md</code></a> §7 把幂等列为契约测试的第一条，原因就在这里。</p>
+<h2 id="9.-可观测性">9. 可观测性<a aria-label="链接到此节" class="anchor" href="#9.-可观测性">#</a></h2>
+<p>三个必须有的面板（M3 之前可以只是几条 SQL）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>面板</th>
+<th>关键指标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>吞吐</strong></td>
+<td>队列深度、各 provider 在途数、p50/p95 端到端延迟</td>
+</tr>
+<tr>
+<td><strong>质量</strong></td>
+<td>一次通过率（按 provider × shotType）、重试分布、失败码分布</td>
+</tr>
+<tr>
+<td><strong>成本</strong></td>
+<td>今日/本集花费、<code>usd_per_accepted</code>、估算 vs 实际偏差</td>
+</tr>
+</tbody>
+</table></div>
+<p>日志用结构化 JSON，每条带 <code>projectId / episodeId / shotId / generationJobId / providerId</code>，便于按任意维度串起来查。</p><nav class="pager"><a href="04-provider-adapter.html"><div class="dir">← 上一篇</div><div class="name">04 · Provider 适配器契约</div></a><a class="next" href="06-api-spec.html"><div class="dir">下一篇 →</div><div class="name">06 · 控制面 API 规范</div></a></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-为什么需要一个真正的队列">1. 为什么需要一个真正的队列</a>
+<a class="lvl-2" href="#2.-队列拓扑">2. 队列拓扑</a>
+<a class="lvl-2" href="#3.-并发控制三层限流">3. 并发控制：三层限流</a>
+<a class="lvl-2" href="#4.-轮询策略">4. 轮询策略</a>
+<a class="lvl-2" href="#5.-重试策略">5. 重试策略</a>
+<a class="lvl-3" href="#5.1-基础设施重试同参数重放">5.1 基础设施重试（同参数重放）</a>
+<a class="lvl-3" href="#5.2-生成质量重试换参数重生成">5.2 生成质量重试（换参数重生成）</a>
+<a class="lvl-3" href="#5.3-不可重试的失败">5.3 不可重试的失败</a>
+<a class="lvl-2" href="#6.-成本记账">6. 成本记账</a>
+<a class="lvl-2" href="#7.-实时进度sse">7. 实时进度：SSE</a>
+<a class="lvl-2" href="#7.5-bullmq-生产加固三条必改的默认值">7.5 BullMQ 生产加固（三条必改的默认值）</a>
+<a class="lvl-2" href="#8.-崩溃恢复">8. 崩溃恢复</a>
+<a class="lvl-2" href="#9.-可观测性">9. 可观测性</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+<script src="assets/mermaid.min.js"></script>
+<script>
+(function () {
+  if (typeof mermaid === 'undefined') return;
+  var FONT = 'system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+
+  var DARK = {
+    background: 'transparent',
+    primaryColor: '#1d1d21', primaryTextColor: '#f2f2f0', primaryBorderColor: '#3a3a42',
+    secondaryColor: '#16233a', secondaryTextColor: '#f2f2f0', secondaryBorderColor: '#2a4a72',
+    tertiaryColor: '#151518', tertiaryTextColor: '#a1a1aa', tertiaryBorderColor: '#2a2a30',
+    lineColor: '#6b6b75', textColor: '#c9c9cd',
+    mainBkg: '#1d1d21', nodeBorder: '#3a3a42', nodeTextColor: '#f2f2f0',
+    clusterBkg: 'rgba(57,135,229,.055)', clusterBorder: '#2a4a72',
+    edgeLabelBackground: '#0c0c0e', titleColor: '#f2f2f0'
+  };
+  var LIGHT = {
+    background: 'transparent',
+    primaryColor: '#ffffff', primaryTextColor: '#0b0b0b', primaryBorderColor: '#c9c8c1',
+    secondaryColor: '#eef4fc', secondaryTextColor: '#0b0b0b', secondaryBorderColor: '#a9c8ec',
+    tertiaryColor: '#f4f4f2', tertiaryTextColor: '#52514e', tertiaryBorderColor: '#e2e1dc',
+    lineColor: '#8a8984', textColor: '#33322f',
+    mainBkg: '#ffffff', nodeBorder: '#c9c8c1', nodeTextColor: '#0b0b0b',
+    clusterBkg: 'rgba(42,120,214,.05)', clusterBorder: '#a9c8ec',
+    edgeLabelBackground: '#fafaf9', titleColor: '#0b0b0b'
+  };
+
+  // 原始源码存起来，切主题时要用它重绘
+  var nodes = Array.prototype.slice.call(document.querySelectorAll('.mermaid'));
+  nodes.forEach(function (n) { n.dataset.src = n.textContent; });
+
+  function conf() {
+    var dark = document.documentElement.getAttribute('data-theme') !== 'light';
+    return {
+      startOnLoad: false, securityLevel: 'loose', theme: 'base',
+      fontFamily: FONT, fontSize: 13,
+      flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: true,
+                   padding: 11, nodeSpacing: 34, rankSpacing: 40, diagramPadding: 8 },
+      themeVariables: dark ? DARK : LIGHT
+    };
+  }
+
+  function draw() {
+    nodes.forEach(function (n) {
+      n.removeAttribute('data-processed');
+      n.innerHTML = n.dataset.src;
+    });
+    mermaid.initialize(conf());
+    mermaid.run({ nodes: nodes }).catch(function (e) { console.warn('mermaid:', e); });
+  }
+
+  draw();
+  window.addEventListener('ads-theme-change', draw);
+})();
+</script>
+
+</body>
+</html>

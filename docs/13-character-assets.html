@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>13 · 角色资产与单镜头 Prompt · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">13 · 角色资产与单镜头 Prompt</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item active" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 13</div><h1>角色资产与单镜头 Prompt</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a>、<a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> · 对应 ADR-0008</p>
+</blockquote>
+<p>一致性不是写出来的，是<strong>管</strong>出来的。这一篇定义角色/场景资产的结构、生成顺序和质量闸门，以及单镜头 prompt 在流水线三个阶段各自该写什么。</p>
+<h2 id="1.-先理解模型怎么消费参考图">1. 先理解模型怎么消费参考图<a aria-label="链接到此节" class="anchor" href="#1.-先理解模型怎么消费参考图">#</a></h2>
+<p>设计资产结构之前必须接受三条机制事实，否则会做出看似合理、实际无效的设计。</p>
+<h3 id="1.1-视频模型没有人脸专用通路">1.1 视频模型没有人脸专用通路<a aria-label="链接到此节" class="anchor" href="#1.1-视频模型没有人脸专用通路">#</a></h3>
+<p><strong>所有开源视频模型对参考图都是整图过 VAE、拼成 token。</strong> Wan-Animate 中确有 Face Blocks，但它处理的是<strong>驱动视频的表情</strong>，且论文明确说明该通路被设计成「把表情信息与身份属性解耦」——身份 100% 来自参考图的整图 latent。</p>
+<p><strong>含义</strong>：不能指望模型「认出」哪张图是人脸参考并区别对待。把资产拆成脸/体型/服装三类，本身<strong>不产生</strong>收益；收益来自平台侧的 role routing，或 prompt 里的显式绑定。</p>
+<h3 id="1.2-平台的-role-routing-能力差异巨大">1.2 平台的 role routing 能力差异巨大<a aria-label="链接到此节" class="anchor" href="#1.2-平台的-role-routing-能力差异巨大">#</a></h3>
+<p>这张表直接决定资产要怎么绑：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>平台</th>
+<th>参考图上限</th>
+<th>结构化 role</th>
+<th>绑定方式</th>
+<th>每角色多图</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gemini 3 Pro Image</td>
+<td>6 物体 + <strong>5 角色</strong> + 3 风格</td>
+<td>✅ 类型化槽位，分开计数</td>
+<td>类型化</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Vidu Q 系列</td>
+<td>7</td>
+<td>🔶 subject 命名分组</td>
+<td><code>@subjectname</code></td>
+<td>✅ 每 subject ≤3</td>
+</tr>
+<tr>
+<td>Kling VIDEO 3.0</td>
+<td>—</td>
+<td>🔶 Element 实体</td>
+<td>元素绑定</td>
+<td>✅ 2–4/元素</td>
+</tr>
+<tr>
+<td>Runway Gen-4</td>
+<td>3</td>
+<td>🔶 Reference 命名</td>
+<td><code>@name</code></td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Seedance 2.0 / 2.5</td>
+<td>9 / 30</td>
+<td>❌ 无</td>
+<td><code>@Image1</code> 序号</td>
+<td>❌</td>
+</tr>
+</tbody>
+</table></div>
+<p>在 Seedance 这类只有序号的 API 上，多视角参考有 <strong>identity splitting</strong> 风险（同一角色的多张图被判为不同身份），必须在 prompt 里显式声明「这几张是同一个人」，且需实测。</p>
+<h3 id="1.3-高清大图的收益在哪里饱和">1.3 「高清大图」的收益在哪里饱和<a aria-label="链接到此节" class="anchor" href="#1.3-高清大图的收益在哪里饱和">#</a></h3>
+<p>三条通路吃的东西完全不同：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>通路</th>
+<th>实际输入尺寸</th>
+<th>高清是否有用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ArcFace ID embedding</td>
+<td><strong>112×112</strong>（5 点对齐裁剪）</td>
+<td>❌ 早已饱和</td>
+</tr>
+<tr>
+<td>CLIP face crop（IPA-Plus）</td>
+<td>224×224</td>
+<td>🔶 224 处饱和</td>
+</tr>
+<tr>
+<td>整图 VAE（视频模型）</td>
+<td>原生分辨率</td>
+<td>✅ 真正吃分辨率</td>
+</tr>
+<tr>
+<td>inswapper 换脸</td>
+<td><strong>固定 128×128 进出</strong></td>
+<td>❌ 必须配超分</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>但存在明确下限</strong>：人脸瞳距低于约 48px 时识别性能显著退化。</p>
+<blockquote>
+<p><strong>执行结论</strong>：不要为「把一张脸做到 4K」投入预算。把同样的成本转投到<strong>做齐 3–5 个角度</strong>，ROI 高一个数量级。硬指标是瞳距 ≥48px（下限）、≥100px（安全线，约对应 300–400px 见方的人脸区域），单图 ≥1024×1024。</p>
+</blockquote>
+<h3 id="1.4-远景人脸崩坏是数学必然">1.4 远景人脸崩坏是数学必然<a aria-label="链接到此节" class="anchor" href="#1.4-远景人脸崩坏是数学必然">#</a></h3>
+<p>Wan2.2-VAE 空间压缩 16×16，叠加 DiT 的 2×2 patch，<strong>1 个 token = 32×32 像素</strong>。720p 全身镜头里人脸约占画面高度 1/8 ≈ 90px，即<strong>整张脸只有约 2.8×2.8 个 token</strong>。</p>
+<p>不到 9 个 token 要承载全部身份信息——崩坏不是模型能力问题，是没有 token 预算。而且 Wan2.2 的压缩率比 Wan2.1（16×16 像素/token）<strong>更激进，这个问题更严重</strong>。</p>
+<p><strong>这条直接变成分镜层的硬规则</strong>，见 §5.1。</p>
+<h2 id="2.-角色资产结构">2. 角色资产结构<a aria-label="链接到此节" class="anchor" href="#2.-角色资产结构">#</a></h2>
+<div class="codeblock is-diagram"><pre><code>Character
+├─ profile            结构化文本（角色卡）
+├─ face_set           人脸基准组 ★
+├─ body_ref           体型基准 ★
+├─ wardrobe[]         服装套装 ★
+├─ expressions        表情表
+├─ lora?              可选私有权重
+└─ platform_bindings  各平台的 role 绑定
+</code></pre></div>
+<h3 id="2.1-face_set-一组不是一张">2.1 <code>face_set</code> — 一组，不是一张<a aria-label="链接到此节" class="anchor" href="#2.1-face_set-一组不是一张">#</a></h3>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">face_set: {
+  primary:       AssetId    // 正面 · 中性表情 · 均匀光照 · 白底
+  profile_left:  AssetId    // 左侧面
+  profile_right: AssetId    // 右侧面
+  three_quarter: AssetId[]  // 3/4 侧，覆盖最常用的镜头角度
+}
+</code></pre></div>
+<p>推荐配置是<strong>正面 + 两个侧面</strong>起步，即经典三视图。只给正面时，模型会把正面特征错误投影到侧视图上，产生不自然几何或 mean face effect。</p>
+<p><strong>入库校验</strong>（自动执行，不过闸不许入库）：
+- 人脸可被检测器检出（检不到 = 整条 face 通路失效）
+- 瞳距 ≥100px，图像 ≥1024×1024
+- 中性表情、均匀光照、纯白背景 —— 参考图要当「空白画布」用，任何姿态/光照/背景都会被 copy-paste 搬进输出</p>
+<h3 id="2.2-body_ref-是否含头取决于画风">2.2 <code>body_ref</code> — 是否含头<strong>取决于画风</strong><a aria-label="链接到此节" class="anchor" href="#2.2-body_ref-是否含头取决于画风">#</a></h3>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">body_ref: {
+  full_body:    AssetId          // 正面 + 背面全身
+  head_policy:  'keep' | 'strip' // 由画风决定，见下
+  pose_map:     AssetId?         // head_policy='strip' 且为风格化比例时必填
+}
+</code></pre></div>
+<p>去掉头部后损失的<strong>只是「头身比」这一个绝对尺度锚点</strong>，不是全部体型信息——肩宽、四肢长度、躯干比例在颈部以下依然完整保留。所以代价大小完全取决于画风：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>画风</th>
+<th><code>head_policy</code></th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>写实比例</strong>（真人感短剧、多数都市/现代题材）</td>
+<td><code>strip</code> 去头</td>
+<td>模型先验能自动补上正常头身比，去头几乎零代价，且能彻底消除身份污染</td>
+</tr>
+<tr>
+<td><strong>风格化比例</strong>（Q 版、刻意的 8 头身 / 6 头身设定）</td>
+<td><code>keep</code> 留头，或 <code>strip</code> + 必填 <code>pose_map</code></td>
+<td>头身比本身就是核心人设，去掉必然飘</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>默认取 <code>strip</code></strong>——短剧绝大多数是写实比例，且去头带来的身份污染消除是确定收益。</p>
+<blockquote>
+<p><strong>实践验证与机制解释</strong>【来自 Hell Grind 开源管线，95 分钟 AI 长片】：其角色资产包就是<strong>三张图</strong>——面部特写、<strong>去掉头部的正面全身</strong>、背面全身。</p>
+<p><strong>去头的真正原因比「避免污染」更具体</strong>：生成远景/全景镜头时，模型会去读全身参考图里那张<strong>又小又糊的脸</strong>，反而把脸画坏。去掉头部等于<strong>强制信息通道隔离</strong>——身体信息只从全身图取，脸只从特写图取。</p>
+<p>这解释了为什么去头有效，也解释了它的边界：它解决的是「劣质脸信息干扰」，不是「脸信息本身有害」。所以 §2.1 的人脸特写必须同时存在，两者是配套的，缺一不可。</p>
+<p>学理侧的对应佐证：Parts2Whole 能抠掉脸仍保持体型，是因为它<strong>额外输入了一张 pose map</strong>；VTON 能用平铺服装图，是因为 person image 提供了完整体型与姿态。两者都补了几何信息——这正是风格化比例下必须补 <code>pose_map</code> 的原因。</p>
+</blockquote>
+<p>若因其他原因需要保留头部但又怕污染，用<strong>降级而非删除</strong>：轻度模糊保留头部轮廓。</p>
+<h3 id="2.3-wardrobe-穿着态-抠到服装区域">2.3 <code>wardrobe</code> — 穿着态 + 抠到服装区域<a aria-label="链接到此节" class="anchor" href="#2.3-wardrobe-穿着态-抠到服装区域">#</a></h3>
+<p>四种做法的取舍：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方案</th>
+<th>保版型垂坠</th>
+<th>消除身份污染</th>
+<th>保尺度锚点</th>
+<th>评价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>平铺无人（VTON 标准）</td>
+<td>❌</td>
+<td>✅</td>
+<td>❌</td>
+<td>只答「这件衣服长什么样」</td>
+</tr>
+<tr>
+<td>完整穿着带脸</td>
+<td>✅</td>
+<td>❌</td>
+<td>✅</td>
+<td>identity splitting 风险最高</td>
+</tr>
+<tr>
+<td><strong>穿着态 + parsing mask 抠服装区</strong></td>
+<td>✅</td>
+<td>✅</td>
+<td>🔶</td>
+<td><strong>推荐</strong></td>
+</tr>
+<tr>
+<td>穿着态裁到下颌线以下</td>
+<td>✅</td>
+<td>✅</td>
+<td>🔶</td>
+<td>工程上最简单的近似</td>
+</tr>
+</tbody>
+</table></div>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">wardrobe: [{
+  id, name,
+  worn_masked: AssetId    // 推荐：human parsing 抠出服装区域
+  flat_lay:    AssetId?   // 备选：平铺
+}]
+</code></pre></div>
+<p><strong>注意 VTON 领域的真实做法</strong>：它从不「去掉脸」，而是把脸放在<strong>另一张图</strong>里、并用 inpainting mask <strong>保护起来不让模型重绘</strong>。精神与你的直觉一致，但实现更强——不是「不提供脸」，是「提供脸并锁定它」。</p>
+<h3 id="2.4-角色卡结构化文本">2.4 角色卡（结构化文本）<a aria-label="链接到此节" class="anchor" href="#2.4-角色卡结构化文本">#</a></h3>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">profile: {
+  name, age, gender,
+  appearance:   { hair_style, hair_color, facial_features },
+  anchor_tokens: string[],    // 2–3 个唯一性强的锚定词，如「红围巾」「蓝校服」
+  prohibited_changes: string[], // ★ 禁止变化项：任何镜头都不许漂的特征
+  personality_tags: string[],
+  voice_id: string,
+}
+</code></pre></div>
+<p><code>anchor_tokens</code> 用于图生图阶段的冗余校验（§4.2）；<code>prohibited_changes</code> 用于人审 checklist 与自动评测的比对基准。</p>
+<h3 id="2.5-场景与道具资产">2.5 场景与道具资产<a aria-label="链接到此节" class="anchor" href="#2.5-场景与道具资产">#</a></h3>
+<p><strong>场景硬规则：全景、无人物、环境完整。</strong> 带人的场景图做参考时，模型会把图里的人一起带进来，与角色资产冲突。</p>
+<p>时间/光线是<strong>变体维度</strong>，每个变体是一张独立入库的图，不靠 prompt 临时改光。</p>
+<p><strong>命名规范</strong>（三类资产共用二段式）：</p>
+<div class="codeblock"><pre><code>角色：{name}_{阶段或套装}     林野_17岁、林野_校服
+场景：{name}_{时间光线}       舅舅家客厅_白天
+道具：{name}_{状态}           酒杯_完整、酒杯_破碎
+</code></pre></div>
+<h2 id="3.-资产生产顺序s4-阶段的展开">3. 资产生产顺序（S4 阶段的展开）<a aria-label="链接到此节" class="anchor" href="#3.-资产生产顺序s4-阶段的展开">#</a></h2>
+<div class="codeblock is-diagram"><pre><code>① 从剧本抽角色卡（LLM）
+② 文生图定妆 → 抽卡（单角色 4–16 张起）
+③ 选定主图 → 局部精修（眼睛/手/服装细节）
+④ 以主图为参考，图生图产出 face_set 各视角 + 表情表 + 体型图
+⑤ 入库：命名 + 白底 + 质量闸门校验 + 色卡标注
+⑥ 锁定（locked 后才允许进入 S5 批量生成）
+</code></pre></div>
+<p><strong>S4 未完成时，分镜页的批量生成入口必须禁用。</strong> 参考图没锁死就开始批量生成，等于在流沙上盖楼——「角色设定未完成就开工」是行业公认的五大失败模式之一，后果是一致性问题级联放大、中途修正代价极高。</p>
+<h2 id="4.-单镜头-prompt三阶段差异化">4. 单镜头 Prompt：三阶段差异化<a aria-label="链接到此节" class="anchor" href="#4.-单镜头-prompt三阶段差异化">#</a></h2>
+<p>Prompt 的槽位模型是稳定的五槽，但<strong>三个阶段填的槽完全不同</strong>。</p>
+<div class="codeblock"><pre><code>style | shot(景别+机位+运镜) | scene | subject + action + expression | lighting
+</code></pre></div>
+<h3 id="4.0-两层结构固定底座-可变正文">4.0 两层结构：固定底座 + 可变正文<a aria-label="链接到此节" class="anchor" href="#4.0-两层结构固定底座-可变正文">#</a></h3>
+<p>Hell Grind 对 4 万余条 prompt 的公开数据显示一个清晰的两层结构，值得直接采用：</p>
+<div class="codeblock"><pre><code>A. 技术底座（全片恒定，逐条 prompt 完整重复）
+   风格 / 摄影 / 机身镜头 / 光照 / 色彩 / 肤质 /
+   物理规则 / 表演基调 / 构图 / 连续性 / 技术参数 / 音频
+   —— 约 12 行，做成配置文件，由模板引擎自动拼接
+
+B. 镜头正文（逐镜变化）
+   ① 角色状态（外貌 / 伤情 / 服装破损 / 表情）
+   ② 承接上一镜（显式写清前一镜结束时的状态）
+   ③ 导演意图（这一镜要传达什么）
+   ④ 位置几何（谁站哪、距离几米、朝向）
+   ⑤ 对白 + 音效
+   ⑥ 动作序列（按秒排时间码）
+   ⑦ 硬约束（从失败中积累的清单）
+</code></pre></div>
+<p><strong>底座层是纯配置，不该由人逐条写</strong>——他们的数据里某一行技术参数重复了 8000 多次。这正是 <code>prompt-kit</code> 模板引擎该干的事（<a href="01-architecture.html" title="系统架构"><code>01-architecture.md</code></a> §4 第 ④ 步）。</p>
+<p><strong>本项目的目标长度：底座 12 行 + 正文 500–800 字。</strong> 更短的 prompt 引入的互相冲突指令更少，在批量场景下反而更稳。</p>
+<h3 id="4.1-文生图阶段出定妆图-首帧">4.1 文生图阶段（出定妆图 / 首帧）<a aria-label="链接到此节" class="anchor" href="#4.1-文生图阶段出定妆图-首帧">#</a></h3>
+<p><strong>全槽位填充 + 参考图</strong>。双保险，因为此时还没有可依赖的资产。</p>
+<h3 id="4.2-图生图阶段出分镜静帧">4.2 图生图阶段（出分镜静帧）<a aria-label="链接到此节" class="anchor" href="#4.2-图生图阶段出分镜静帧">#</a></h3>
+<p><strong>参考图承载外貌，prompt 只写差异项</strong> —— 本镜特有的表情、动作、景别、光线，外加 2–3 个 <code>anchor_tokens</code> 做冗余校验。</p>
+<p>不要重复完整外貌描述。参考图已经承载了它，重复描述反而增加与参考图冲突的机会。</p>
+<h3 id="4.3-图生视频阶段">4.3 图生视频阶段<a aria-label="链接到此节" class="anchor" href="#4.3-图生视频阶段">#</a></h3>
+<p><strong>只写「运动 + 运镜」。</strong> 这是阿里云百炼官方对图生视频 prompt 的明确口径——主体、场景、风格已由图承载。</p>
+<div class="codeblock"><pre><code>prompt = action + camera_move
+</code></pre></div>
+<p>在这个阶段重复角色外貌描述是常见错误，它会与首帧图争夺控制权。</p>
+<h3 id="4.4-镜头语言词汇表">4.4 镜头语言词汇表<a aria-label="链接到此节" class="anchor" href="#4.4-镜头语言词汇表">#</a></h3>
+<p>统一采用中英双语写法，存为枚举而非自由文本：</p>
+<p><strong>景别</strong> 特写 Close-up · 近景 Near shot · 中景 Medium shot · 全景 Wide shot · 极端全景 Extreme wide shot
+<strong>运镜</strong> 推进 Push in · 拉远 Pull back · 左移 Pan left · 右移 Pan right · 上摇 Tilt up · 下摇 Tilt down · 环绕 Orbital · 固定 Fixed shot
+<strong>机位</strong> 平拍 Eye level · 俯视 Bird's eye · 仰视 Low angle · 过肩 Over-the-shoulder · 航拍 Aerial
+<strong>光线</strong> 日光 Daylight · 柔光 Soft light · 硬光 Hard light · 侧光 Side light · 边缘光 Rim light · 背光 Backlighting · 顶光 Top light</p>
+<p>每镜<strong>只写一个运镜</strong>。</p>
+<h3 id="4.5-prompt-lint-规则做成校验不是自由文本">4.5 Prompt Lint 规则（做成校验，不是自由文本）<a aria-label="链接到此节" class="anchor" href="#4.5-prompt-lint-规则做成校验不是自由文本">#</a></h3>
+<p>这些必须在分镜阶段就拦截，而不是等生成完才发现：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>规则</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>禁抽象心理描写</td>
+<td>「心里很痛苦」→「双拳紧握、低头颤抖」</td>
+</tr>
+<tr>
+<td>禁抽象动作</td>
+<td>「眼神流转」「指尖划过」这类模型无法解析</td>
+</tr>
+<tr>
+<td>禁复杂光感术语</td>
+<td>「电影级光影」「丁达尔效应」</td>
+</tr>
+<tr>
+<td>禁 3 人以上复杂互动</td>
+<td>「三人同时打斗」必然崩</td>
+</tr>
+<tr>
+<td>机位物理可能性</td>
+<td>如「低角度俯拍平放在桌上的手机屏幕」是矛盾描述</td>
+</tr>
+<tr>
+<td>单镜时长 3–8 秒</td>
+<td></td>
+</tr>
+<tr>
+<td>单句台词 ≤10 字</td>
+<td>同时校验 TTS 时长是否超镜头时长</td>
+</tr>
+<tr>
+<td>Prompt 长度软告警</td>
+<td>单镜 &gt;200 字提示。长 prompt 尾部指令遵循度会下降</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>最贵的一条教训：不要用否定指令。</strong> Hell Grind 团队公开把这条列为代价最高的失误——写「No held object」，模型偏偏塞给角色一把武器。<strong>扩散模型主要识别正面内容</strong>，否定词经常反向生效。必须改写成正面描述：不写「手上没有东西」，写「双手空着、手掌张开、垂在体侧」。</p>
+<p>Lint 规则里应当加一条：<strong>检测到 <code>不要 / 没有 / 无 / no / without / avoid</code> 等否定式描述时告警，提示改写为正面描述。</strong></p>
+<blockquote>
+<p>注意：国产闭源视频模型的负向提示词能力普遍弱于 SD 体系，阿里云官方指南完全没提负向词。<strong>把禁写规则做成 lint，比依赖 negative_prompt 字段有效得多。</strong></p>
+</blockquote>
+<p><strong>数字化而非形容词化。</strong> 同一来源的另一条核心写法：模型吃数字不吃形容词。运镜写「从 8 米推到 4 米，机位高度 3 米降到 2 米」而不是「缓缓推近」；速度写「比常规推轨快 3 倍」而不是「快一点」；镜头写具体焦段（24mm 低角度 / 50mm 环绕 / 85mm 特写）。这条可以做成 prompt 模板的字段约束——把机位、距离、焦段做成结构化数值字段，而不是自由文本。</p>
+<h3 id="4.6-动作幅度约束">4.6 动作幅度约束<a aria-label="链接到此节" class="anchor" href="#4.6-动作幅度约束">#</a></h3>
+<p>大动作是失败高发区——会造成肢体扭曲、面部退化、服装混乱。有效的做法是把动作控制在：细微的头发/布料摆动、缓慢推镜、轻微口型、背景氛围与光线变化。</p>
+<p><strong>「控图不控视频」</strong>：视频质量取决于底图质量。把精力放在静帧上，视频阶段只做小幅度运动。</p>
+<h2 id="5.-一致性的工程规则">5. 一致性的工程规则<a aria-label="链接到此节" class="anchor" href="#5.-一致性的工程规则">#</a></h2>
+<h3 id="5.1-景别与身份的硬约束来自-§1.4-的-token-预算">5.1 景别与身份的硬约束（来自 §1.4 的 token 预算）<a aria-label="链接到此节" class="anchor" href="#5.1-景别与身份的硬约束来自-§1.4-的-token-预算">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>镜头用途</th>
+<th>景别要求</th>
+<th>人脸在输出帧的高度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>身份建立、情绪表达</td>
+<td>中景以上</td>
+<td>≥150–200px（Wan2.2 下 ≥5×5 token）</td>
+</tr>
+<tr>
+<td>叙事推进</td>
+<td>中景</td>
+<td>≥120px</td>
+</tr>
+<tr>
+<td>环境交代、转场</td>
+<td>全景可用</td>
+<td>不承担身份识别</td>
+</tr>
+</tbody>
+</table></div>
+<p>全景镜头<strong>不要指望人脸正确</strong>。需要全景又需要认脸时，两个办法：提高输出分辨率（720p→1080p 让人脸 token 数增加 2.25 倍），或走 FaceDetailer 式两段式修复（检测人脸 → 在全图分辨率下 inpaint 重绘该区域 → 缩回贴合）。</p>
+<h3 id="5.2-绝不递归">5.2 绝不递归<a aria-label="链接到此节" class="anchor" href="#5.2-绝不递归">#</a></h3>
+<p><strong>每个镜头都从固定的原始角色资产重新起算，绝不用上一个镜头的输出帧当下一个镜头的参考图。</strong></p>
+<p>递归漂移是指数放大而非线性的：训练时模型看到的条件帧是干净的，推理时是自己生成的带误差帧，这个分布错配让误差进入模型没见过的输入域，输出误差更大，形成正反馈。业界的通俗表述是「a copy of a copy」——十秒片段结束时，微小误差已经放大成完全不同的角色。</p>
+<p><code>shots.continuity_from_shot_id</code>（<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a>）的正确用法是<strong>取前序镜头选定 take 的末帧作为本镜 i2v 的首帧条件</strong>，同时<strong>角色参考图仍然来自 master 资产</strong>。两者是叠加关系，不是替代关系。</p>
+<p><strong>高危时刻</strong>：角色转身、被遮挡、走出画面再回来。这些时刻最近的上下文里没有脸可参考，是 identity drift 的高发点，应在分镜阶段就规避，或在遮挡后强制重新注入参考。</p>
+<p><strong>「尽量只过一次生成」要正确翻译。</strong> 这是电影级制作者常给的建议——每多过一道生成就多叠一层误差，所以能一次到位就别返工。但<strong>电影和批量短剧的可行解不同</strong>：一部 95 分钟电影的主角团人数有限、单镜可以精修，靠「一次生成 + 人工挑选」能保证质量；一部 60 集短剧有 3000+ 镜头，人工兜不住。</p>
+<p>在本项目的量级下，这条建议应翻译成 <strong>「提高一次通过率」</strong>，而不是「不重试」——即把预算投在参考资产质量、prompt lint、景别约束上，让首次尝试就过闸的比例上升（这正是 <a href="12-roadmap.html" title="里程碑与验收标准"><code>12-roadmap.md</code></a> 把一次通过率列为核心指标的原因），而不是取消 <a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §3 的重试升级策略。两者不矛盾：减少重试次数是目标，保留重试能力是手段。</p>
+<h3 id="5.3-seed-不是一致性机制">5.3 seed 不是一致性机制<a aria-label="链接到此节" class="anchor" href="#5.3-seed-不是一致性机制">#</a></h3>
+<p><strong>把 seed 定位成可复现性字段，不是一致性功能。</strong> 大量中文教程在这点上是错的。</p>
+<p>seed 只在其余参数完全不变时保证可复现。prompt 一改（换景别、换动作），同 seed 出来的人脸就会变。真正产生一致性的是参考资产、平台角色 ID、或 LoRA。seed 的价值在于<strong>防止参数漂移的纪律</strong>与事后可复现，不在于产生一致性。</p>
+<h3 id="5.4-lora-训练集与社区默认建议相反的一条">5.4 LoRA 训练集：与社区默认建议相反的一条<a aria-label="链接到此节" class="anchor" href="#5.4-lora-训练集与社区默认建议相反的一条">#</a></h3>
+<p>社区指南通常建议「不要混入不一致的服装」——那是为「角色总穿同一套戏服」的用例写的。</p>
+<p><strong>短剧场景必须反过来做：服装、背景、光照都要多样化。</strong> 否则 LoRA 会把戏服学进身份，导致换装时身份漂移。原理与学术侧一致——要让某个属性不被学进身份，就必须在数据里让它随机变化。</p>
+<blockquote>
+<p>关于「特写 : 半身 : 全身」的最优配比，<strong>没有找到任何权威来源</strong>。网上流传的具体数字缺乏可追溯依据，建议用自己的素材做小规模 A/B，成本低且能直接决定 schema。</p>
+</blockquote>
+<h3 id="5.5-角色间辨识度">5.5 角色间辨识度<a aria-label="链接到此节" class="anchor" href="#5.5-角色间辨识度">#</a></h3>
+<p>行业普遍现象是所有角色收敛到同一张「梦幻脸」，观众要靠发色区分。这是<strong>被普遍忽略但真实存在</strong>的痛点。</p>
+<p>建议在资产层加一条闸门：<strong>新角色入库时，与项目内已有角色做身份 embedding 相似度比对，过高则告警</strong>。这是「角色自身一致性」之外的另一个维度。</p>
+<h2 id="5.6-群像与大场面用物理遮蔽掩护模型的失败区">5.6 群像与大场面：用物理遮蔽掩护模型的失败区<a aria-label="链接到此节" class="anchor" href="#5.6-群像与大场面用物理遮蔽掩护模型的失败区">#</a></h2>
+<p>批量生产里最容易崩的是人群、街景、战斗大场面。Hell Grind 的做法是<strong>三层堆叠 + 雾</strong>：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>层</th>
+<th>处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前景</td>
+<td>少数几个角色清晰可辨，有完整描述</td>
+</tr>
+<tr>
+<td>中景</td>
+<td>人群只提供密度，不给个体细节</td>
+</tr>
+<tr>
+<td>背景</td>
+<td>只剩剪影</td>
+</tr>
+<tr>
+<td>全局</td>
+<td>加厚雾把能见度压到约 20 米内</td>
+</tr>
+</tbody>
+</table></div>
+<p>关键在最后一条：<strong>用叙事上合理的物理遮蔽（雾 / 烟 / 雨 / 夜 / 浅景深）为模型必然崩坏的区域提供掩护</strong>。这不是偷懒，是把「模型能力边界」翻译成「美术设定」。</p>
+<p>对短剧的迁移价值很高，而且<strong>模型越弱收益越大</strong>——你用自部署开源模型时比用闭源旗舰更需要这一条。分镜阶段就该把大场面写成「有遮蔽理由的大场面」。</p>
+<h2 id="5.7-废片碎片抢救">5.7 废片碎片抢救<a aria-label="链接到此节" class="anchor" href="#5.7-废片碎片抢救">#</a></h2>
+<p>在低采纳率下，被否决的生成里必然埋着大量可用的 1–3 秒片段。Hell Grind 的做法是<strong>把这些碎片提取入库，当作连接镜、插入镜复用</strong>。</p>
+<p>工程含义：<code>takes</code> 表的 <code>rejected</code> 状态不该等于「无价值」。建议加一条轻量流程——人审拒绝一条 take 时，可标记「部分可用」并框选可用时间段，产出一条 <code>kind=fragment</code> 的派生 asset，按角色/场景/情绪打标进碎片库。</p>
+<p>这条在 98% 都是废片的现实下，是<strong>唯一能把沉没成本变回资产</strong>的机制。</p>
+<h2 id="5.8-采纳率标定m1-的第一个实验">5.8 采纳率标定：M1 的第一个实验<a aria-label="链接到此节" class="anchor" href="#5.8-采纳率标定m1-的第一个实验">#</a></h2>
+<p>采纳率（首次生成即被采用的比例）直接决定算力预算能否成立：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>采纳率</th>
+<th>3000 镜的剧需要的生成次数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10%</td>
+<td>~3 万次</td>
+</tr>
+<tr>
+<td>25%</td>
+<td>~1.2 万次</td>
+</tr>
+<tr>
+<td>40%</td>
+<td>~7500 次</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>M1 阶段必须先测出自己质量标准下的真实采纳率</strong>，这个数字比任何模型选型都更能决定项目可行性。</p>
+<p>提高采纳率的杠杆按 ROI 排序：① 参考资产质量（§2）② prompt lint 拦掉必崩的镜头（§4.5）③ 景别约束（§5.1）④ 物理遮蔽（§5.6）。<strong>这四条都在生成之前，比事后重试便宜一个数量级。</strong></p>
+<h2 id="5.9-失败模式-qc-清单">5.9 失败模式 QC 清单<a aria-label="链接到此节" class="anchor" href="#5.9-失败模式-qc-清单">#</a></h2>
+<p>来自 Hell Grind 管线的社区整理，八类，可直接做成审片 checklist 与自动检测项：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>失败模式</th>
+<th>症状</th>
+<th>处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>帧率漂移</td>
+<td>有重复帧，实际帧率掉到 12–18fps</td>
+<td>prompt 里显式声明帧率；剪辑去重帧。<strong>可自动检测</strong>（T0 层）</td>
+</tr>
+<tr>
+<td>单帧缺陷</td>
+<td>一帧手/脸崩掉毁掉整条</td>
+<td>逐帧 scrub；每 10 秒片段预算 30–60 秒审查</td>
+</tr>
+<tr>
+<td>关键帧幻觉</td>
+<td>首帧里没有的元素被模型凭空放进来</td>
+<td>显式写「该元素在首帧中不可见，它在…时出现」</td>
+</tr>
+<tr>
+<td>物理状态漂移</td>
+<td>只该动 A，相邻的 B 也跟着动</td>
+<td>显式命名不变量：「X 固定在表面，只有 Y 移动」</td>
+</tr>
+<tr>
+<td>多运镜过载</td>
+<td>叠加运镜产出无法阅读的画面</td>
+<td><strong>一镜一个主导运镜</strong>；复合运镜必须写成带时间码的序列</td>
+</tr>
+<tr>
+<td>空间感失败</td>
+<td>进门、走廊、家具穿模</td>
+<td>加空间布局块：机位、地面参照、行进方向</td>
+</tr>
+<tr>
+<td>内容分类器误判</td>
+<td>干净 prompt 被拒</td>
+<td>泛化解剖学词汇，替换感官形容词</td>
+</tr>
+<tr>
+<td>废片可抢救</td>
+<td>整条被否但有 1–3 秒可用</td>
+<td>见 §5.7</td>
+</tr>
+</tbody>
+</table></div>
+<p>前两类和第五类可以做成自动检测进 T0/T1 层（<a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §4），其余是人审 checklist。</p>
+<h2 id="6.-数据模型影响">6. 数据模型影响<a aria-label="链接到此节" class="anchor" href="#6.-数据模型影响">#</a></h2>
+<p>对 <a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a> 的 <code>characters</code> 表的具体修改见该文档 §3.3。要点：</p>
+<ul>
+<li><code>reference_asset_ids</code> 单一数组<strong>不够</strong>，需拆成 <code>face_set</code> / <code>body_ref</code> / <code>wardrobe</code> 三个结构化字段</li>
+<li>新增 <code>anchor_tokens</code>、<code>prohibited_changes</code></li>
+<li>新增 <code>platform_bindings</code>（各平台 role 绑定不同，且有数量上限）</li>
+<li>资产入库需要质量闸门字段：<code>face_detected</code>、<code>inter_pupillary_px</code>、<code>resolution</code></li>
+</ul>
+<h2 id="7.-待验证清单">7. 待验证清单<a aria-label="链接到此节" class="anchor" href="#7.-待验证清单">#</a></h2>
+<p>以下几条机制推理明确但<strong>缺少直接消融实验</strong>，建议用自有素材做小规模 A/B（成本低，且直接决定 schema）：</p>
+<ol>
+<li>风格化比例角色在 <code>head_policy='strip'</code> 下的实际漂移幅度 —— 写实比例已有实践验证可去头，风格化侧无直接实验</li>
+<li>单图 grid 三视图 vs 三张独立图 —— 无直接对比。机制上倾向分开（分辨率预算 9 倍差、位置编码天然按图分离），但未实测</li>
+<li>LoRA 训练集的景别配比 —— 无权威来源</li>
+<li>在 Seedance 这类无 role routing 的 API 上，多视角参考的 identity splitting 实际发生率</li>
+</ol><nav class="pager"><a href="12-roadmap.html"><div class="dir">← 上一篇</div><div class="name">12 · 里程碑与验收标准</div></a><span class="none"></span></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-先理解模型怎么消费参考图">1. 先理解模型怎么消费参考图</a>
+<a class="lvl-3" href="#1.1-视频模型没有人脸专用通路">1.1 视频模型没有人脸专用通路</a>
+<a class="lvl-3" href="#1.2-平台的-role-routing-能力差异巨大">1.2 平台的 role routing 能力差异巨大</a>
+<a class="lvl-3" href="#1.3-高清大图的收益在哪里饱和">1.3 「高清大图」的收益在哪里饱和</a>
+<a class="lvl-3" href="#1.4-远景人脸崩坏是数学必然">1.4 远景人脸崩坏是数学必然</a>
+<a class="lvl-2" href="#2.-角色资产结构">2. 角色资产结构</a>
+<a class="lvl-3" href="#2.1-face_set-一组不是一张">2.1 face_set — 一组，不是一张</a>
+<a class="lvl-3" href="#2.2-body_ref-是否含头取决于画风">2.2 body_ref — 是否含头取决于画风</a>
+<a class="lvl-3" href="#2.3-wardrobe-穿着态-抠到服装区域">2.3 wardrobe — 穿着态 + 抠到服装区域</a>
+<a class="lvl-3" href="#2.4-角色卡结构化文本">2.4 角色卡（结构化文本）</a>
+<a class="lvl-3" href="#2.5-场景与道具资产">2.5 场景与道具资产</a>
+<a class="lvl-2" href="#3.-资产生产顺序s4-阶段的展开">3. 资产生产顺序（S4 阶段的展开）</a>
+<a class="lvl-2" href="#4.-单镜头-prompt三阶段差异化">4. 单镜头 Prompt：三阶段差异化</a>
+<a class="lvl-3" href="#4.0-两层结构固定底座-可变正文">4.0 两层结构：固定底座 + 可变正文</a>
+<a class="lvl-3" href="#4.1-文生图阶段出定妆图-首帧">4.1 文生图阶段（出定妆图 / 首帧）</a>
+<a class="lvl-3" href="#4.2-图生图阶段出分镜静帧">4.2 图生图阶段（出分镜静帧）</a>
+<a class="lvl-3" href="#4.3-图生视频阶段">4.3 图生视频阶段</a>
+<a class="lvl-3" href="#4.4-镜头语言词汇表">4.4 镜头语言词汇表</a>
+<a class="lvl-3" href="#4.5-prompt-lint-规则做成校验不是自由文本">4.5 Prompt Lint 规则（做成校验，不是自由文本）</a>
+<a class="lvl-3" href="#4.6-动作幅度约束">4.6 动作幅度约束</a>
+<a class="lvl-2" href="#5.-一致性的工程规则">5. 一致性的工程规则</a>
+<a class="lvl-3" href="#5.1-景别与身份的硬约束来自-§1.4-的-token-预算">5.1 景别与身份的硬约束（来自 §1.4 的 token 预算）</a>
+<a class="lvl-3" href="#5.2-绝不递归">5.2 绝不递归</a>
+<a class="lvl-3" href="#5.3-seed-不是一致性机制">5.3 seed 不是一致性机制</a>
+<a class="lvl-3" href="#5.4-lora-训练集与社区默认建议相反的一条">5.4 LoRA 训练集：与社区默认建议相反的一条</a>
+<a class="lvl-3" href="#5.5-角色间辨识度">5.5 角色间辨识度</a>
+<a class="lvl-2" href="#5.6-群像与大场面用物理遮蔽掩护模型的失败区">5.6 群像与大场面：用物理遮蔽掩护模型的失败区</a>
+<a class="lvl-2" href="#5.7-废片碎片抢救">5.7 废片碎片抢救</a>
+<a class="lvl-2" href="#5.8-采纳率标定m1-的第一个实验">5.8 采纳率标定：M1 的第一个实验</a>
+<a class="lvl-2" href="#5.9-失败模式-qc-清单">5.9 失败模式 QC 清单</a>
+<a class="lvl-2" href="#6.-数据模型影响">6. 数据模型影响</a>
+<a class="lvl-2" href="#7.-待验证清单">7. 待验证清单</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设计文档 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">设计文档</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="hero"><div class="eyebrow">Design Docs</div><h1>ai-drama-studio 设计文档</h1><p>本地优先的 AI 短剧生产系统：输入一个故事，输出可播放的分集短剧成片。以下文档按设计域划分，每篇回答一个独立的设计问题，可单独阅读。</p></div><div class="section-head">基础</div><div class="card-grid"><a class="card" href="00-overview.html"><div class="num">00</div><div class="title">项目总览与范围定义</div><div class="desc">范围定义、六条设计约束、全项目统一术语表</div></a><a class="card" href="01-architecture.html"><div class="num">01</div><div class="title">系统架构</div><div class="desc">三平面架构、进程拓扑、monorepo 目录结构</div></a></div><div class="section-head">数据与流程</div><div class="card-grid"><a class="card" href="02-data-model.html"><div class="num">02</div><div class="title">数据模型</div><div class="desc">数据库 schema、状态枚举、Generation Ledger</div></a><a class="card" href="03-pipeline.html"><div class="num">03</div><div class="title">生产流水线与状态机</div><div class="desc">七阶段流水线、镜头状态机、评测分层、连续性策略</div></a></div><div class="section-head">生成层</div><div class="card-grid"><a class="card" href="04-provider-adapter.html"><div class="num">04</div><div class="title">Provider 适配器契约</div><div class="desc">生成后端统一契约、能力声明与路由器</div></a><a class="card" href="05-job-orchestration.html"><div class="num">05</div><div class="title">任务编排：队列、重试、并发与记账</div><div class="desc">队列拓扑、并发控制、轮询、重试、成本记账、崩溃恢复</div></a><a class="card" href="06-api-spec.html"><div class="num">06</div><div class="title">控制面 API 规范</div><div class="desc">控制面 REST + SSE 接口与错误规范</div></a></div><div class="section-head">前端</div><div class="card-grid"><a class="card" href="07-design-system.html"><div class="num">07</div><div class="title">前端设计系统</div><div class="desc">色彩令牌、排版、组件清单、交互模式与可访问性</div></a><a class="card" href="08-screen-specs.html"><div class="num">08</div><div class="title">页面与交互规格</div><div class="desc">七个页面的布局、交互与空态规格</div></a></div><div class="section-head">工程落地</div><div class="card-grid"><a class="card" href="09-python-worker.html"><div class="num">09</div><div class="title">Python 生成 Worker 与远程 GPU 部署</div><div class="desc">Worker Contract、模型选型与许可、远程 GPU 部署</div></a><a class="card" href="10-media-storage.html"><div class="num">10</div><div class="title">媒体存储、拼接与音频</div><div class="desc">S3 存储、FFmpeg 拼接、TTS、HLS、容量估算</div></a><a class="card" href="11-dev-setup.html"><div class="num">11</div><div class="title">本地开发环境搭建</div><div class="desc">环境搭建、环境变量、联调检查、排错速查</div></a><a class="card" href="12-roadmap.html"><div class="num">12</div><div class="title">里程碑与验收标准</div><div class="desc">M0–M5 里程碑、验收标准与关键指标</div></a></div><div class="section-head">生成质量</div><div class="card-grid"><a class="card" href="13-character-assets.html"><div class="num">13</div><div class="title">角色资产与单镜头 Prompt</div><div class="desc">角色资产三路分离、参考图机制、单镜头 prompt 三阶段</div></a></div><div class="section-head">另见</div><div class="card-grid"><a class="card" href="../README.md"><div class="num">README</div><div class="title">项目说明</div><div class="desc">技术选型速览、快速开始、里程碑概览</div></a><a class="card" href="adr/"><div class="num">ADR</div><div class="title">架构决策记录</div><div class="desc">五条关键决策的背景、备选与后果</div></a></div></main>
+  <aside class="toc"></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+</body>
+</html>

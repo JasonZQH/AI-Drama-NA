@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 · 页面与交互规格 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">08 · 页面与交互规格</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item active" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 08</div><h1>页面与交互规格</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="07-design-system.html" title="前端设计系统"><code>07-design-system.md</code></a>、<a href="06-api-spec.html" title="控制面 API 规范"><code>06-api-spec.md</code></a></p>
+</blockquote>
+<h2 id="0.-全局框架">0. 全局框架<a aria-label="链接到此节" class="anchor" href="#0.-全局框架">#</a></h2>
+<div class="codeblock is-diagram"><pre><code>┌──────────────────────────────────────────────────────────────────────┐
+│ TOPBAR                                                               │
+│ [Logo] 项目名 ▾ │ 第 3 集 ▾ │  ⚡6 running · 18 queued │ $2.14/$5.00 │
+├────────┬─────────────────────────────────────────────────────────────┤
+│ SIDE   │                                                             │
+│        │                                                             │
+│ 剧本   │                      主内容区                                │
+│ 分镜   │                                                             │
+│ 资产   │                                                             │
+│ 选片 ③ │                                                             │
+│ 剪辑   │                                                             │
+│ 洞察   │                                                             │
+│        │                                                             │
+│ ────── │                                                             │
+│ 设置   │                                                             │
+└────────┴─────────────────────────────────────────────────────────────┘
+</code></pre></div>
+<p>侧栏「选片」带待办数徽章——它是流水线里唯一必须人工介入的环节，要一直可见。顶栏两个组件（QueueIndicator、CostMeter）在所有页面常驻，这是 §07 R1/R2 的载体。</p>
+<hr/>
+<h2 id="1.-剧本页-projectsidscript">1. 剧本页 <code>/projects/[id]/script</code><a aria-label="链接到此节" class="anchor" href="#1.-剧本页-projectsidscript">#</a></h2>
+<p><strong>用途</strong>：S1–S2 阶段，写大纲与分场剧本。</p>
+<div class="codeblock is-diagram"><pre><code>┌───────────────────────────┬──────────────────────────────┐
+│ 集列表                     │  剧本编辑器                    │
+│ ┌───────────────────────┐ │  ┌────────────────────────┐  │
+│ │ EP1 逃离  ✓ 已分镜     │ │  │ ## SCENE 1 · 咖啡馆    │  │
+│ │ EP2 重逢  ◐ 生产中     │ │  │ [STATE_IN] ...         │  │
+│ │ EP3 真相  ● 待分镜     │ │  │                        │  │
+│ │ + 新增一集             │ │  │ LIN XIA: 你怎么在这。   │  │
+│ └───────────────────────┘ │  └────────────────────────┘  │
+│                           │  [AI 生成剧本] [解析为场次]    │
+│ 本集元信息                 │                              │
+│ 钩子 / 悬念 / 目标时长      │  已解析：3 场 · 预计 92s      │
+└───────────────────────────┴──────────────────────────────┘
+</code></pre></div>
+<p><strong>交互要点</strong></p>
+<ul>
+<li>编辑器是 Markdown，按 <a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §S2 的格式约定高亮 <code>## SCENE</code> 与 <code>[STATE_IN/OUT]</code>。</li>
+<li>「AI 生成剧本」调 <code>POST /api/ai/script</code>，流式输出到编辑器（用户能看着它写，比转圈好）。</li>
+<li>「解析为场次」把 Markdown 结构化落 <code>scenes</code> 表，解析结果先以 diff 预览呈现，确认后写入——<strong>不静默覆盖用户手写的内容</strong>。</li>
+<li>钩子类型选择器带提示：连续三集同类型时标黄警告（<a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §S1 的约束）。</li>
+</ul>
+<hr/>
+<h2 id="2.-分镜页-projectsidstoryboard-主战场">2. 分镜页 <code>/projects/[id]/storyboard</code> ★ 主战场<a aria-label="链接到此节" class="anchor" href="#2.-分镜页-projectsidstoryboard-主战场">#</a></h2>
+<p>用户 80% 的时间在这里。</p>
+<div class="codeblock is-diagram"><pre><code>┌──────────────────────────────────────────────────────────────────┐
+│ 第 3 集 · 24 镜 · 92s     [筛选: 全部▾] [排序: 顺序▾]  [⌘⏎ 生成整集]│
+├──────────────────────────────────────────────────────────────────┤
+│ ▾ SCENE 1 · 咖啡馆 · 日 (8 镜 · 31s)              [生成本场]      │
+│  ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐ ┌────┐        │
+│  │#1 ✓│ │#2 ✓│ │#3 ◐│ │#4 ⚑│ │#5 ●│ │#6 ✕│ │#7 ●│ │#8 ●│        │
+│  └────┘ └────┘ └────┘ └────┘ └────┘ └────┘ └────┘ └────┘        │
+│                                                                  │
+│ ▾ SCENE 2 · 天台 · 夜 (9 镜 · 38s)                [生成本场]      │
+│  ┌────┐ ┌────┐ ...                                               │
+├──────────────────────────────────────────────────────────────────┤
+│ 已选 3 个镜头   [批量生成] [换 provider] [跳过]            [取消]  │
+└──────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+<p><strong>交互要点</strong></p>
+<ul>
+<li>卡片即 <code>&lt;ShotCard&gt;</code>，网格按场次分组、可折叠。悬停自动播放静音预览。</li>
+<li>点卡片 → 右侧滑出 Shot 详情抽屉（intent 编辑 + PromptInspector + 该镜所有 takes + 生成历史 Ledger）。</li>
+<li>「生成整集」先调 <code>POST /api/episodes/:id/generate-batch { dryRun: true }</code>，用返回值填充 <code>&lt;ConfirmSpend&gt;</code>：</li>
+</ul>
+<div class="codeblock"><pre><code>生成第 3 集
+  待生成    18 个镜头（6 个已锁定，跳过）
+  依赖阻塞   2 个（等待前序镜头选片）
+  Provider  vidu（自动路由）
+  预估成本   $3.60      今日剩余预算 $2.86  ⚠ 将超预算
+  [取消]  [仍然生成 18 个镜头（约 $3.60）]
+</code></pre></div>
+<p>超预算时确认按钮变 <code>--status-error</code> 色，但<strong>不禁用</strong>——是警告不是家长控制，决定权在用户。</p>
+<ul>
+<li>依赖阻塞的镜头卡片显示锁链图标与 tooltip「等待 #7 选片后自动开始」，前序解锁后自动入队（<a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §6）。</li>
+<li>筛选器：全部 / 待生成 / 生成中 / 待选 / 已锁定 / 失败。失败筛选是失败后的第一落脚点。</li>
+</ul>
+<hr/>
+<h2 id="3.-资产页-projectsidassets">3. 资产页 <code>/projects/[id]/assets</code><a aria-label="链接到此节" class="anchor" href="#3.-资产页-projectsidassets">#</a></h2>
+<p><strong>用途</strong>：S4 阶段，建立并锁定一致性资产。这一步没做完，分镜页的批量生成入口应当禁用并给出说明。</p>
+<div class="codeblock is-diagram"><pre><code>┌────────────────┬─────────────────────────────────────────────┐
+│ 角色 (3)        │  林夏                            v2 ✓已锁定  │
+│  · 林夏 ✓       │  ┌──────┐┌──────┐┌──────┐                   │
+│  · 陈默 ✓       │  │ 正面 ││ 侧面 ││ 全身 │  [+ 生成更多]       │
+│  · 老板 ⚠ 无参考 │  └──────┘└──────┘└──────┘                   │
+│                │                                             │
+│ 场景 (2)        │  描述（注入每个 prompt）                      │
+│  · 咖啡馆 ✓     │  ┌─────────────────────────────────────┐    │
+│  · 天台 ✓       │  │ 25岁女性，齐肩黑发，米色风衣…          │    │
+│                │  └─────────────────────────────────────┘    │
+│ 风格 (1)        │  音色  female-warm-01     [试听]             │
+│  · 都市写实 ✓   │  引用于 14 个镜头                            │
+└────────────────┴─────────────────────────────────────────────┘
+</code></pre></div>
+<p><strong>交互要点</strong></p>
+<ul>
+<li>未绑定参考图的资产标 ⚠，并在分镜页对应镜头上同步提示。</li>
+<li>改描述会 <code>version++</code>，已锁定的引用镜头显示「资产已更新」角标，<strong>不自动重做</strong>（<a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §7 的原则）。提供「重做受影响的 14 个镜头」批量入口，由人决定。</li>
+<li>参考图可上传也可生成；生成走同一套 provider 适配器（图像模式）。</li>
+</ul>
+<hr/>
+<h2 id="4.-选片页-projectsidreview-高频重复操作">4. 选片页 <code>/projects/[id]/review</code> ★ 高频重复操作<a aria-label="链接到此节" class="anchor" href="#4.-选片页-projectsidreview-高频重复操作">#</a></h2>
+<p>为键盘操作优化，目标是<strong>一个镜头 3 秒内决策完</strong>。</p>
+<div class="codeblock is-diagram"><pre><code>┌──────────────────────────────────────────────────────────────┐
+│ 待选 7 个   ◀ #4  林夏抬头看向门口 · CU · 4.0s  ▶            │
+├────────────────────┬────────────────────┬────────────────────┤
+│  Take 1            │  Take 2  ← 当前     │  Take 3            │
+│  ┌──────────────┐  │  ┌──────────────┐  │  ┌──────────────┐  │
+│  │              │  │  │              │  │  │              │  │
+│  └──────────────┘  │  └──────────────┘  │  └──────────────┘  │
+│  vidu · $0.08      │  vidu · $0.08      │  selfhost · $0.01  │
+│  T0 ✓  seed 41823  │  T0 ✓  seed 77219  │  T0 ✓  seed 10022  │
+│  [1] 选它           │  [2] 选它           │  [3] 选它           │
+├────────────────────┴────────────────────┴────────────────────┤
+│  ▶ 同步播放  ━━━━━━━●━━━━━━━━  2.1s / 4.0s                    │
+│  [R 重新生成]  [X 全部拒绝]  [S 跳过此镜]      [⏎ 确认并下一个] │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+<p><strong>交互要点</strong></p>
+<ul>
+<li>三个 take 同步播放同步进度，便于逐帧对比。</li>
+<li>快捷键全覆盖（见 <a href="07-design-system.html" title="前端设计系统"><code>07-design-system.md</code></a> §7）。确认后自动跳到下一个待选镜头，形成流水线节奏。</li>
+<li>「全部拒绝」触发重新生成并升级重试策略（换 seed → 强化 prompt → 换 provider）。</li>
+<li>显示每个 take 的 provider 与成本——用户会自然形成「哪家在这类镜头上好用」的直觉，这个直觉后续会被 §6 的数据验证。</li>
+</ul>
+<hr/>
+<h2 id="5.-剪辑页-projectsidtimeline">5. 剪辑页 <code>/projects/[id]/timeline</code><a aria-label="链接到此节" class="anchor" href="#5.-剪辑页-projectsidtimeline">#</a></h2>
+<div class="codeblock is-diagram"><pre><code>┌──────────────────────────────────────────────────────────────┐
+│  ┌────────────────────┐   预览播放器                          │
+│  │                    │   ▶ ━━━●━━━━━━  0:34 / 1:32          │
+│  └────────────────────┘                                      │
+├──────────────────────────────────────────────────────────────┤
+│ 画面 ▐#1▌▐#2 ▌▐#3▌▐#4  ▌▐#5▌▐#6 ▌▐#7▌▐#8  ▌                  │
+│ 配音 ▐──▌▐───▌▐──▌▐─── ▌▐░░▌▐───▌▐──▌▐─── ▌  ░=缺失          │
+│ 字幕 ▐──▌▐───▌▐──▌▐─── ▌▐──▌▐───▌▐──▌▐─── ▌                  │
+│ BGM  ▐──────────────────────────────────────▌                │
+├──────────────────────────────────────────────────────────────┤
+│ [合成缺失配音 (1)]  [烧录字幕 ☐]  [质量: 预览▾]  [渲染本集]     │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+<p><strong>交互要点</strong></p>
+<ul>
+<li>clip 宽度正比时长；拖拽排序，边缘拖拽 trim。</li>
+<li>缺失配音的 clip 在音轨上以 <code>░</code> 标出，一键补齐。</li>
+<li>渲染分「预览」（720p 快速）与「最终」（1080p）两档；渲染中显示 FFmpeg 进度，失败时可展开日志。</li>
+</ul>
+<hr/>
+<h2 id="6.-洞察页-projectsidinsights">6. 洞察页 <code>/projects/[id]/insights</code><a aria-label="链接到此节" class="anchor" href="#6.-洞察页-projectsidinsights">#</a></h2>
+<p>回答「这部剧花了多少钱、质量如何、哪个 provider 更划算」。</p>
+<div class="codeblock is-diagram"><pre><code>┌─────────────┬─────────────┬─────────────┬─────────────┐
+│ 总花费       │ 每可用镜头   │ 一次通过率   │ 平均尝试     │
+│ $18.42      │ $0.21       │ 58%         │ 1.7 次       │
+└─────────────┴─────────────┴─────────────┴─────────────┘
+
+Provider × 镜头类型 的每可用镜头成本（越低越好）
+  vidu      CU  ▓▓▓▓▓▓▓▓ $0.18        通过率 64%
+  vidu      WS  ▓▓▓▓▓▓▓▓▓▓▓▓ $0.31    通过率 41%
+  selfhost  CU  ▓▓▓ $0.04             通过率 52%
+  selfhost  WS  ▓▓▓▓▓ $0.07           通过率 38%
+
+失败码分布            每日花费趋势
+  eval_rejected 42%   [折线图]
+  provider_error 28%
+  content_filtered 18%
+  timeout 12%
+</code></pre></div>
+<p>数据直接来自 <a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a> §4 的分析查询。这一页在 MVP 阶段可以简陋，但<strong>必须存在</strong>——没有它就无法回答「自部署到底省不省钱」，而这正是整个技术选型的核心问题。</p>
+<hr/>
+<h2 id="7.-播放器-watchepisodeid">7. 播放器 <code>/watch/[episodeId]</code><a aria-label="链接到此节" class="anchor" href="#7.-播放器-watchepisodeid">#</a></h2>
+<p>与 Studio 分离的路由组，是<strong>成品验收视角</strong>——用观众的眼睛看，而不是生产者的眼睛。</p>
+<div class="codeblock is-diagram"><pre><code>┌──────────────────────────────┐
+│                              │
+│         9:16 视频             │
+│                              │
+│  ▶ ━━━━●━━━━━━━  0:34/1:32   │
+├──────────────────────────────┤
+│ 第 3 集 · 真相                │
+│ ◀ 上一集      下一集 ▶        │
+└──────────────────────────────┘
+</code></pre></div>
+<p>竖屏为主，键盘 <code>←/→</code> 切集、<code>Space</code> 播放暂停。支持 HLS（hls.js）与直接 MP4。这一页刻意做得像消费产品——生产者太容易陷入镜头细节而忘了整体观感，切换到这个视角能发现分镜页发现不了的问题。</p>
+<hr/>
+<h2 id="8.-空态与首次使用">8. 空态与首次使用<a aria-label="链接到此节" class="anchor" href="#8.-空态与首次使用">#</a></h2>
+<p>每个页面的空态都要给下一步动作，不能只是「暂无数据」：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>页面</th>
+<th>空态文案</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>项目列表</td>
+<td>「还没有项目。创建第一个项目，或载入示例项目（1 集 / 12 镜 / mock provider）。」</td>
+</tr>
+<tr>
+<td>分镜页</td>
+<td>「本集还没有分镜。先去剧本页写剧本，或直接用 AI 生成分镜。」</td>
+</tr>
+<tr>
+<td>选片页</td>
+<td>「没有待选镜头。去分镜页生成一些。」</td>
+</tr>
+<tr>
+<td>资产页</td>
+<td>「还没有角色。角色参考图是一致性的基础，建议先建角色再批量生成镜头。」</td>
+</tr>
+</tbody>
+</table></div>
+<p>「载入示例项目」对应 <code>pnpm db:seed</code>，是新用户第一分钟就能看到完整流程的关键（<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a> §9）。</p>
+<hr/>
+<h2 id="9.-响应式">9. 响应式<a aria-label="链接到此节" class="anchor" href="#9.-响应式">#</a></h2>
+<p>工具类应用以桌面为主，但要能在 iPad 上审片：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>断点</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>≥1440px</td>
+<td>完整布局，分镜网格 6 列</td>
+</tr>
+<tr>
+<td>1024–1440px</td>
+<td>侧栏收为图标，网格 4 列</td>
+</tr>
+<tr>
+<td>768–1024px</td>
+<td>侧栏抽屉化，网格 3 列；剪辑页只读</td>
+</tr>
+<tr>
+<td>&lt;768px</td>
+<td>仅开放选片页与播放器，其余引导用桌面</td>
+</tr>
+</tbody>
+</table></div>
+<p>剪辑页在小屏不提供编辑——精细 trim 在触屏上做不好，与其做个残废版本不如明确不提供。</p><nav class="pager"><a href="07-design-system.html"><div class="dir">← 上一篇</div><div class="name">07 · 前端设计系统</div></a><a class="next" href="09-python-worker.html"><div class="dir">下一篇 →</div><div class="name">09 · Python 生成 Worker 与远程 GPU 部署</div></a></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#0.-全局框架">0. 全局框架</a>
+<a class="lvl-2" href="#1.-剧本页-projectsidscript">1. 剧本页 /projects/[id]/script</a>
+<a class="lvl-2" href="#2.-分镜页-projectsidstoryboard-主战场">2. 分镜页 /projects/[id]/storyboard ★ 主战场</a>
+<a class="lvl-2" href="#3.-资产页-projectsidassets">3. 资产页 /projects/[id]/assets</a>
+<a class="lvl-2" href="#4.-选片页-projectsidreview-高频重复操作">4. 选片页 /projects/[id]/review ★ 高频重复操作</a>
+<a class="lvl-2" href="#5.-剪辑页-projectsidtimeline">5. 剪辑页 /projects/[id]/timeline</a>
+<a class="lvl-2" href="#6.-洞察页-projectsidinsights">6. 洞察页 /projects/[id]/insights</a>
+<a class="lvl-2" href="#7.-播放器-watchepisodeid">7. 播放器 /watch/[episodeId]</a>
+<a class="lvl-2" href="#8.-空态与首次使用">8. 空态与首次使用</a>
+<a class="lvl-2" href="#9.-响应式">9. 响应式</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+</body>
+</html>

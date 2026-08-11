@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>00 · 项目总览与范围定义 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">00 · 项目总览与范围定义</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item active" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 00</div><h1>项目总览与范围定义</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10 · Owner: Jason</p>
+</blockquote>
+<h2 id="1.-一句话定义">1. 一句话定义<a aria-label="链接到此节" class="anchor" href="#1.-一句话定义">#</a></h2>
+<p><code>ai-drama-studio</code> 是一个<strong>本地优先（local-first）的 AI 短剧生产系统</strong>：输入一个故事，输出可播放的分集短剧成片。它同时是生产工具（Studio）和播放器（Player）。</p>
+<p>第一阶段目标不是商业化，而是<strong>把「文本 → 可播放视频」这条主干在本地完整跑通</strong>，并且这条主干的每一环都可替换、可观测、可计价。</p>
+<h2 id="2.-为什么要自建而不是用现成工具">2. 为什么要自建，而不是用现成工具<a aria-label="链接到此节" class="anchor" href="#2.-为什么要自建而不是用现成工具">#</a></h2>
+<p>现成的一站式 AI 视频工具（即梦、可灵网页版、Seko 等）解决的是「生成一个片段」。它们解决不了三件事，而这三件事恰恰是短剧工业化的全部难点：</p>
+<ol>
+<li><strong>跨镜头的状态延续</strong>：同一个角色在第 47 个镜头里必须还是同一张脸、同一身衣服。</li>
+<li><strong>规模化的批处理与记账</strong>：一部剧 1500–3000 个镜头，需要队列、重试、成本归集，而不是人肉点「生成」。</li>
+<li><strong>可替换的生成后端</strong>：模型和价格每季度都在变，业务逻辑不能和某一家 API 绑死。</li>
+</ol>
+<p>本项目的全部设计都围绕这三点展开。</p>
+<h2 id="2.5-市场定位北美-r-级竖屏短剧">2.5 市场定位：北美 R 级竖屏短剧<a aria-label="链接到此节" class="anchor" href="#2.5-市场定位北美-r-级竖屏短剧">#</a></h2>
+<p><strong>本系统面向北美市场的 R 级（MPA R / TV-MA）竖屏短剧，不对齐中国国内模式。</strong> 这个定位决定了架构上的四处根本差异：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th>中国模式</th>
+<th>本系统（北美 R 级）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>收入结构</strong></td>
+<td>平台分账兜底（红果/番茄），流量成本由平台承担</td>
+<td><strong>无分账</strong>。收入 = 买量效率。美国 CAC $3–7/安装，回本周期 &lt;60 天是生存线</td>
+</tr>
+<tr>
+<td><strong>成本结构</strong></td>
+<td>制作为主</td>
+<td><strong>营销约为制作的 9 倍</strong>，头部平台高达 90% 预算投在获客。→ 系统的主产物是素材，正片是原材料</td>
+</tr>
+<tr>
+<td><strong>分发</strong></td>
+<td>抖音生态内闭环</td>
+<td>免费平台引流（FB 25% / TikTok 19% / <strong>Snapchat 16%</strong> / IG 8% / YouTube 仅 2%）→ 自有 App/Web 转化</td>
+</tr>
+<tr>
+<td><strong>内容分级</strong></td>
+<td>备案 + AIGC 标识</td>
+<td><strong>三层分级</strong>（投放安全 / 商店安全 / 完整 TV-MA），见 §4 约束 C7</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>形态标准（按北美实际口径，非中国口径）</strong>：80–100 集 × 60–90 秒，总时长 60–100 分钟（≈一部电影），前 7–10 集免费，付费墙落在悬念点而非集尾整数位。</p>
+<p><strong>战略排序：先打曝光，再优化细节。</strong> 这不是营销口号，是架构约束——它决定了系统必须在正片之外把素材产线做成一等公民，且素材的分级、标签、变体矩阵要在生成阶段就写入，而不是事后补。</p>
+<h2 id="3.-范围scope">3. 范围（Scope）<a aria-label="链接到此节" class="anchor" href="#3.-范围scope">#</a></h2>
+<h3 id="3.1-in-scope-完整流水线">3.1 In Scope — 完整流水线<a aria-label="链接到此节" class="anchor" href="#3.1-in-scope-完整流水线">#</a></h3>
+<figure class="diagram"><div class="mermaid">flowchart TD
+    A["故事 / 剧本"] --&gt; B["分集"]
+    B --&gt; C["分场"]
+    C --&gt; D["分镜 Shot List"]
+    D --&gt; E["角色 / 场景 / 风格&lt;br/&gt;参考资产库"]
+    E --&gt; F["逐镜头生成&lt;br/&gt;批量 + 重试"]
+    F --&gt; G["评测与筛选&lt;br/&gt;自动 + 人审"]
+    G --&gt; H["配音 / 字幕 / BGM / 音效"]
+    H --&gt; I["FFmpeg 拼接 → 集成片 Master"]
+    I --&gt; J["本地播放器 + 追更"]
+</div></figure>
+<h3 id="3.2-out-of-scope第一阶段明确不做">3.2 Out of Scope（第一阶段明确不做）<a aria-label="链接到此节" class="anchor" href="#3.2-out-of-scope第一阶段明确不做">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>不做</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>支付、订阅、权益系统</td>
+<td>本阶段目标是生产链路，不是变现</td>
+</tr>
+<tr>
+<td>多租户 / 用户体系</td>
+<td>单人本地使用，<code>user_id</code> 字段预留但不实现登录</td>
+</tr>
+<tr>
+<td>CDN / 大规模分发</td>
+<td>本地文件服务 + HTTP Range 足够</td>
+</tr>
+<tr>
+<td>内容审核与合规闸门</td>
+<td>架构预留 <code>safety_profile</code> 字段与 Eval 钩子，逻辑后置</td>
+</tr>
+<tr>
+<td>移动端 App</td>
+<td>Web 响应式即可</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p>注意：Out of Scope 不等于「架构里不留位置」。数据模型和接口层会为这些能力预留扩展点，见 <a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a>。</p>
+</blockquote>
+<h2 id="4.-关键设计约束">4. 关键设计约束<a aria-label="链接到此节" class="anchor" href="#4.-关键设计约束">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>约束</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>C1 · 语言分工</strong></td>
+<td>Web 与业务控制面用 TypeScript；模型推理、CV、媒体处理用 Python。两者只通过 HTTP 契约通信，不共享进程。</td>
+</tr>
+<tr>
+<td><strong>C2 · 生成后端可替换</strong></td>
+<td>任何生成能力都藏在 Provider 适配器之后。业务代码永远不 import 某个厂商 SDK。见 <a href="04-provider-adapter.html" title="Provider 适配器契约"><code>04-provider-adapter.md</code></a>。</td>
+</tr>
+<tr>
+<td><strong>C3 · 开发机无 GPU</strong></td>
+<td>Mac 只跑 Web + 控制面 + 轻量媒体处理；一切 GPU 工作在远程 worker 上。本地必须能在<strong>没有任何 GPU</strong>的情况下用 mock provider 跑通全流程。</td>
+</tr>
+<tr>
+<td><strong>C4 · 一切生成留痕</strong></td>
+<td>每一次生成尝试（含失败）都写入 Generation Ledger：参数、种子、耗时、成本、评测、是否采用。这是后续所有优化的数据基础。</td>
+</tr>
+<tr>
+<td><strong>C5 · 母版不可变</strong></td>
+<td>Master 资产只增不改。任何「修改」都是产生新版本 + 记录 lineage。</td>
+</tr>
+<tr>
+<td><strong>C6 · 存储接口即 S3</strong></td>
+<td>本地用 MinIO 提供 S3 API，代码永远按 S3 写。将来换云存储零改动。</td>
+</tr>
+<tr>
+<td><strong>C7 · 三层分级镜头级分离</strong></td>
+<td>每个内容产物有三个分级层：<strong>L0 投放安全</strong>（广告素材/商店截图）、<strong>L1 商店安全</strong>（App 内正片，Apple 16+ 上限）、<strong>L2 完整 TV-MA</strong>（Web + 年龄门控）。分级必须在<strong>镜头级</strong>分离——剧情信息与尺度画面永不同镜，降级即删换镜头而非重剪场景。</td>
+</tr>
+<tr>
+<td><strong>C8 · 素材是一等产物</strong></td>
+<td>单部剧的交付物不是 80 集正片，而是 600–1200 个产物（正片 + 素材 + 商店资产 + 联盟包）。数据模型必须把 HookConcept / Render 建成实体，而非正片的附属。</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="5.-术语表全项目统一">5. 术语表（全项目统一）<a aria-label="链接到此节" class="anchor" href="#5.-术语表全项目统一">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>术语</th>
+<th>定义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Project</strong></td>
+<td>一部剧。顶层容器。</td>
+</tr>
+<tr>
+<td><strong>Episode</strong></td>
+<td>一集，通常 1–2 分钟。</td>
+</tr>
+<tr>
+<td><strong>Scene</strong></td>
+<td>一场戏，同一时间地点的连续叙事单元。</td>
+</tr>
+<tr>
+<td><strong>Shot</strong></td>
+<td>一个镜头，生成的最小单位，通常 2–8 秒。</td>
+</tr>
+<tr>
+<td><strong>Shot Intent</strong></td>
+<td>镜头的结构化意图：景别、机位、动作、情绪、时长、参考资产。<strong>不是 prompt</strong>，是生成 prompt 的输入。</td>
+</tr>
+<tr>
+<td><strong>Asset</strong></td>
+<td>任何二进制产物：图、视频、音频、字幕、母版。带 hash 与 lineage。</td>
+</tr>
+<tr>
+<td><strong>Character / Location / StyleProfile</strong></td>
+<td>可复用的一致性资产，各自持有参考图集与描述。</td>
+</tr>
+<tr>
+<td><strong>Provider</strong></td>
+<td>一个生成后端的适配器实现（云 API 或自部署 worker）。</td>
+</tr>
+<tr>
+<td><strong>Generation Job</strong></td>
+<td>一次生成尝试。一个 Shot 可能对应多个 Job（重试/多方案）。</td>
+</tr>
+<tr>
+<td><strong>Take</strong></td>
+<td>一个 Job 产出的一条候选视频。一个 Shot 从多个 Take 中选一条 <code>selected</code>。</td>
+</tr>
+<tr>
+<td><strong>Eval</strong></td>
+<td>对 Take 的自动或人工评分。</td>
+</tr>
+<tr>
+<td><strong>Timeline</strong></td>
+<td>一集的剪辑时间线：Take 序列 + 音轨 + 字幕轨。</td>
+</tr>
+<tr>
+<td><strong>Master</strong></td>
+<td>一集拼接渲染后的成片。</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="6.-成功标准第一阶段验收">6. 成功标准（第一阶段验收）<a aria-label="链接到此节" class="anchor" href="#6.-成功标准第一阶段验收">#</a></h2>
+<p>系统达到以下状态即认为主干跑通：</p>
+<ol>
+<li>在 Mac 上 <code>pnpm dev</code> + <code>docker compose up</code>，无 GPU，用 mock provider 可以从剧本走到可播放的一集成片。</li>
+<li>切换到真实云 API provider（改一个环境变量），同一条链路产出真实视频。</li>
+<li>接入远程 GPU 上的 Python worker（再改一个环境变量），同一条链路产出自部署模型的视频。</li>
+<li>生成 60 个镜头的一集，全程无需手工干预排队；失败镜头自动重试并在 UI 中标红待处理。</li>
+<li>每一集都能回答：花了多少钱、多少镜头一次通过、哪个 provider 表现更好。</li>
+<li>一部剧能自动产出 L0/L1/L2 三个分级版本，且 L1/L0 由替换清单自动 conform 而非人工重剪。</li>
+<li>能从成片自动切出 40–60 条钩子概念素材，每条带完整投放标签。</li>
+</ol>
+<h2 id="7.-文档地图">7. 文档地图<a aria-label="链接到此节" class="anchor" href="#7.-文档地图">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>文档</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>00-overview.md</code></td>
+<td>本文：范围、约束、术语</td>
+</tr>
+<tr>
+<td><a href="01-architecture.html" title="系统架构"><code>01-architecture.md</code></a></td>
+<td>系统架构、进程拓扑、目录结构</td>
+</tr>
+<tr>
+<td><a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a></td>
+<td>数据库 schema 与实体关系</td>
+</tr>
+<tr>
+<td><a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a></td>
+<td>流水线阶段与状态机</td>
+</tr>
+<tr>
+<td><a href="04-provider-adapter.html" title="Provider 适配器契约"><code>04-provider-adapter.md</code></a></td>
+<td>生成后端适配器契约</td>
+</tr>
+<tr>
+<td><a href="05-job-orchestration.html" title="任务编排：队列、重试、并发与记账"><code>05-job-orchestration.md</code></a></td>
+<td>队列、重试、并发、成本记账</td>
+</tr>
+<tr>
+<td><a href="06-api-spec.html" title="控制面 API 规范"><code>06-api-spec.md</code></a></td>
+<td>控制面 HTTP/SSE API</td>
+</tr>
+<tr>
+<td><a href="07-design-system.html" title="前端设计系统"><code>07-design-system.md</code></a></td>
+<td>前端设计系统（色彩/排版/组件）</td>
+</tr>
+<tr>
+<td><a href="08-screen-specs.html" title="页面与交互规格"><code>08-screen-specs.md</code></a></td>
+<td>页面与交互规格</td>
+</tr>
+<tr>
+<td><a href="09-python-worker.html" title="Python 生成 Worker 与远程 GPU 部署"><code>09-python-worker.md</code></a></td>
+<td>Python 生成 worker 与远程 GPU 部署</td>
+</tr>
+<tr>
+<td><a href="10-media-storage.html" title="媒体存储、拼接与音频"><code>10-media-storage.md</code></a></td>
+<td>媒体存储、FFmpeg 拼接、音频字幕</td>
+</tr>
+<tr>
+<td><a href="11-dev-setup.html" title="本地开发环境搭建"><code>11-dev-setup.md</code></a></td>
+<td>本地开发环境搭建</td>
+</tr>
+<tr>
+<td><a href="12-roadmap.html" title="里程碑与验收标准"><code>12-roadmap.md</code></a></td>
+<td>里程碑与验收</td>
+</tr>
+<tr>
+<td><code>adr/*.md</code></td>
+<td>架构决策记录</td>
+</tr>
+</tbody>
+</table></div><nav class="pager"><span class="none"></span><a class="next" href="01-architecture.html"><div class="dir">下一篇 →</div><div class="name">01 · 系统架构</div></a></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-一句话定义">1. 一句话定义</a>
+<a class="lvl-2" href="#2.-为什么要自建而不是用现成工具">2. 为什么要自建，而不是用现成工具</a>
+<a class="lvl-2" href="#2.5-市场定位北美-r-级竖屏短剧">2.5 市场定位：北美 R 级竖屏短剧</a>
+<a class="lvl-2" href="#3.-范围scope">3. 范围（Scope）</a>
+<a class="lvl-3" href="#3.1-in-scope-完整流水线">3.1 In Scope — 完整流水线</a>
+<a class="lvl-3" href="#3.2-out-of-scope第一阶段明确不做">3.2 Out of Scope（第一阶段明确不做）</a>
+<a class="lvl-2" href="#4.-关键设计约束">4. 关键设计约束</a>
+<a class="lvl-2" href="#5.-术语表全项目统一">5. 术语表（全项目统一）</a>
+<a class="lvl-2" href="#6.-成功标准第一阶段验收">6. 成功标准（第一阶段验收）</a>
+<a class="lvl-2" href="#7.-文档地图">7. 文档地图</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+<script src="assets/mermaid.min.js"></script>
+<script>
+(function () {
+  if (typeof mermaid === 'undefined') return;
+  var FONT = 'system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+
+  var DARK = {
+    background: 'transparent',
+    primaryColor: '#1d1d21', primaryTextColor: '#f2f2f0', primaryBorderColor: '#3a3a42',
+    secondaryColor: '#16233a', secondaryTextColor: '#f2f2f0', secondaryBorderColor: '#2a4a72',
+    tertiaryColor: '#151518', tertiaryTextColor: '#a1a1aa', tertiaryBorderColor: '#2a2a30',
+    lineColor: '#6b6b75', textColor: '#c9c9cd',
+    mainBkg: '#1d1d21', nodeBorder: '#3a3a42', nodeTextColor: '#f2f2f0',
+    clusterBkg: 'rgba(57,135,229,.055)', clusterBorder: '#2a4a72',
+    edgeLabelBackground: '#0c0c0e', titleColor: '#f2f2f0'
+  };
+  var LIGHT = {
+    background: 'transparent',
+    primaryColor: '#ffffff', primaryTextColor: '#0b0b0b', primaryBorderColor: '#c9c8c1',
+    secondaryColor: '#eef4fc', secondaryTextColor: '#0b0b0b', secondaryBorderColor: '#a9c8ec',
+    tertiaryColor: '#f4f4f2', tertiaryTextColor: '#52514e', tertiaryBorderColor: '#e2e1dc',
+    lineColor: '#8a8984', textColor: '#33322f',
+    mainBkg: '#ffffff', nodeBorder: '#c9c8c1', nodeTextColor: '#0b0b0b',
+    clusterBkg: 'rgba(42,120,214,.05)', clusterBorder: '#a9c8ec',
+    edgeLabelBackground: '#fafaf9', titleColor: '#0b0b0b'
+  };
+
+  // 原始源码存起来，切主题时要用它重绘
+  var nodes = Array.prototype.slice.call(document.querySelectorAll('.mermaid'));
+  nodes.forEach(function (n) { n.dataset.src = n.textContent; });
+
+  function conf() {
+    var dark = document.documentElement.getAttribute('data-theme') !== 'light';
+    return {
+      startOnLoad: false, securityLevel: 'loose', theme: 'base',
+      fontFamily: FONT, fontSize: 13,
+      flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: true,
+                   padding: 11, nodeSpacing: 34, rankSpacing: 40, diagramPadding: 8 },
+      themeVariables: dark ? DARK : LIGHT
+    };
+  }
+
+  function draw() {
+    nodes.forEach(function (n) {
+      n.removeAttribute('data-processed');
+      n.innerHTML = n.dataset.src;
+    });
+    mermaid.initialize(conf());
+    mermaid.run({ nodes: nodes }).catch(function (e) { console.warn('mermaid:', e); });
+  }
+
+  draw();
+  window.addEventListener('ads-theme-change', draw);
+})();
+</script>
+
+</body>
+</html>

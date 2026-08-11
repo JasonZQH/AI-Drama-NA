@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · Provider 适配器契约 · ai-drama-studio docs</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script>
+  // 主题在样式生效前确定，避免闪白
+  (function () {
+    try {
+      var t = localStorage.getItem('ads-docs-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="navToggle" aria-label="切换导航" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  <a class="brand" href="index.html"><span class="dot"></span>ai-drama-studio</a>
+  <span class="sep">/</span>
+  <span class="crumb">04 · Provider 适配器契约</span>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="themeToggle" aria-label="切换深浅色"><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar"><div class="nav-group">
+<div class="label">基础</div>
+<a class="nav-item" href="00-overview.html"><span class="num">00</span><span>项目总览与范围定义</span></a>
+<a class="nav-item" href="01-architecture.html"><span class="num">01</span><span>系统架构</span></a>
+</div>
+<div class="nav-group">
+<div class="label">数据与流程</div>
+<a class="nav-item" href="02-data-model.html"><span class="num">02</span><span>数据模型</span></a>
+<a class="nav-item" href="03-pipeline.html"><span class="num">03</span><span>生产流水线与状态机</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成层</div>
+<a class="nav-item active" href="04-provider-adapter.html"><span class="num">04</span><span>Provider 适配器契约</span></a>
+<a class="nav-item" href="05-job-orchestration.html"><span class="num">05</span><span>任务编排：队列、重试、并发与记账</span></a>
+<a class="nav-item" href="06-api-spec.html"><span class="num">06</span><span>控制面 API 规范</span></a>
+</div>
+<div class="nav-group">
+<div class="label">前端</div>
+<a class="nav-item" href="07-design-system.html"><span class="num">07</span><span>前端设计系统</span></a>
+<a class="nav-item" href="08-screen-specs.html"><span class="num">08</span><span>页面与交互规格</span></a>
+</div>
+<div class="nav-group">
+<div class="label">工程落地</div>
+<a class="nav-item" href="09-python-worker.html"><span class="num">09</span><span>Python 生成 Worker 与远程 GPU 部署</span></a>
+<a class="nav-item" href="10-media-storage.html"><span class="num">10</span><span>媒体存储、拼接与音频</span></a>
+<a class="nav-item" href="11-dev-setup.html"><span class="num">11</span><span>本地开发环境搭建</span></a>
+<a class="nav-item" href="12-roadmap.html"><span class="num">12</span><span>里程碑与验收标准</span></a>
+</div>
+<div class="nav-group">
+<div class="label">生成质量</div>
+<a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
+</div>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+  <main class="content"><div class="doc-head"><div class="eyebrow">文档 04</div><h1>Provider 适配器契约</h1></div><blockquote>
+<p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a> · 对应 ADR-0002</p>
+</blockquote>
+<h2 id="1.-为什么这是最重要的一层">1. 为什么这是最重要的一层<a aria-label="链接到此节" class="anchor" href="#1.-为什么这是最重要的一层">#</a></h2>
+<p>模型和价格每个季度都在变：托管 API 会涨价、会限流、会改政策；开源模型会有新版本、会突然闭源。如果业务代码里散落着 <code>import { ViduClient }</code>，每次变动都要改几十处。</p>
+<p>适配器层的目标是：<strong>业务代码永远只认识一个接口，不认识任何厂商</strong>。</p>
+<figure class="diagram"><div class="mermaid">flowchart LR
+    BIZ["业务代码&lt;br/&gt;不认识任何厂商"]
+    IF["VideoProvider 接口&lt;br/&gt;统一契约"]
+    MK["MockProvider&lt;br/&gt;本地开发 · 无需 key"]
+    VD["ViduProvider&lt;br/&gt;云 API"]
+    KL["KlingProvider&lt;br/&gt;云 API"]
+    JM["JimengProvider&lt;br/&gt;云 API · 火山方舟"]
+    SH["SelfHostProvider&lt;br/&gt;远程 Python worker"]
+    BIZ --&gt; IF
+    IF --&gt; MK
+    IF --&gt; VD
+    IF --&gt; KL
+    IF --&gt; JM
+    IF --&gt; SH
+</div></figure>
+<p>换后端的成本 = 改一行配置。这条不成立，后面所有的成本优化和质量对比都无从谈起。</p>
+<h2 id="2.-统一请求响应模型">2. 统一请求/响应模型<a aria-label="链接到此节" class="anchor" href="#2.-统一请求响应模型">#</a></h2>
+<p>定义在 <code>packages/contracts/src/provider.ts</code>。所有字段都是 provider 中立的。</p>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export const GenerationRequest = z.object({
+  // ── 幂等与追踪 ──
+  requestId: z.string().uuid(),        // = generation_jobs.id，用于幂等重放
+  shotId:    z.string().uuid(),
+
+  // ── 生成内容 ──
+  mode:      GenMode,                  // t2v | i2v | ref2v | extend
+  prompt:    z.string(),
+  negativePrompt: z.string().optional(),
+
+  // 输入图像：语义化命名，而非位置参数
+  refImages: z.array(z.object({
+    role: z.enum(['character','location','style','first_frame','last_frame']),
+    url:  z.string().url(),            // 预签名 URL，provider 可直接拉取
+    weight: z.number().min(0).max(1).optional(),
+  })).default([]),
+
+  // ── 输出规格 ──
+  durationSec: z.number().min(1).max(15),
+  resolution:  z.enum(['480p','720p','1080p']),
+  aspectRatio: z.enum(['9:16','16:9','1:1']),
+  fps:         z.number().int().default(24),
+  seed:        z.number().int().optional(),
+
+  // ── 策略 ──
+  safetyProfile: SafetyProfile.default('standard'),
+  priority:      z.enum(['low','normal','high']).default('normal'),
+  // provider 私有参数逃生舱：只有该 provider 的适配器会读它
+  providerParams: z.record(z.unknown()).default({}),
+})
+export type GenerationRequest = z.infer&lt;typeof GenerationRequest&gt;
+
+export interface GenerationResult {
+  status:      'succeeded'
+  outputUrl:   string          // provider 侧可下载 URL，或已直写的 S3 key
+  storageKey?: string          // 自部署 worker 直写存储时给出，控制面则跳过转存
+  durationSec: number
+  widthPx:     number
+  heightPx:    number
+  fps:         number
+  seedUsed?:   number
+  costMicroUsd: number         // provider 自报，不可得时由适配器按价目表估算
+  providerMeta: Record&lt;string, unknown&gt;   // 原始响应，留档用
+}
+
+export interface ProviderFailure {
+  status: 'failed'
+  code:   FailureCode
+  message: string
+  retryable: boolean
+  retryAfterMs?: number        // 限流时 provider 给的建议
+}
+</code></pre></div>
+<h3 id="设计要点">设计要点<a aria-label="链接到此节" class="anchor" href="#设计要点">#</a></h3>
+<p><strong><code>refImages</code> 用 <code>role</code> 而非数组下标。</strong> 不同 provider 对参考图的语义完全不同——有的第一张是首帧，有的是主体参考。用 role 标注后，适配器负责翻译成各自的调用方式，业务层不需要知道差异。</p>
+<p><strong><code>providerParams</code> 是逃生舱。</strong> 总会有某个 provider 的独有参数（比如某模型的 <code>motion_strength</code>）。给它一个明确的口子，好过污染通用字段。规矩是：<strong>只有该 provider 的适配器可以读它</strong>，业务逻辑永远不构造它（由 UI 的高级设置面板直接写入）。</p>
+<p><strong>成本必须回填。</strong> provider 不给就按适配器内置价目表估算，并在 <code>providerMeta.costEstimated = true</code> 标记。宁可要一个估算值，也不要 null——null 会让整张成本报表失真。</p>
+<h2 id="3.-provider-接口">3. Provider 接口<a aria-label="链接到此节" class="anchor" href="#3.-provider-接口">#</a></h2>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export interface VideoProvider {
+  readonly id: string                        // 'vidu' | 'selfhost-wan' | ...
+  readonly capabilities: ProviderCapabilities
+
+  /** 提交前检查：能力不匹配时快速失败，不浪费一次调用 */
+  validate(req: GenerationRequest): ValidationResult
+
+  /** 事前成本估算，用于路由决策与预算闸门 */
+  estimateCost(req: GenerationRequest): number   // micro USD
+
+  /** 提交任务。必须幂等：同 requestId 重复提交返回同一 handle */
+  submit(req: GenerationRequest): Promise&lt;ProviderHandle&gt;
+
+  /** 轮询状态。适配器内部负责把各家状态码映射到统一枚举 */
+  poll(handle: ProviderHandle): Promise&lt;ProviderProgress | GenerationResult | ProviderFailure&gt;
+
+  cancel(handle: ProviderHandle): Promise&lt;void&gt;
+
+  /** 健康检查，供路由器摘除故障 provider */
+  health(): Promise&lt;{ ok: boolean; queueDepth?: number; detail?: string }&gt;
+}
+
+export interface ProviderCapabilities {
+  modes:        GenMode[]
+  maxDurationSec: number
+  resolutions:  Array&lt;'480p'|'720p'|'1080p'&gt;
+  aspectRatios: Array&lt;'9:16'|'16:9'|'1:1'&gt;
+  maxRefImages: number
+  supportsSeed:      boolean
+  supportsNegative:  boolean
+  supportsFirstLastFrame: boolean
+  supportsAudio:     boolean          // 原生音画同步
+  /** 该 provider 在服务端是否有内容过滤——影响 mature 内容的路由 */
+  serverSideContentFilter: boolean
+  /** 并发与配额 */
+  maxConcurrent: number
+  costModel: { unit: 'per_second'|'per_clip'|'per_token'; microUsdPerUnit: number }
+}
+
+export type ProviderHandle = { providerId: string; externalId: string; submittedAt: number }
+
+export interface ProviderProgress {
+  status: 'submitted' | 'running'
+  progressPct?: number
+  etaMs?: number
+}
+</code></pre></div>
+<h2 id="4.-各适配器实现要点">4. 各适配器实现要点<a aria-label="链接到此节" class="anchor" href="#4.-各适配器实现要点">#</a></h2>
+<h3 id="4.1-mockprovider-本地开发的地基">4.1 <code>MockProvider</code> — 本地开发的地基<a aria-label="链接到此节" class="anchor" href="#4.1-mockprovider-本地开发的地基">#</a></h3>
+<p><strong>这不是玩具，是一等公民。</strong> 它保证「Mac 上无 GPU、无 API key 也能跑通全链路」这条硬约束（C3）。</p>
+<p>行为规范：
+- 从 <code>fixtures/</code> 里按 <code>shotType</code> 返回预置的短视频，时长裁剪到请求值。
+- 模拟真实延迟：<code>durationSec × 8s ± 30%</code> 抖动。
+- 按 <code>MOCK_FAILURE_RATE</code>（默认 0.15）随机失败，覆盖 <code>provider_error</code> / <code>timeout</code> / <code>content_filtered</code> 三种码——<strong>重试逻辑必须在开发期就被真实触发过</strong>，不能等上线才第一次遇到失败。
+- <code>costMicroUsd</code> 按真实价目表量级返回，让成本报表在开发期就有数据。
+- 支持 <code>MOCK_SEED_DETERMINISTIC=1</code>：同 seed 返回同一条 fixture，用于快照测试。</p>
+<h3 id="4.2-云-api-适配器vidu-kling-jimeng">4.2 云 API 适配器（Vidu / Kling / Jimeng）<a aria-label="链接到此节" class="anchor" href="#4.2-云-api-适配器vidu-kling-jimeng">#</a></h3>
+<p>共性处理，抽到 <code>BaseHttpProvider</code>：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>关注点</th>
+<th>做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>认证</td>
+<td>key 从环境变量读，<strong>绝不入库</strong>；适配器内部持有，不外泄到日志</td>
+</tr>
+<tr>
+<td>幂等</td>
+<td>以 <code>requestId</code> 作为外部 idempotency key（支持的 provider）；不支持的在本地 KV 记 <code>requestId → externalId</code> 映射</td>
+</tr>
+<tr>
+<td>限流</td>
+<td>429 时读 <code>Retry-After</code>，回传 <code>retryAfterMs</code>，由队列层做退避，不在适配器里 sleep</td>
+</tr>
+<tr>
+<td>参考图</td>
+<td>生成 MinIO 预签名 URL（TTL 1h）交给 provider 拉取；provider 不支持 URL 的才走 base64 上传</td>
+</tr>
+<tr>
+<td>错误映射</td>
+<td>每家的错误码在适配器内映射到 <code>FailureCode</code>，业务层只见统一枚举</td>
+</tr>
+<tr>
+<td>产物转存</td>
+<td>云 API 产物由控制面下载后写入 MinIO，校验 sha256，再建 asset 行</td>
+</tr>
+<tr>
+<td>内容过滤</td>
+<td><code>serverSideContentFilter: true</code>。被过滤返回 <code>content_filtered</code>（<strong>不可重试</strong>——同样的 prompt 重试只会再被拒一次，浪费配额）</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p>错峰调度：部分 provider（如 Vidu）有明显的错峰折扣。适配器暴露 <code>estimateCost</code> 时应读取当前时段，路由器据此把低优先级批量任务推到便宜时段。这个能力 M5 再启用，接口先留好。</p>
+</blockquote>
+<h3 id="4.3-selfhostprovider-远程-python-worker">4.3 <code>SelfHostProvider</code> — 远程 Python worker<a aria-label="链接到此节" class="anchor" href="#4.3-selfhostprovider-远程-python-worker">#</a></h3>
+<p>其内部推理由 <strong>ComfyUI 无头服务</strong>执行（见 <code>adr/0006-comfyui-over-diffusers.md</code>）——但这对控制面完全透明：适配器之后是 diffusers 还是 ComfyUI，业务代码不感知，这正是本层存在的意义。</p>
+<p>与云 API 的三个关键差异：</p>
+<ol>
+<li><strong>直写存储</strong>：worker 生成完直接 PUT 到 MinIO，返回 <code>storageKey</code>。控制面不下载、不中转。这是 <a href="01-architecture.html" title="系统架构"><code>01-architecture.md</code></a> §2 强调的那条规则。</li>
+<li><strong>无服务端内容过滤</strong>：<code>serverSideContentFilter: false</code>。责任完全在应用层的 Eval 与发行策略。</li>
+<li><strong>健康与容量可见</strong>：<code>health()</code> 返回真实 GPU 显存、已加载模型、队列深度，路由器可据此做容量感知调度。</li>
+</ol>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export class SelfHostProvider implements VideoProvider {
+  constructor(private baseUrl: string, private modelId: string) {}
+  // POST {baseUrl}/v1/generate  → { job_id }
+  // GET  {baseUrl}/v1/jobs/{id} → { status, progress, result }
+  // 协议定义见 09-python-worker.md
+}
+</code></pre></div>
+<h2 id="5.-provider-路由器">5. Provider 路由器<a aria-label="链接到此节" class="anchor" href="#5.-provider-路由器">#</a></h2>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export interface RoutingContext {
+  shot: Shot
+  attempt: number
+  previousFailures: FailureCode[]
+  budgetRemainingMicroUsd?: number
+  priors: ProviderPriors        // 来自 generation_jobs 的历史统计
+}
+
+export function routeProvider(ctx: RoutingContext, pool: VideoProvider[]): VideoProvider
+</code></pre></div>
+<p>决策顺序（<strong>规则优先，统计其次</strong>——先保证正确，再谈优化）：</p>
+<ol>
+<li><strong>硬约束过滤</strong>：<code>shot.providerHint</code> 指定则直接用；否则筛掉 <code>validate()</code> 不通过、<code>health()</code> 不健康、能力不匹配（如需要 <code>supportsFirstLastFrame</code> 但不支持）的。</li>
+<li><strong>安全画像过滤</strong>：<code>safetyProfile = 'mature'</code> 时只保留 <code>serverSideContentFilter === false</code> 的 provider（即自部署）。这是 MVP 不启用、但架构必须留位的一条规则。</li>
+<li><strong>失败规避</strong>：本镜已在某 provider 上失败过 <code>content_filtered</code>，把它排到最后。</li>
+<li><strong>统计排序</strong>：按 <code>usd_per_accepted</code>（该 <code>shotType</code> 上的历史每可用镜头成本）升序。样本不足 30 时退化为固定优先级配置。</li>
+<li><strong>预算闸门</strong>：<code>estimateCost</code> 超出剩余预算则降级到更便宜的 provider 或拒绝入队。</li>
+</ol>
+<p><code>ProviderPriors</code> 由一个每 15 分钟刷新的物化视图提供，查询就是 <a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a> §4 那条 SQL。</p>
+<h2 id="6.-注册与配置">6. 注册与配置<a aria-label="链接到此节" class="anchor" href="#6.-注册与配置">#</a></h2>
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">// apps/control/src/providers/registry.ts
+export function buildProviderPool(env: Env): VideoProvider[] {
+  const pool: VideoProvider[] = [new MockProvider(env)]
+  if (env.VIDU_API_KEY)  pool.push(new ViduProvider(env.VIDU_API_KEY))
+  if (env.KLING_API_KEY) pool.push(new KlingProvider(env.KLING_API_KEY))
+  if (env.SELFHOST_VIDEO_URL)
+    pool.push(new SelfHostProvider(env.SELFHOST_VIDEO_URL, env.SELFHOST_MODEL ?? 'wan2.2-i2v-a14b'))
+  return pool
+}
+</code></pre></div>
+<p><code>.env</code> 里没配的 provider 自动不进池子。开发默认只有 mock，<code>DEFAULT_PROVIDER=mock</code> 强制指定，避免误刷云账单。</p>
+<h2 id="7.-适配器的测试要求">7. 适配器的测试要求<a aria-label="链接到此节" class="anchor" href="#7.-适配器的测试要求">#</a></h2>
+<p>每个新 provider 必须通过同一套契约测试 <code>providers/__tests__/contract.spec.ts</code>：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>用例</th>
+<th>断言</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>幂等提交</td>
+<td>同 <code>requestId</code> 连提两次，<code>externalId</code> 相同，只产生一次计费</td>
+</tr>
+<tr>
+<td>能力声明一致</td>
+<td><code>capabilities</code> 里声明支持的每种 mode 都能真实提交成功</td>
+</tr>
+<tr>
+<td>超能力请求</td>
+<td>请求 15s 但 <code>maxDurationSec=10</code> → <code>validate()</code> 返回失败，且<strong>不发起网络调用</strong></td>
+</tr>
+<tr>
+<td>取消</td>
+<td>提交后立即 cancel，最终状态为 <code>cancelled</code>，不产生 take</td>
+</tr>
+<tr>
+<td>错误映射</td>
+<td>注入 429 / 5xx / 内容拒绝，分别映射到正确的 <code>FailureCode</code> 与 <code>retryable</code></td>
+</tr>
+<tr>
+<td>成本非空</td>
+<td>成功结果的 <code>costMicroUsd &gt; 0</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>云 provider 的契约测试用录制回放（nock/msw fixtures）跑，CI 不烧真钱；带 <code>--live</code> 标记时才打真实 API，仅本地手动执行。</p><nav class="pager"><a href="03-pipeline.html"><div class="dir">← 上一篇</div><div class="name">03 · 生产流水线与状态机</div></a><a class="next" href="05-job-orchestration.html"><div class="dir">下一篇 →</div><div class="name">05 · 任务编排：队列、重试、并发与记账</div></a></nav></main>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-为什么这是最重要的一层">1. 为什么这是最重要的一层</a>
+<a class="lvl-2" href="#2.-统一请求响应模型">2. 统一请求/响应模型</a>
+<a class="lvl-3" href="#设计要点">设计要点</a>
+<a class="lvl-2" href="#3.-provider-接口">3. Provider 接口</a>
+<a class="lvl-2" href="#4.-各适配器实现要点">4. 各适配器实现要点</a>
+<a class="lvl-3" href="#4.1-mockprovider-本地开发的地基">4.1 MockProvider — 本地开发的地基</a>
+<a class="lvl-3" href="#4.2-云-api-适配器vidu-kling-jimeng">4.2 云 API 适配器（Vidu / Kling / Jimeng）</a>
+<a class="lvl-3" href="#4.3-selfhostprovider-远程-python-worker">4.3 SelfHostProvider — 远程 Python worker</a>
+<a class="lvl-2" href="#5.-provider-路由器">5. Provider 路由器</a>
+<a class="lvl-2" href="#6.-注册与配置">6. 注册与配置</a>
+<a class="lvl-2" href="#7.-适配器的测试要求">7. 适配器的测试要求</a></aside>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ads-docs-theme', next); } catch (e) {}
+    window.dispatchEvent(new Event('ads-theme-change'));   // 通知 Mermaid 重绘
+  });
+
+  var toggle = document.getElementById('navToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function (e) {
+      if (window.innerWidth > 900) return;
+      if (!sidebar.contains(e.target) && !toggle.contains(e.target)) sidebar.classList.remove('open');
+    });
+  }
+
+  // 目录高亮：跟随阅读位置
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if (links.length) {
+    var map = {};
+    var targets = [];
+    links.forEach(function (a) {
+      var el = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+      if (el) { map[el.id] = a; targets.push(el); }
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('active'); });
+        var a = map[en.target.id];
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-76px 0px -72% 0px', threshold: 0 });
+    targets.forEach(function (t) { io.observe(t); });
+  }
+})();
+</script>
+
+<script src="assets/mermaid.min.js"></script>
+<script>
+(function () {
+  if (typeof mermaid === 'undefined') return;
+  var FONT = 'system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+
+  var DARK = {
+    background: 'transparent',
+    primaryColor: '#1d1d21', primaryTextColor: '#f2f2f0', primaryBorderColor: '#3a3a42',
+    secondaryColor: '#16233a', secondaryTextColor: '#f2f2f0', secondaryBorderColor: '#2a4a72',
+    tertiaryColor: '#151518', tertiaryTextColor: '#a1a1aa', tertiaryBorderColor: '#2a2a30',
+    lineColor: '#6b6b75', textColor: '#c9c9cd',
+    mainBkg: '#1d1d21', nodeBorder: '#3a3a42', nodeTextColor: '#f2f2f0',
+    clusterBkg: 'rgba(57,135,229,.055)', clusterBorder: '#2a4a72',
+    edgeLabelBackground: '#0c0c0e', titleColor: '#f2f2f0'
+  };
+  var LIGHT = {
+    background: 'transparent',
+    primaryColor: '#ffffff', primaryTextColor: '#0b0b0b', primaryBorderColor: '#c9c8c1',
+    secondaryColor: '#eef4fc', secondaryTextColor: '#0b0b0b', secondaryBorderColor: '#a9c8ec',
+    tertiaryColor: '#f4f4f2', tertiaryTextColor: '#52514e', tertiaryBorderColor: '#e2e1dc',
+    lineColor: '#8a8984', textColor: '#33322f',
+    mainBkg: '#ffffff', nodeBorder: '#c9c8c1', nodeTextColor: '#0b0b0b',
+    clusterBkg: 'rgba(42,120,214,.05)', clusterBorder: '#a9c8ec',
+    edgeLabelBackground: '#fafaf9', titleColor: '#0b0b0b'
+  };
+
+  // 原始源码存起来，切主题时要用它重绘
+  var nodes = Array.prototype.slice.call(document.querySelectorAll('.mermaid'));
+  nodes.forEach(function (n) { n.dataset.src = n.textContent; });
+
+  function conf() {
+    var dark = document.documentElement.getAttribute('data-theme') !== 'light';
+    return {
+      startOnLoad: false, securityLevel: 'loose', theme: 'base',
+      fontFamily: FONT, fontSize: 13,
+      flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: true,
+                   padding: 11, nodeSpacing: 34, rankSpacing: 40, diagramPadding: 8 },
+      themeVariables: dark ? DARK : LIGHT
+    };
+  }
+
+  function draw() {
+    nodes.forEach(function (n) {
+      n.removeAttribute('data-processed');
+      n.innerHTML = n.dataset.src;
+    });
+    mermaid.initialize(conf());
+    mermaid.run({ nodes: nodes }).catch(function (e) { console.warn('mermaid:', e); });
+  }
+
+  draw();
+  window.addEventListener('ads-theme-change', draw);
+})();
+</script>
+
+</body>
+</html>
