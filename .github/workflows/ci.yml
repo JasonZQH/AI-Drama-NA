@@ -36,3 +36,30 @@ jobs:
             echo "::error::docs/*.html 与 docs/_src/*.md 不同步。本地运行 'python3 scripts/build-docs.py' 后提交生成结果。"
             exit 1
           fi
+
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Format
+        run: pnpm format
+
+      - name: Lint（含模块边界规则，见 01-architecture.md §5.2）
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test

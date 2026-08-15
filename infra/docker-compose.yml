@@ -1,0 +1,55 @@
+# 本地依赖三件套（ADR-0003 / ADR-0004）。CI 用同一份文件起服务，
+# 不用 GitHub Actions 的 services: 块——后者无法覆写容器 command，minio 需要 `server /data`。
+#
+# 镜像全部多架构，不写 platform:（Mac 是 arm64，CI 是 x64，钉死任一边都会触发 QEMU）。
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: drama
+      POSTGRES_PASSWORD: drama
+      POSTGRES_DB: drama
+    ports: ['5432:5432']
+    volumes: ['../.data/pg:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U drama -d drama']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    # noeviction：默认策略会在内存压力下淘汰 key，直接损坏队列（05-job-orchestration.md §7.5）
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
+    ports: ['6379:6379']
+    volumes: ['../.data/redis:/data']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: adminlocal
+      MINIO_ROOT_PASSWORD: adminlocal123
+    ports: ['9000:9000', '9001:9001']
+    volumes: ['../.data/minio:/data']
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 adminlocal adminlocal123 &&
+      mc mb -p local/drama &&
+      echo 'bucket drama ready'"
