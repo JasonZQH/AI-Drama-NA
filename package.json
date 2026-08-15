@@ -13,7 +13,8 @@
     "test": "vitest run --passWithNoTests",
     "lint": "eslint .",
     "format": "prettier --check .",
-    "format:write": "prettier --write ."
+    "format:write": "prettier --write .",
+    "contracts:build": "pnpm --filter @ai-drama/contracts build && node scripts/build-contracts.mjs"
   },
   "//typescript": "钉在 5.9.x：TS 7.0（原生编译器）已发布，但 typescript-eslint 8.x 的 peer 范围是 >=4.8.4 <6.1.0 且尚无 9.x/10.x。lint 是必过的 CI 门禁，所以先不上 7。等 typescript-eslint 支持后再评估。",
   "devDependencies": {

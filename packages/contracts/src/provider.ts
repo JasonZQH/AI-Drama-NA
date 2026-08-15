@@ -1,0 +1,153 @@
+import { z } from 'zod'
+import { FailureCode, GenMode, SafetyProfile } from './enums.js'
+
+/**
+ * 生成后端的统一契约（04-provider-adapter.md，对应 ADR-0002）。
+ * 所有字段都是 provider 中立的——业务代码永远只认识这一层，不认识任何厂商。
+ */
+
+/** 参考图用语义化 role 而非数组下标：不同 provider 对参考图的语义完全不同 */
+export const RefImageRole = z.enum(['character', 'location', 'style', 'first_frame', 'last_frame'])
+export type RefImageRole = z.infer<typeof RefImageRole>
+
+export const RefImage = z.object({
+  role: RefImageRole,
+  /** 预签名 URL，provider 可直接拉取 */
+  url: z.string().url(),
+  weight: z.number().min(0).max(1).optional(),
+})
+export type RefImage = z.infer<typeof RefImage>
+
+export const GenerationRequest = z.object({
+  /** = generation_jobs.id，用于幂等重放 */
+  requestId: z.string().uuid(),
+  shotId: z.string().uuid(),
+
+  mode: GenMode,
+  prompt: z.string(),
+  negativePrompt: z.string().optional(),
+  refImages: z.array(RefImage).default([]),
+
+  durationSec: z.number().min(1).max(15),
+  resolution: z.enum(['480p', '720p', '1080p']),
+  aspectRatio: z.enum(['9:16', '16:9', '1:1']),
+  fps: z.number().int().default(24),
+  seed: z.number().int().optional(),
+
+  safetyProfile: SafetyProfile.default('standard'),
+  priority: z.enum(['low', 'normal', 'high']).default('normal'),
+  /**
+   * provider 私有参数逃生舱。规矩：只有该 provider 的适配器可以读它，
+   * 业务逻辑永远不构造它（由 UI 的高级设置面板直接写入）。
+   */
+  providerParams: z.record(z.string(), z.unknown()).default({}),
+})
+export type GenerationRequest = z.infer<typeof GenerationRequest>
+
+export const GenerationResult = z.object({
+  status: z.literal('succeeded'),
+  /** provider 侧可下载 URL；自部署 worker 直写存储时给 storageKey */
+  outputUrl: z.string(),
+  storageKey: z.string().optional(),
+  durationSec: z.number(),
+  widthPx: z.number().int(),
+  heightPx: z.number().int(),
+  fps: z.number(),
+  seedUsed: z.number().int().optional(),
+  /**
+   * provider 不回报时由适配器按价目表估算，并标 providerMeta.costEstimated。
+   * 宁可要估算值也不要 null——null 会让整张成本报表失真。
+   */
+  costMicroUsd: z.number().int().nonnegative(),
+  providerMeta: z.record(z.string(), z.unknown()).default({}),
+})
+export type GenerationResult = z.infer<typeof GenerationResult>
+
+export const ProviderFailure = z.object({
+  status: z.literal('failed'),
+  code: FailureCode,
+  message: z.string(),
+  retryable: z.boolean(),
+  /** 限流时 provider 给的建议，由队列层做退避——适配器内不 sleep */
+  retryAfterMs: z.number().int().nonnegative().optional(),
+})
+export type ProviderFailure = z.infer<typeof ProviderFailure>
+
+export const ProviderProgress = z.object({
+  status: z.enum(['submitted', 'running']),
+  progressPct: z.number().min(0).max(100).optional(),
+  etaMs: z.number().int().nonnegative().optional(),
+})
+export type ProviderProgress = z.infer<typeof ProviderProgress>
+
+export const ProviderHandle = z.object({
+  providerId: z.string(),
+  externalId: z.string(),
+  submittedAt: z.number().int(),
+})
+export type ProviderHandle = z.infer<typeof ProviderHandle>
+
+export const CostModel = z.object({
+  unit: z.enum(['per_second', 'per_clip', 'per_token']),
+  microUsdPerUnit: z.number().nonnegative(),
+})
+export type CostModel = z.infer<typeof CostModel>
+
+export const ProviderCapabilities = z.object({
+  modes: z.array(GenMode),
+  maxDurationSec: z.number(),
+  resolutions: z.array(z.enum(['480p', '720p', '1080p'])),
+  aspectRatios: z.array(z.enum(['9:16', '16:9', '1:1'])),
+  maxRefImages: z.number().int().nonnegative(),
+  supportsSeed: z.boolean(),
+  supportsNegative: z.boolean(),
+  supportsFirstLastFrame: z.boolean(),
+  /** 原生音画同步。口型同步是 R 级硬指标，路由需按它筛选（见 issue #15） */
+  supportsAudio: z.boolean(),
+  /** 服务端是否有内容过滤——决定 mature 内容能否路由到它（04 §5 规则 2） */
+  serverSideContentFilter: z.boolean(),
+  maxConcurrent: z.number().int().positive(),
+  costModel: CostModel,
+})
+export type ProviderCapabilities = z.infer<typeof ProviderCapabilities>
+
+export const ValidationResult = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() }),
+])
+export type ValidationResult = z.infer<typeof ValidationResult>
+
+export const ProviderHealth = z.object({
+  ok: z.boolean(),
+  queueDepth: z.number().int().nonnegative().optional(),
+  detail: z.string().optional(),
+})
+export type ProviderHealth = z.infer<typeof ProviderHealth>
+
+export type PollOutcome = ProviderProgress | GenerationResult | ProviderFailure
+
+/**
+ * 每个新 provider 必须通过同一套契约测试（04-provider-adapter.md §7）。
+ * 第一条就是幂等——崩溃恢复（05 §8）整个建立在它上面。
+ */
+export interface VideoProvider {
+  readonly id: string
+  readonly capabilities: ProviderCapabilities
+
+  /** 提交前检查：能力不匹配时快速失败，不浪费一次调用，且不得发起网络请求 */
+  validate(req: GenerationRequest): ValidationResult
+
+  /** 事前成本估算，用于路由决策与预算闸门。单位 micro USD */
+  estimateCost(req: GenerationRequest): number
+
+  /** 必须幂等：同 requestId 重复提交返回同一 handle，只计一次费 */
+  submit(req: GenerationRequest): Promise<ProviderHandle>
+
+  /** 适配器内部负责把各家状态码映射到统一枚举 */
+  poll(handle: ProviderHandle): Promise<PollOutcome>
+
+  cancel(handle: ProviderHandle): Promise<void>
+
+  /** 供路由器摘除故障 provider */
+  health(): Promise<ProviderHealth>
+}

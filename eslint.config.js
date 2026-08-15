@@ -32,6 +32,11 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    // 构建脚本跑在 Node 上。只声明真正用到的两个全局，不为此引入 globals 包
+    files: ['**/*.mjs'],
+    languageOptions: { globals: { console: 'readonly', process: 'readonly' } },
+  },
+  {
     rules: {
       ...boundaryRules,
       // 控制面处理钱与长任务，隐式 any 会让状态机的错误悄悄溜过去（11-dev-setup.md §9）
