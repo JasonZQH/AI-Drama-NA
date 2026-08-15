@@ -1,0 +1,28 @@
+{
+  "name": "ai-drama-studio",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint .",
+    "format": "prettier --check .",
+    "format:write": "prettier --write ."
+  },
+  "//typescript": "钉在 5.9.x：TS 7.0（原生编译器）已发布，但 typescript-eslint 8.x 的 peer 范围是 >=4.8.4 <6.1.0 且尚无 9.x/10.x。lint 是必过的 CI 门禁，所以先不上 7。等 typescript-eslint 支持后再评估。",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.1",
+    "prettier": "^3.9.6",
+    "turbo": "^2.10.10",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.10"
+  }
+}
