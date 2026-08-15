@@ -2,6 +2,9 @@
 # 不用 GitHub Actions 的 services: 块——后者无法覆写容器 command，minio 需要 `server /data`。
 #
 # 镜像全部多架构，不写 platform:（Mac 是 arm64，CI 是 x64，钉死任一边都会触发 QEMU）。
+#
+# 宿主端口可用环境变量避让——开发机上常已有原生 Postgres 占着 5432。默认值仍是文档口径：
+#   POSTGRES_PORT=5433 docker compose -f infra/docker-compose.yml up -d
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,7 +12,7 @@ services:
       POSTGRES_USER: drama
       POSTGRES_PASSWORD: drama
       POSTGRES_DB: drama
-    ports: ['5432:5432']
+    ports: ['${POSTGRES_PORT:-5432}:5432']
     volumes: ['../.data/pg:/var/lib/postgresql/data']
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U drama -d drama']
@@ -21,7 +24,7 @@ services:
     image: redis:7-alpine
     # noeviction：默认策略会在内存压力下淘汰 key，直接损坏队列（05-job-orchestration.md §7.5）
     command: redis-server --appendonly yes --maxmemory-policy noeviction
-    ports: ['6379:6379']
+    ports: ['${REDIS_PORT:-6379}:6379']
     volumes: ['../.data/redis:/data']
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
@@ -35,7 +38,7 @@ services:
     environment:
       MINIO_ROOT_USER: adminlocal
       MINIO_ROOT_PASSWORD: adminlocal123
-    ports: ['9000:9000', '9001:9001']
+    ports: ['${MINIO_PORT:-9000}:9000', '${MINIO_CONSOLE_PORT:-9001}:9001']
     volumes: ['../.data/minio:/data']
     healthcheck:
       test: ['CMD', 'mc', 'ready', 'local']

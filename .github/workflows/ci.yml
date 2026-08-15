@@ -74,3 +74,17 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # 用仓库自己的 compose 起服务：GHA 的 services: 块无法覆写容器 command，
+      # 而 minio 需要 `server /data`。同一份文件，本地与 CI 零分歧。
+      - name: Start infra
+        run: docker compose -f infra/docker-compose.yml up -d --wait postgres redis minio minio-init
+
+      - name: Migrate + seed（验证 schema 与夹具真的能落库）
+        run: pnpm build && pnpm db:migrate && pnpm db:seed
+        env:
+          DATABASE_URL: postgresql://drama:drama@localhost:5432/drama
+
+      - name: Dump infra logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs --tail=50
