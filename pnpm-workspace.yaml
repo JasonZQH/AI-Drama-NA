@@ -1,5 +1,11 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+
+# pnpm 11 默认拦截依赖的 postinstall 并硬失败。这是好默认值——不要为了让它闭嘴就放行。
+#
+# esbuild 是 vitest → vite 的传递依赖，它的 postinstall 只是二进制兜底；
+# 平台二进制本身通过 optionalDependencies 就位。实测拦掉后 vitest 照常工作，
+# 所以这里选 false（明知且不执行）而不是 true。不执行的脚本比执行的脚本安全。
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: false
