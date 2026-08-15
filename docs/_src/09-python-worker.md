@@ -1,6 +1,6 @@
 # 09 · Python 生成 Worker 与远程 GPU 部署
 
-> Status: Draft v1 · 2026-08-10 · 依赖：`04-provider-adapter.md` · 对应 ADR-0005
+> Status: Draft v1 · 2026-08-10 · 依赖：`04-provider-adapter.md` · 对应 ADR-0005、ADR-0006
 
 ## 1. 职责边界
 
@@ -26,7 +26,7 @@ flowchart LR
 |---|---|---|---|
 | `workers/video` | 8001 | 文生视频 / 图生视频 | GPU（远程） |
 | `workers/media` | 8002 | FFmpeg 拼接、转码、字幕烧录 | CPU（本机 docker） |
-| `workers/eval` | 8003 | T0–T2 自动评测 | CPU / 轻量 GPU |
+| `workers/eval` | 8003 | T0–T3 自动评测 | CPU / 轻量 GPU |
 
 ### 2.1 接口
 
@@ -68,7 +68,7 @@ class JobState(BaseModel):
     job_id: str
     request_id: str
     status: Literal['queued','running','uploading','succeeded','failed','cancelled']
-    progress_pct: float | None = None        # 0..100，来自 diffusion step 回调
+    progress_pct: float | None = None        # 0..100，来自 ComfyUI WS 进度事件
     stage: str | None = None                 # 'loading_model'|'denoising'|'decoding'|'uploading'
     eta_ms: int | None = None
     result: GenerateResult | None = None
@@ -117,11 +117,13 @@ workers/video/
 │  ├─ schemas.py         pydantic 模型（由 contracts JSON Schema 生成）
 │  ├─ queue.py           进程内异步队列 + 信号量
 │  ├─ storage.py         预签名 PUT 上传 + sha256 流式计算
-│  └─ engines/
-│     ├─ base.py         Engine 抽象
-│     ├─ wan22.py        Wan2.2 (diffusers)
-│     ├─ hunyuan15.py    HunyuanVideo 1.5
-│     └─ mock.py         无 GPU 的假引擎，用于 CI
+│  ├─ comfy.py           ComfyUI 客户端（/prompt · /ws · /history · /free）
+│  ├─ supervisor.py      ComfyUI 子进程生命周期 · OOM 与计划性重启
+│  ├─ mock.py            无 GPU 的假引擎，用于 CI
+│  └─ workflows/         API 格式工作流 JSON（进 git，与镜像 tag 绑定）
+│     ├─ wan22_i2v.json
+│     ├─ wan22_flf2v.json
+│     └─ hunyuan15_t2v.json
 ├─ Dockerfile
 └─ pyproject.toml
 ```
@@ -164,26 +166,25 @@ ComfyUI 的显存管理器是"自动挡"且**在持续被重写**，跨版本行
 
 **边界**：插帧、上采样、编码**不放进 ComfyUI**。它们是确定性后处理，放 worker 自己的代码里更好测试、可用更便宜的算力，且不占用串行队列里稀缺的大显存时间。
 
-### 3.3 Engine 抽象
+### 3.3 ComfyUI 客户端
 
 ```python
-class VideoEngine(ABC):
-    model_id: str
-    @abstractmethod
-    def load(self) -> None: ...
-    @abstractmethod
-    def generate(self, req: GenerateRequest,
-                 on_progress: Callable[[float, str], None]) -> LocalArtifact: ...
-    @abstractmethod
-    def vram_required_mb(self) -> int: ...
+class ComfyClient:
+    def submit(self, workflow: dict, params: WorkflowParams) -> str: ...  # → prompt_id
+    def watch(self, prompt_id: str,
+              on_progress: Callable[[float, str], None]) -> None: ...
+    def fetch(self, prompt_id: str) -> ComfyHistory: ...                  # /history 兜底
+    def free(self, unload_models: bool = True) -> None: ...
 ```
 
-**模型常驻内存，不要每次请求加载。** 冷启动加载 A14B 级模型要几十秒，占端到端时间的大头。worker 启动时按 `PRELOAD_MODELS` 预加载，并用信号量限制并发数（由显存决定，通常 1–2）。
+`submit` 按 `_meta.title` 的 `@input.*` 前缀注入参数（§3.1），seed 必须显式注入。模型清单与显存画像来自 `/system_stats` 与工作流引用的 checkpoint——worker 侧不再自己声明每个模型的显存需求。
+
+**模型驻留由 ComfyUI 掌握，worker 能做的只是不换模型。** 冷启动加载 A14B 级模型要几十秒，占端到端时间的大头；但 §3.2 的计划性重启和 `/free` 都会主动丢掉常驻权重，worker 无法把模型"锁"在显存里。真正省下这几十秒的是 §3.2 第 5 条的按模型分池：一个 worker 只服务一种模型，启动时按 `PRELOAD_MODELS` 跑一次 warmup 工作流把权重带进显存。
 
 ### 3.4 并发与显存
 
 ```python
-# 单卡通常只跑 1 个大模型任务；小模型可以 2
+# ComfyUI 单实例串行执行（ADR-0006 硬约束 1），保持 1；调大只是让请求在 ComfyUI 里排队
 MAX_CONCURRENT = int(os.getenv('MAX_CONCURRENT', '1'))
 _sem = asyncio.Semaphore(MAX_CONCURRENT)
 ```
@@ -192,13 +193,13 @@ _sem = asyncio.Semaphore(MAX_CONCURRENT)
 
 ### 3.5 进度回调
 
-diffusers 的 `callback_on_step_end` 直接映射到 `progress_pct`：
+ComfyUI 的 WS `progress` 消息（`{value, max}`）直接映射到 `progress_pct`：
 
 ```python
-def _cb(pipe, step: int, timestep, kwargs):
-    on_progress(step / total_steps * 90, 'denoising')   # 留 10% 给解码与上传
-    return kwargs
+on_progress(msg['value'] / msg['max'] * 90, 'denoising')   # 留 10% 给解码与上传
 ```
+
+收到 `executing` 且 `node is None` 即该任务结束。**WS 无补发机制**，断线后必须用 `GET /history/{prompt_id}` 兜底（§3.1）。
 
 有真实进度这件事对 UI 很重要（`07-design-system.md` R1）——用户能看着百分比走，和干等转圈是完全不同的体验。
 
@@ -213,7 +214,7 @@ def _cb(pipe, step: int, timestep, kwargs):
 
 > 许可注意：Wan 系列 Apache 2.0 最干净，官方声明不主张生成内容权利。HunyuanVideo 1.5 的社区许可**排除欧盟/英国/韩国**，且 MAU 超 1 亿需另行申请——纯本地开发无影响，但主体和服务器所在地要留意。Wan 2.5 之后转闭源，自部署路线锁定在 2.2 分支。
 
-`engines/` 下每个实现的文件头必须注明许可与来源 URL，方便后续审计。
+每个 checkpoint 必须在 `workflows/MODELS.md` 中登记许可、版本、来源 URL 与引用它的工作流，方便后续审计。
 
 ## 5. 部署：远程 GPU
 
@@ -265,6 +266,11 @@ RUN apt-get update && apt-get install -y python3.11 python3-pip ffmpeg git && rm
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN pip install uv && uv sync --frozen
+# ComfyUI pin 到 release tag，不能用 branch（ADR-0006）
+ARG COMFY_REF                              # 必填：具体 release tag，构建时显式传入，不给默认值
+RUN git clone --depth 1 --branch ${COMFY_REF} https://github.com/comfyanonymous/ComfyUI /opt/comfyui \
+ && uv pip install -r /opt/comfyui/requirements.txt
+COPY custom_nodes.lock /opt/comfyui/       # 每个自定义节点 pin 到 commit SHA，白名单 ≤10 个
 COPY app ./app
 EXPOSE 8001
 CMD ["uv","run","uvicorn","app.main:app","--host","0.0.0.0","--port","8001"]
@@ -280,7 +286,7 @@ python main.py --listen 127.0.0.1 --port 8188 --disable-auto-launch \
   --extra-model-paths-config /config/extra_model_paths.yaml
 ```
 
-`--disable-metadata` 对商业管线是必须的（不把完整工作流写进输出文件元数据）。`--disable-all-custom-nodes` + 白名单是安全与启动速度的双重收益。
+`--disable-metadata` 对商业管线是必须的（不把完整工作流写进输出文件元数据）。`--disable-all-custom-nodes` + 白名单是安全与启动速度的双重收益。**部署单元是镜像 digest 而非 tag**（ADR-0006）——tag 会被覆盖，digest 不会。
 
 ```bash
 docker run -d --gpus all \
@@ -299,7 +305,7 @@ docker run -d --gpus all \
 | **RunPod** | 便宜、启动快（4090 约 $0.35–0.69/hr），但 ToS 字面禁 "graphic adult content"——若将来做成熟向内容需先书面确认 |
 | **AWS/GCP** | 贵 3–6 倍，除非已有额度否则不划算 |
 
-**成本控制**：GPU 按小时计费，开发期务必配置**空闲自动停机**。跑一晚上忘关的 H100 是 $60。建议 worker 内置 `IDLE_SHUTDOWN_MIN=30`，超时无任务自行退出，配合供应商的自动伸缩。
+**成本控制**：GPU 按小时计费，开发期务必配置**空闲自动停机**。跑一晚上（约 12 小时）忘关的 H100 是 $30–40，忘一整天就是 $60–80。建议 worker 内置 `IDLE_SHUTDOWN_MIN=30`，超时无任务自行退出，配合供应商的自动伸缩。
 
 ## 6. 媒体 Worker（CPU，本机）
 
@@ -321,7 +327,7 @@ POST /v1/transcode  转 HLS
 | **幂等** | 同 `request_id` 重复提交返回既有 job，不重复计算。内存 LRU + 落盘 `jobs.json` 兜底 |
 | **优雅退出** | SIGTERM 时停止接新任务，等在途任务完成（上限 5 分钟）再退出 |
 | **崩溃可见** | OOM / CUDA error 映射为 `WorkerError{code}`，控制面据此决定重试还是降配 |
-| **显存回收** | 每个任务结束 `torch.cuda.empty_cache()`；连续 N 次 OOM 后自动重启进程 |
+| **显存回收** | 任务结束或切换工作流类型时对 ComfyUI 调 `POST /free`；每 20–50 个任务计划性重启子进程；**OOM 立即重启子进程，不重试请求**（§3.2） |
 | **日志** | 结构化 JSON，带 `request_id`，与控制面日志可对接 |
 
 ## 8. 本地开发（无 GPU）

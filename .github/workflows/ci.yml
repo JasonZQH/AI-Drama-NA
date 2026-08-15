@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    # 在基分支上跑一次，为后续 PR 预热缓存（PR 分支的缓存不跨 PR 共享）
+    branches: [main, dev]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: scripts/requirements-docs.txt
+
+      - name: Install doc build deps
+        run: pip install -r scripts/requirements-docs.txt
+
+      - name: Rebuild docs
+        run: python3 scripts/build-docs.py
+
+      - name: Assert generated HTML is in sync with _src
+        run: |
+          if ! git diff --exit-code -- docs/; then
+            echo "::error::docs/*.html 与 docs/_src/*.md 不同步。本地运行 'python3 scripts/build-docs.py' 后提交生成结果。"
+            exit 1
+          fi
