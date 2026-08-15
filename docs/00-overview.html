@@ -71,7 +71,7 @@
 <p>现成的一站式 AI 视频工具（即梦、可灵网页版、Seko 等）解决的是「生成一个片段」。它们解决不了三件事，而这三件事恰恰是短剧工业化的全部难点：</p>
 <ol>
 <li><strong>跨镜头的状态延续</strong>：同一个角色在第 47 个镜头里必须还是同一张脸、同一身衣服。</li>
-<li><strong>规模化的批处理与记账</strong>：一部剧 1500–3000 个镜头，需要队列、重试、成本归集，而不是人肉点「生成」。</li>
+<li><strong>规模化的批处理与记账</strong>：一部剧 800–2500 个镜头，需要队列、重试、成本归集，而不是人肉点「生成」。</li>
 <li><strong>可替换的生成后端</strong>：模型和价格每季度都在变，业务逻辑不能和某一家 API 绑死。</li>
 </ol>
 <p>本项目的全部设计都围绕这三点展开。</p>
@@ -108,7 +108,7 @@
 </tr>
 </tbody>
 </table></div>
-<p><strong>形态标准（按北美实际口径，非中国口径）</strong>：80–100 集 × 60–90 秒，总时长 60–100 分钟（≈一部电影），前 7–10 集免费，付费墙落在悬念点而非集尾整数位。</p>
+<p><strong>形态标准（按北美实际口径，非中国口径）</strong>：80–100 集 × 60–90 秒，总时长 80–150 分钟（≈一部电影），前 7–10 集免费，付费墙落在悬念点而非集尾整数位。</p>
 <p><strong>战略排序：先打曝光，再优化细节。</strong> 这不是营销口号，是架构约束——它决定了系统必须在正片之外把素材产线做成一等公民，且素材的分级、标签、变体矩阵要在生成阶段就写入，而不是事后补。</p>
 <h2 id="3.-范围scope">3. 范围（Scope）<a aria-label="链接到此节" class="anchor" href="#3.-范围scope">#</a></h2>
 <h3 id="3.1-in-scope-完整流水线">3.1 In Scope — 完整流水线<a aria-label="链接到此节" class="anchor" href="#3.1-in-scope-完整流水线">#</a></h3>
@@ -122,6 +122,7 @@
     G --&gt; H["配音 / 字幕 / BGM / 音效"]
     H --&gt; I["FFmpeg 拼接 → 集成片 Master"]
     I --&gt; J["本地播放器 + 追更"]
+    I --&gt; K["分级 conform + 素材产线&lt;br/&gt;L2/L1/L0 · 钩子概念 · 投放渲染"]
 </div></figure>
 <h3 id="3.2-out-of-scope第一阶段明确不做">3.2 Out of Scope（第一阶段明确不做）<a aria-label="链接到此节" class="anchor" href="#3.2-out-of-scope第一阶段明确不做">#</a></h3>
 <div class="table-wrap"><table>
@@ -196,7 +197,7 @@
 </tr>
 <tr>
 <td><strong>C8 · 素材是一等产物</strong></td>
-<td>单部剧的交付物不是 80 集正片，而是 600–1200 个产物（正片 + 素材 + 商店资产 + 联盟包）。数据模型必须把 HookConcept / Render 建成实体，而非正片的附属。</td>
+<td>单部剧的交付物不是 80–100 集正片，而是 600–1200 个产物（正片 + 素材 + 商店资产 + 联盟包）。数据模型必须把 HookConcept / Render 建成实体，而非正片的附属。</td>
 </tr>
 </tbody>
 </table></div>
@@ -215,7 +216,7 @@
 </tr>
 <tr>
 <td><strong>Episode</strong></td>
-<td>一集，通常 1–2 分钟。</td>
+<td>一集，60–90 秒（典型 75 秒），见 §2.5 形态标准。</td>
 </tr>
 <tr>
 <td><strong>Scene</strong></td>
@@ -269,7 +270,7 @@
 <li>在 Mac 上 <code>pnpm dev</code> + <code>docker compose up</code>，无 GPU，用 mock provider 可以从剧本走到可播放的一集成片。</li>
 <li>切换到真实云 API provider（改一个环境变量），同一条链路产出真实视频。</li>
 <li>接入远程 GPU 上的 Python worker（再改一个环境变量），同一条链路产出自部署模型的视频。</li>
-<li>生成 60 个镜头的一集，全程无需手工干预排队；失败镜头自动重试并在 UI 中标红待处理。</li>
+<li>生成 10–25 个镜头的一集（典型 18 镜），全程无需手工干预排队；失败镜头自动重试并在 UI 中标红待处理。</li>
 <li>每一集都能回答：花了多少钱、多少镜头一次通过、哪个 provider 表现更好。</li>
 <li>一部剧能自动产出 L0/L1/L2 三个分级版本，且 L1/L0 由替换清单自动 conform 而非人工重剪。</li>
 <li>能从成片自动切出 40–60 条钩子概念素材，每条带完整投放标签。</li>
@@ -334,6 +335,10 @@
 <tr>
 <td><a href="12-roadmap.html" title="里程碑与验收标准"><code>12-roadmap.md</code></a></td>
 <td>里程碑与验收</td>
+</tr>
+<tr>
+<td><a href="13-character-assets.html" title="角色资产与单镜头 Prompt"><code>13-character-assets.md</code></a></td>
+<td>角色资产三路分离、参考图机制、单镜头 prompt 三阶段</td>
 </tr>
 <tr>
 <td><code>adr/*.md</code></td>

@@ -1,0 +1,5 @@
+# 文档构建依赖（scripts/build-docs.py）
+# 版本固定：CI 与本地必须产出字节级一致的 HTML，否则 drift 门禁会误报。
+Markdown==3.10.3
+pymdown-extensions==11.0.1
+beautifulsoup4==4.15.0

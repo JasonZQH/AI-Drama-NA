@@ -172,7 +172,7 @@ export interface ProviderProgress {
 | 产物转存 | 云 API 产物由控制面下载后写入 MinIO，校验 sha256，再建 asset 行 |
 | 内容过滤 | `serverSideContentFilter: true`。被过滤返回 `content_filtered`（**不可重试**——同样的 prompt 重试只会再被拒一次，浪费配额） |
 
-> 错峰调度：部分 provider（如 Vidu）有明显的错峰折扣。适配器暴露 `estimateCost` 时应读取当前时段，路由器据此把低优先级批量任务推到便宜时段。这个能力 M5 再启用，接口先留好。
+> 错峰调度：部分 provider（如 Vidu）有明显的错峰折扣。适配器暴露 `estimateCost` 时应读取当前时段，路由器据此把低优先级批量任务推到便宜时段。这个能力 M6 再启用，接口先留好。
 
 ### 4.3 `SelfHostProvider` — 远程 Python worker
 
@@ -225,8 +225,9 @@ export function buildProviderPool(env: Env): VideoProvider[] {
   const pool: VideoProvider[] = [new MockProvider(env)]
   if (env.VIDU_API_KEY)  pool.push(new ViduProvider(env.VIDU_API_KEY))
   if (env.KLING_API_KEY) pool.push(new KlingProvider(env.KLING_API_KEY))
+  if (env.JIMENG_API_KEY) pool.push(new JimengProvider(env.JIMENG_API_KEY))
   if (env.SELFHOST_VIDEO_URL)
-    pool.push(new SelfHostProvider(env.SELFHOST_VIDEO_URL, env.SELFHOST_MODEL ?? 'wan2.2-i2v-a14b'))
+    pool.push(new SelfHostProvider(env.SELFHOST_VIDEO_URL, env.SELFHOST_MODEL ?? 'wan2.2-ti2v-5b'))
   return pool
 }
 ```

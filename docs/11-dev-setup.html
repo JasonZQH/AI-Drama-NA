@@ -133,9 +133,14 @@ S3_INTERNAL_ENDPOINT=http://localhost:9000     # 控制面自用
 S3_PUBLIC_ENDPOINT=http://localhost:9000       # 签发给 worker/浏览器；用远程 GPU 时改 Tailscale IP
 S3_FORCE_PATH_STYLE=true
 
+# ── Worker 寻址（端口见 09-python-worker.md §2）──
+MEDIA_WORKER_URL=http://localhost:8002          # FFmpeg 规范化/拼接/字幕，M0 起就要用
+# EVAL_WORKER_URL=http://localhost:8003         # 自动评测，M6 启用
+
 # ── Provider ──
 DEFAULT_PROVIDER=mock
 MOCK_FAILURE_RATE=0.15                          # 让重试逻辑在开发期就被触发
+MOCK_SEED_DETERMINISTIC=0                       # 置 1：同 seed 返回同一条 fixture，快照测试用
 # VIDU_API_KEY=
 # KLING_API_KEY=
 # JIMENG_API_KEY=

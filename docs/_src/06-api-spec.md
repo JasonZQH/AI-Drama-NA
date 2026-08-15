@@ -11,7 +11,7 @@
 | 校验 | 每个路由用 `packages/contracts` 的 zod schema 校验入参，校验失败返回 422 |
 | 分页 | 游标分页 `?cursor=&limit=`，响应含 `nextCursor` |
 | 幂等 | 所有会产生费用的 POST 支持 `Idempotency-Key` 头 |
-| 错误 | 统一错误体（见 §7） |
+| 错误 | 统一错误体（见 §8） |
 | 认证 | MVP 无认证（本地）。预留 `Authorization: Bearer`，中间件已挂载但默认放行 |
 
 ## 2. 项目与剧本
@@ -60,7 +60,7 @@ POST /api/ai/prompt-preview   { shotId, providerId? }
 GET    /api/projects/:id/characters
 POST   /api/projects/:id/characters       { name, description, voiceId? }
 PATCH  /api/characters/:id                改 description 会 version++
-POST   /api/characters/:id/references     { assetIds[] }  绑定参考图
+PUT    /api/characters/:id/references     { faceSet, bodyRef, wardrobe }  三路参考资产（见 02-data-model.md §3.3）
 DELETE /api/characters/:id
 
 # locations / style-profiles 同构
@@ -193,11 +193,11 @@ data: {"episodeId":"...","done":18,"total":24,"failed":1}
 | HTTP | code 示例 | 场景 |
 |---|---|---|
 | 400 | `INVALID_STATE_TRANSITION` | 对 draft 镜头调 generate |
-| 404 | `NOT_FOUND` | |
+| 402 | `BUDGET_EXCEEDED` | 预算闸门拦截 |
+| 404 | `NOT_FOUND` | 资源不存在或已软删除 |
 | 409 | `CONFLICT` | 并发改同一 shot（乐观锁 `updatedAt` 不匹配） |
 | 422 | `VALIDATION_FAILED` | zod 校验失败，`details.issues` 给字段级错误 |
 | 429 | `RATE_LIMITED` | 全局或 provider 限流 |
-| 402 | `BUDGET_EXCEEDED` | 预算闸门拦截 |
 | 503 | `NO_PROVIDER_AVAILABLE` | 池内无健康且能力匹配的 provider |
 
 `requestId` 贯穿日志，报错时截图给出即可定位全链路。

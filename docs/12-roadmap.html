@@ -108,7 +108,7 @@ M6 优化          自动评测 + 智能路由     数据驱动
 </tr>
 <tr>
 <td>6</td>
-<td>镜头状态机 + BullMQ 五队列 + SSE 进度</td>
+<td>镜头状态机 + BullMQ 六队列（<code>q:tts</code> 留到 M3）+ SSE 进度</td>
 </tr>
 <tr>
 <td>7</td>
@@ -170,7 +170,7 @@ M6 优化          自动评测 + 智能路由     数据驱动
 <li class="task-list-item"><input disabled="" type="checkbox"/> 单镜头生成成功，成本正确回填且量级合理</li>
 <li class="task-list-item"><input disabled="" type="checkbox"/> <code>dryRun</code> 预估与实际花费误差 &lt; 20%</li>
 <li class="task-list-item"><input disabled="" type="checkbox"/> 预算超限被 <code>block</code> 拦下，UI 明确提示</li>
-<li class="task-list-item"><input disabled="" type="checkbox"/> 12 镜一集的真实一次通过率有数据</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> seed 夹具那一集（12 镜）的真实一次通过率有数据</li>
 <li class="task-list-item"><input disabled="" type="checkbox"/> 切回 <code>DEFAULT_PROVIDER=mock</code> 仍完全可用（未被真实 provider 污染）</li>
 </ul>
 <hr/>
@@ -186,7 +186,7 @@ M6 优化          自动评测 + 智能路由     数据驱动
 <tbody>
 <tr>
 <td>1</td>
-<td><code>workers/video</code>：FastAPI + Wan2.2 引擎 + 进度回调</td>
+<td><code>workers/video</code>：FastAPI + 容器内无头 ComfyUI（Wan2.2 工作流）+ 进度回调</td>
 </tr>
 <tr>
 <td>2</td>
@@ -253,13 +253,23 @@ M6 优化          自动评测 + 智能路由     数据驱动
 <td>6</td>
 <td>规范化中间件缓存（改一镜快速重渲染）</td>
 </tr>
+<tr>
+<td>7</td>
+<td>clean 母版（不烧字幕）+ M&amp;E 分层音轨（对白 / 音乐 / 音效分离，见 <a href="10-media-storage.html" title="媒体存储、拼接与音频"><code>10-media-storage.md</code></a> §5.0）</td>
+</tr>
+<tr>
+<td>8</td>
+<td>口型同步路线定案：真人质感走 provider 原生音画同步，动态漫不做（<a href="10-media-storage.html" title="媒体存储、拼接与音频"><code>10-media-storage.md</code></a> §5.1 列为 R 级硬指标）</td>
+</tr>
 </tbody>
 </table></div>
 <p><strong>验收</strong></p>
 <ul class="task-list">
-<li class="task-list-item"><input disabled="" type="checkbox"/> 一集 60 镜带配音字幕渲染完成，音画同步</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 一集 10–25 镜（典型 18 镜）带配音字幕渲染完成，音画同步</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 对白镜头口型可接受（真人质感路线；动态漫路线豁免）</li>
 <li class="task-list-item"><input disabled="" type="checkbox"/> 改动单个镜头后重渲染 &lt; 30 秒</li>
 <li class="task-list-item"><input disabled="" type="checkbox"/> 台词过长在分镜阶段被标出，而不是渲染后才发现</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 母版为 clean 版且三条 stem 可独立替换（换一行对白只重合成对白轨）</li>
 </ul>
 <hr/>
 <h2 id="m4-素材产线曝光优先">M4 · 素材产线（曝光优先）<a aria-label="链接到此节" class="anchor" href="#m4-素材产线曝光优先">#</a></h2>
@@ -341,7 +351,7 @@ M6 优化          自动评测 + 智能路由     数据驱动
 </table></div>
 <p><strong>验收</strong></p>
 <ul class="task-list">
-<li class="task-list-item"><input disabled="" type="checkbox"/> 连续 5 集，主角与主场景在 100+ 镜头后仍可接受</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> 连续 5 集（约 90 镜），主角与主场景在全部镜头上仍可接受</li>
 <li class="task-list-item"><input disabled="" type="checkbox"/> 一集从剧本到成片全程无需手工干预排队</li>
 <li class="task-list-item"><input disabled="" type="checkbox"/> 更新角色参考图后，受影响镜头被正确标记</li>
 </ul>
@@ -399,7 +409,7 @@ M6 优化          自动评测 + 智能路由     数据驱动
 <tr>
 <td><strong>一次通过率</strong></td>
 <td>首次尝试即被采用的镜头占比</td>
-<td>M1 建立基线 → M5 ≥ 55%</td>
+<td>M1 建立基线 → M6 ≥ 55%</td>
 </tr>
 <tr>
 <td><strong>每可用镜头成本</strong></td>
@@ -419,7 +429,7 @@ M6 优化          自动评测 + 智能路由     数据驱动
 <tr>
 <td><strong>素材赢家率</strong></td>
 <td>上线渲染中成为投放赢家的比例</td>
-<td>行业基准约 5%；40–60 概念 ≈ 2–3 个赢家</td>
+<td>行业基准约 5%；赢家渲染集中在少数概念上，一部剧收敛到 2–3 个赢家角度（40–60 概念的推导见 <a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a> §8.5）</td>
 </tr>
 <tr>
 <td><strong>单部剧交付物数</strong></td>

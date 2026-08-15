@@ -4,7 +4,7 @@
 
 ## 1. 流水线全景
 
-流水线分七个阶段。每个阶段有明确的输入、输出和「完成」判据；阶段之间可以回退，但回退必须产生新版本而不是原地修改。
+流水线分八个阶段。每个阶段有明确的输入、输出和「完成」判据；阶段之间可以回退，但回退必须产生新版本而不是原地修改。
 
 ```mermaid
 flowchart TD
@@ -15,9 +15,11 @@ flowchart TD
     S5["<b>S5 · GENERATE</b><br/>逐镜头批量生成 + 评测 + 重试 + 选片<br/>产出 generation_jobs / takes / evals，shots→locked"]
     S6["<b>S6 · AUDIO</b><br/>配音 + 字幕 + BGM + 音效<br/>产出 audio / subtitle assets"]
     S7["<b>S7 · ASSEMBLE</b><br/>时间线 → FFmpeg 渲染 → 集母版<br/>产出 master asset · assembled"]
+    S8["<b>S8 · PROMOTE</b><br/>成片 → 钩子概念 → 变体渲染矩阵<br/>产出 hook_concepts · renders"]
     S1 --> S2 --> S3 --> S4 --> S5 --> S7
     S3 -. "台词已定，可并行" .-> S6
     S6 --> S7
+    S7 --> S8
 ```
 
 S4 可以与 S3 并行；S6 可以与 S5 并行（台词在 S3 就确定了，不必等画面）。这两处并行能把一集的墙钟时间压掉三成左右。
@@ -78,14 +80,14 @@ const ShotIntentSchema = z.object({
 
 **完成判据**：
 - 每场的镜头时长总和 ≈ 场次目标时长（±15%）。
-- 单集镜头数在 10–25 之间（1–2 分钟 / 2–8 秒每镜）。
+- 单集镜头数在 10–25 之间（60–90 秒 / 2–8 秒每镜，典型 18 镜 × 4 秒）。
 - 景别有变化：连续三个同景别会被校验器标黄。
 
 ### S4 · ASSETS
 
 **输入**：剧本里出现的角色名与场景名。
 **动作**：为每个角色生成三视图/立绘参考图集，为每个场景生成环境参考图，确认后锁定。
-**输出**：`characters.reference_asset_ids` 等。
+**输出**：`characters.face_set` / `body_ref` / `wardrobe`（三路分离，见 ADR-0008）、`locations`、`style_profiles`。
 
 **这一步是全流程的一致性地基**。参考图没锁死就开始批量生成镜头，等于在流沙上盖楼——「角色设定未完成就开工」是行业公认的失败模式之一，后果是一致性问题级联放大、中途修正代价极高。S4 未完成时，S5 的批量生成入口在 UI 上必须禁用。
 
@@ -99,7 +101,7 @@ const ShotIntentSchema = z.object({
 
 **输入**：`shots.dialogue` + 角色 `voiceId`。
 **动作**：TTS 逐镜合成 → 落 `assets(kind=audio)`；生成字幕（直接用台词文本，不做 ASR）；选配 BGM。
-**注意**：动态漫路线**不做精细口型**——2D 动画传统本就是简化口型，观众预期低，省一道工序。真人质感路线才需要 lip-sync，那时走 provider 的原生音画同步能力。
+**注意**：**口型同步是 R 级硬指标**（见 `10-media-storage.md` §5.1）——R 级依赖表演张力（愤怒、威胁、亲密），口型不同步会直接摧毁这些镜头。对白镜头走 provider 的原生音画同步能力，没有「简化口型」这条省工序的退路。
 
 ### S7 · ASSEMBLE
 
@@ -120,8 +122,6 @@ const ShotIntentSchema = z.object({
 **素材结构**（15–30 秒档）：`钩子 0–3s → 铺垫 3–20s → 悬念 20–25s → CTA 25–30s`。前 1.5 秒决定生死，开场即最高情绪帧，不放 logo 与片头。
 
 **尺度是留存与付费的差异化，不是获客钩子。** 投放渠道全是 PG-13 环境，尺度素材在 TikTok/Meta 直接违规、在 YouTube 进黄区、在 TikTok 自然流不进推荐。所有素材走 L0 层，用冲突与反转做钩子。
-
-### S7 · ASSEMBLE
 
 ## 3. 镜头状态机（S5 的核心）
 
@@ -171,7 +171,7 @@ export function transition(
 | **T3 · 语义** | VLM 打分 | 是否拍到了 intent 要求的动作与情绪 | 重写 prompt 或拆镜 |
 | **T4 · 人审** | UI 选片 | 最终可用性、边界情况 | 人工决定 |
 
-MVP 阶段只实现 **T0 + T4**（技术校验 + 人工选片）。T1–T3 的表结构和接口在 M5 之前留空跑通，避免后期改数据模型。
+MVP 阶段只实现 **T0 + T4**（技术校验 + 人工选片）。T1–T3 的表结构和接口在 M6 之前留空跑通，避免后期改数据模型。
 
 **阈值配置**在 `packages/contracts/src/evalPolicy.ts`，按 project 可覆盖：
 
@@ -186,7 +186,7 @@ export const defaultEvalPolicy = {
 
 ## 5. 连续性策略
 
-跨镜头一致性靠三个机制叠加，缺一不可：
+跨镜头一致性靠四个机制叠加，缺一不可：
 
 1. **Master 资产条件化**：每个镜头都从角色/场景的 master 参考图出发生成，**绝不**把上一个镜头漂移后的产物当作下一镜的唯一真相递归下去。误差是**指数放大而非线性**的：训练时条件帧是干净的，推理时是自己生成的带误差帧，这个分布错配让误差进入模型没见过的输入域，形成正反馈——业界的通俗说法是「a copy of a copy」。
 2. **末帧接首帧**：`shots.continuity_from_shot_id` 声明对前序镜头的依赖（依赖必须在前序镜头生成前就可声明，所以指向 shot 而非尚不存在的 take）。生成时解析该镜头的 `selectedTakeId`，取其末帧作为本镜的 i2v 首帧条件。用于同场连续动作。
@@ -222,7 +222,9 @@ function planBatch(shots: Shot[]): { runnable: Shot[]; blocked: Shot[] } {
     runnable: shots.filter(s =>
       s.status === 'ready' &&
       (!s.continuityFromShotId || lockedIds.has(s.continuityFromShotId))),
-    blocked: /* 其余 */,
+    blocked: shots.filter(s =>
+      s.status === 'ready' &&
+      s.continuityFromShotId && !lockedIds.has(s.continuityFromShotId)),
   }
 }
 ```

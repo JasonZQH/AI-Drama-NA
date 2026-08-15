@@ -65,7 +65,7 @@
 <p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a></p>
 </blockquote>
 <h2 id="1.-流水线全景">1. 流水线全景<a aria-label="链接到此节" class="anchor" href="#1.-流水线全景">#</a></h2>
-<p>流水线分七个阶段。每个阶段有明确的输入、输出和「完成」判据；阶段之间可以回退，但回退必须产生新版本而不是原地修改。</p>
+<p>流水线分八个阶段。每个阶段有明确的输入、输出和「完成」判据；阶段之间可以回退，但回退必须产生新版本而不是原地修改。</p>
 <figure class="diagram"><div class="mermaid">flowchart TD
     S1["&lt;b&gt;S1 · STORY&lt;/b&gt;&lt;br/&gt;故事 → Episode 大纲 + 钩子 / 悬念&lt;br/&gt;产出 episodes · outline"]
     S2["&lt;b&gt;S2 · SCRIPT&lt;/b&gt;&lt;br/&gt;大纲 → 分场剧本（含台词）&lt;br/&gt;产出 script_md + scenes · scripted"]
@@ -74,9 +74,11 @@
     S5["&lt;b&gt;S5 · GENERATE&lt;/b&gt;&lt;br/&gt;逐镜头批量生成 + 评测 + 重试 + 选片&lt;br/&gt;产出 generation_jobs / takes / evals，shots→locked"]
     S6["&lt;b&gt;S6 · AUDIO&lt;/b&gt;&lt;br/&gt;配音 + 字幕 + BGM + 音效&lt;br/&gt;产出 audio / subtitle assets"]
     S7["&lt;b&gt;S7 · ASSEMBLE&lt;/b&gt;&lt;br/&gt;时间线 → FFmpeg 渲染 → 集母版&lt;br/&gt;产出 master asset · assembled"]
+    S8["&lt;b&gt;S8 · PROMOTE&lt;/b&gt;&lt;br/&gt;成片 → 钩子概念 → 变体渲染矩阵&lt;br/&gt;产出 hook_concepts · renders"]
     S1 --&gt; S2 --&gt; S3 --&gt; S4 --&gt; S5 --&gt; S7
     S3 -. "台词已定，可并行" .-&gt; S6
     S6 --&gt; S7
+    S7 --&gt; S8
 </div></figure>
 <p>S4 可以与 S3 并行；S6 可以与 S5 并行（台词在 S3 就确定了，不必等画面）。这两处并行能把一集的墙钟时间压掉三成左右。</p>
 <h2 id="2.-阶段详解">2. 阶段详解<a aria-label="链接到此节" class="anchor" href="#2.-阶段详解">#</a></h2>
@@ -123,12 +125,12 @@ CHEN MO: 我等你三个小时了。
 </ol>
 <p><strong>完成判据</strong>：
 - 每场的镜头时长总和 ≈ 场次目标时长（±15%）。
-- 单集镜头数在 10–25 之间（1–2 分钟 / 2–8 秒每镜）。
+- 单集镜头数在 10–25 之间（60–90 秒 / 2–8 秒每镜，典型 18 镜 × 4 秒）。
 - 景别有变化：连续三个同景别会被校验器标黄。</p>
 <h3 id="s4-assets">S4 · ASSETS<a aria-label="链接到此节" class="anchor" href="#s4-assets">#</a></h3>
 <p><strong>输入</strong>：剧本里出现的角色名与场景名。
 <strong>动作</strong>：为每个角色生成三视图/立绘参考图集，为每个场景生成环境参考图，确认后锁定。
-<strong>输出</strong>：<code>characters.reference_asset_ids</code> 等。</p>
+<strong>输出</strong>：<code>characters.face_set</code> / <code>body_ref</code> / <code>wardrobe</code>（三路分离，见 ADR-0008）、<code>locations</code>、<code>style_profiles</code>。</p>
 <p><strong>这一步是全流程的一致性地基</strong>。参考图没锁死就开始批量生成镜头，等于在流沙上盖楼——「角色设定未完成就开工」是行业公认的失败模式之一，后果是一致性问题级联放大、中途修正代价极高。S4 未完成时，S5 的批量生成入口在 UI 上必须禁用。</p>
 <p>资产不是一张图，而是<strong>三类结构化资产</strong>：多视角人脸基准（face_set）、体型基准（body_ref，去头与否按画风）、抠掉脸的服装套装（wardrobe）。三者的构图要求、质量闸门与失败模式各不相同。完整设计见 <a href="13-character-assets.html" title="角色资产与单镜头 Prompt"><code>13-character-assets.md</code></a>。</p>
 <h3 id="s5-generate">S5 · GENERATE<a aria-label="链接到此节" class="anchor" href="#s5-generate">#</a></h3>
@@ -136,7 +138,7 @@ CHEN MO: 我等你三个小时了。
 <h3 id="s6-audio">S6 · AUDIO<a aria-label="链接到此节" class="anchor" href="#s6-audio">#</a></h3>
 <p><strong>输入</strong>：<code>shots.dialogue</code> + 角色 <code>voiceId</code>。
 <strong>动作</strong>：TTS 逐镜合成 → 落 <code>assets(kind=audio)</code>；生成字幕（直接用台词文本，不做 ASR）；选配 BGM。
-<strong>注意</strong>：动态漫路线<strong>不做精细口型</strong>——2D 动画传统本就是简化口型，观众预期低，省一道工序。真人质感路线才需要 lip-sync，那时走 provider 的原生音画同步能力。</p>
+<strong>注意</strong>：<strong>口型同步是 R 级硬指标</strong>（见 <a href="10-media-storage.html" title="媒体存储、拼接与音频"><code>10-media-storage.md</code></a> §5.1）——R 级依赖表演张力（愤怒、威胁、亲密），口型不同步会直接摧毁这些镜头。对白镜头走 provider 的原生音画同步能力，没有「简化口型」这条省工序的退路。</p>
 <h3 id="s7-assemble">S7 · ASSEMBLE<a aria-label="链接到此节" class="anchor" href="#s7-assemble">#</a></h3>
 <p><strong>输入</strong>：locked 的 takes + 音轨 + 字幕。
 <strong>动作</strong>：生成 timeline → FFmpeg 渲染 → <strong>clean 母版（不烧字幕）</strong> + M&amp;E 分层音轨 + HLS 切片。L1/L0 版本由 conform 服务按替换清单自动派生，人不介入。详见 <a href="10-media-storage.html" title="媒体存储、拼接与音频"><code>10-media-storage.md</code></a>。</p>
@@ -150,7 +152,6 @@ CHEN MO: 我等你三个小时了。
 4. 商店资产<strong>独立生成</strong>，不从正片截帧（Apple 要求截图/预览满足 4+，即使 App 评级更高）</p>
 <p><strong>素材结构</strong>（15–30 秒档）：<code>钩子 0–3s → 铺垫 3–20s → 悬念 20–25s → CTA 25–30s</code>。前 1.5 秒决定生死，开场即最高情绪帧，不放 logo 与片头。</p>
 <p><strong>尺度是留存与付费的差异化，不是获客钩子。</strong> 投放渠道全是 PG-13 环境，尺度素材在 TikTok/Meta 直接违规、在 YouTube 进黄区、在 TikTok 自然流不进推荐。所有素材走 L0 层，用冲突与反转做钩子。</p>
-<h3 id="s7-assemble-2">S7 · ASSEMBLE<a aria-label="链接到此节" class="anchor" href="#s7-assemble-2">#</a></h3>
 <h2 id="3.-镜头状态机s5-的核心">3. 镜头状态机（S5 的核心）<a aria-label="链接到此节" class="anchor" href="#3.-镜头状态机s5-的核心">#</a></h2>
 <figure class="diagram"><div class="mermaid">flowchart TD
     draft["draft&lt;br/&gt;intent 未填全"]
@@ -224,7 +225,7 @@ CHEN MO: 我等你三个小时了。
 </tr>
 </tbody>
 </table></div>
-<p>MVP 阶段只实现 <strong>T0 + T4</strong>（技术校验 + 人工选片）。T1–T3 的表结构和接口在 M5 之前留空跑通，避免后期改数据模型。</p>
+<p>MVP 阶段只实现 <strong>T0 + T4</strong>（技术校验 + 人工选片）。T1–T3 的表结构和接口在 M6 之前留空跑通，避免后期改数据模型。</p>
 <p><strong>阈值配置</strong>在 <code>packages/contracts/src/evalPolicy.ts</code>，按 project 可覆盖：</p>
 <div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export const defaultEvalPolicy = {
   t0: { requireDecodable: true, durationToleranceSec: 0.5, maxBlackFrameRatio: 0.1 },
@@ -234,7 +235,7 @@ CHEN MO: 我等你三个小时了。
 }
 </code></pre></div>
 <h2 id="5.-连续性策略">5. 连续性策略<a aria-label="链接到此节" class="anchor" href="#5.-连续性策略">#</a></h2>
-<p>跨镜头一致性靠三个机制叠加，缺一不可：</p>
+<p>跨镜头一致性靠四个机制叠加，缺一不可：</p>
 <ol>
 <li><strong>Master 资产条件化</strong>：每个镜头都从角色/场景的 master 参考图出发生成，<strong>绝不</strong>把上一个镜头漂移后的产物当作下一镜的唯一真相递归下去。误差是<strong>指数放大而非线性</strong>的：训练时条件帧是干净的，推理时是自己生成的带误差帧，这个分布错配让误差进入模型没见过的输入域，形成正反馈——业界的通俗说法是「a copy of a copy」。</li>
 <li><strong>末帧接首帧</strong>：<code>shots.continuity_from_shot_id</code> 声明对前序镜头的依赖（依赖必须在前序镜头生成前就可声明，所以指向 shot 而非尚不存在的 take）。生成时解析该镜头的 <code>selectedTakeId</code>，取其末帧作为本镜的 i2v 首帧条件。用于同场连续动作。</li>
@@ -267,7 +268,9 @@ function planBatch(shots: Shot[]): { runnable: Shot[]; blocked: Shot[] } {
     runnable: shots.filter(s =&gt;
       s.status === 'ready' &amp;&amp;
       (!s.continuityFromShotId || lockedIds.has(s.continuityFromShotId))),
-    blocked: /* 其余 */,
+    blocked: shots.filter(s =&gt;
+      s.status === 'ready' &amp;&amp;
+      s.continuityFromShotId &amp;&amp; !lockedIds.has(s.continuityFromShotId)),
   }
 }
 </code></pre></div>
@@ -310,7 +313,6 @@ function planBatch(shots: Shot[]): { runnable: Shot[]; blocked: Shot[] } {
 <a class="lvl-3" href="#s6-audio">S6 · AUDIO</a>
 <a class="lvl-3" href="#s7-assemble">S7 · ASSEMBLE</a>
 <a class="lvl-3" href="#s8-promote素材层">S8 · PROMOTE（素材层）</a>
-<a class="lvl-3" href="#s7-assemble-2">S7 · ASSEMBLE</a>
 <a class="lvl-2" href="#3.-镜头状态机s5-的核心">3. 镜头状态机（S5 的核心）</a>
 <a class="lvl-2" href="#4.-评测五层eval-tiers">4. 评测五层（Eval Tiers）</a>
 <a class="lvl-2" href="#5.-连续性策略">5. 连续性策略</a>
