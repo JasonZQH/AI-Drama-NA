@@ -52,6 +52,17 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # 三语言类型一致的兑现点，所以放在最前（01-architecture.md §3）
+      - name: Build contracts
+        run: pnpm contracts:build
+
+      - name: Assert generated contracts are in sync with src
+        run: |
+          if ! git diff --exit-code -- packages/contracts/generated; then
+            echo "::error::packages/contracts/generated 与 src 不同步。本地运行 'pnpm contracts:build' 后提交生成结果。"
+            exit 1
+          fi
+
       - name: Format
         run: pnpm format
 

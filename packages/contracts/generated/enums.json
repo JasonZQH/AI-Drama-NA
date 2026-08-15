@@ -1,0 +1,141 @@
+{
+  "$comment": "由 scripts/build-contracts.mjs 生成，请勿手改",
+  "enums": {
+    "AdPlatform": [
+      "tiktok",
+      "meta_fb",
+      "meta_ig",
+      "snapchat",
+      "yt_shorts",
+      "unity"
+    ],
+    "AssetKind": [
+      "image",
+      "video",
+      "audio",
+      "subtitle",
+      "lora",
+      "master"
+    ],
+    "CameraMove": [
+      "static",
+      "pan",
+      "tilt",
+      "dolly",
+      "orbit",
+      "handheld"
+    ],
+    "ContentTier": [
+      "L0",
+      "L1",
+      "L2"
+    ],
+    "EpisodeStatus": [
+      "outline",
+      "scripted",
+      "shotlisted",
+      "producing",
+      "assembled",
+      "published"
+    ],
+    "FailureCode": [
+      "provider_error",
+      "timeout",
+      "content_filtered",
+      "quota_exceeded",
+      "download_failed",
+      "eval_rejected",
+      "invalid_output",
+      "cancelled"
+    ],
+    "GenMode": [
+      "t2v",
+      "i2v",
+      "ref2v",
+      "extend"
+    ],
+    "HookType": [
+      "betrayal",
+      "reveal",
+      "conflict",
+      "cliffhanger",
+      "reversal",
+      "emotional"
+    ],
+    "JobStatus": [
+      "queued",
+      "submitted",
+      "running",
+      "downloading",
+      "evaluating",
+      "succeeded",
+      "failed",
+      "cancelled"
+    ],
+    "ProducedBy": [
+      "generation",
+      "render",
+      "upload",
+      "transcode"
+    ],
+    "ProjectStatus": [
+      "draft",
+      "producing",
+      "completed",
+      "archived"
+    ],
+    "RefImageRole": [
+      "character",
+      "location",
+      "style",
+      "first_frame",
+      "last_frame"
+    ],
+    "SafetyProfile": [
+      "standard",
+      "mature"
+    ],
+    "ShotStatus": [
+      "draft",
+      "ready",
+      "generating",
+      "review",
+      "locked",
+      "failed",
+      "skipped"
+    ],
+    "ShotType": [
+      "ecu",
+      "cu",
+      "ms",
+      "ws",
+      "establishing",
+      "ots",
+      "pov"
+    ],
+    "TakeStatus": [
+      "candidate",
+      "selected",
+      "rejected",
+      "archived"
+    ],
+    "TimeOfDay": [
+      "day",
+      "night",
+      "dawn",
+      "dusk"
+    ],
+    "TimelineStatus": [
+      "draft",
+      "locked",
+      "rendering",
+      "rendered"
+    ],
+    "Transition": [
+      "cut",
+      "dissolve",
+      "fade_black",
+      "whip"
+    ]
+  }
+}
