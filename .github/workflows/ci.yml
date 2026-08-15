@@ -78,7 +78,11 @@ jobs:
       # 用仓库自己的 compose 起服务：GHA 的 services: 块无法覆写容器 command，
       # 而 minio 需要 `server /data`。同一份文件，本地与 CI 零分歧。
       - name: Start infra
-        run: docker compose -f infra/docker-compose.yml up -d --wait postgres redis minio minio-init
+        # 一次性任务不能进 --wait 列表：容器退出会被判定为失败，即使 exit 0。
+        # 长驻服务用 --wait 等健康检查，bucket 初始化用 run --rm 单独跑并取其退出码。
+        run: |
+          docker compose -f infra/docker-compose.yml up -d --wait postgres redis minio
+          docker compose -f infra/docker-compose.yml run --rm minio-init
 
       - name: Migrate + seed（验证 schema 与夹具真的能落库）
         run: pnpm build && pnpm db:migrate && pnpm db:seed
