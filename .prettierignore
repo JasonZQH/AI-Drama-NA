@@ -1,0 +1,12 @@
+docs/
+.venv/
+pnpm-lock.yaml
+
+# 生成产物：格式由生成器决定，prettier 介入只会和它打架
+packages/contracts/generated/
+**/dist/
+**/.next/
+**/.turbo/
+
+# Markdown 手工排版：中英混排的表格列宽是人对齐的，prettier 会打乱且不带来可读性收益
+*.md

@@ -1,0 +1,901 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "由 scripts/build-contracts.mjs 从 packages/contracts/src 生成，请勿手改",
+  "$defs": {
+    "GenerationRequest": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "shotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "t2v",
+            "i2v",
+            "ref2v",
+            "extend"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "negativePrompt": {
+          "type": "string"
+        },
+        "refImages": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "type": "string",
+                "enum": [
+                  "character",
+                  "location",
+                  "style",
+                  "first_frame",
+                  "last_frame"
+                ]
+              },
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "weight": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": [
+              "role",
+              "url"
+            ]
+          }
+        },
+        "durationSec": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 15
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "480p",
+            "720p",
+            "1080p"
+          ]
+        },
+        "aspectRatio": {
+          "type": "string",
+          "enum": [
+            "9:16",
+            "16:9",
+            "1:1"
+          ]
+        },
+        "fps": {
+          "default": 24,
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "safetyProfile": {
+          "default": "standard",
+          "type": "string",
+          "enum": [
+            "standard",
+            "mature"
+          ]
+        },
+        "priority": {
+          "default": "normal",
+          "type": "string",
+          "enum": [
+            "low",
+            "normal",
+            "high"
+          ]
+        },
+        "providerParams": {
+          "default": {},
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "requestId",
+        "shotId",
+        "mode",
+        "prompt",
+        "durationSec",
+        "resolution",
+        "aspectRatio"
+      ]
+    },
+    "GenerationResult": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "const": "succeeded"
+        },
+        "outputUrl": {
+          "type": "string"
+        },
+        "storageKey": {
+          "type": "string"
+        },
+        "durationSec": {
+          "type": "number"
+        },
+        "widthPx": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "heightPx": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "fps": {
+          "type": "number"
+        },
+        "seedUsed": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "costMicroUsd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "providerMeta": {
+          "default": {},
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "status",
+        "outputUrl",
+        "durationSec",
+        "widthPx",
+        "heightPx",
+        "fps",
+        "costMicroUsd"
+      ]
+    },
+    "ProviderFailure": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "const": "failed"
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "provider_error",
+            "timeout",
+            "content_filtered",
+            "quota_exceeded",
+            "download_failed",
+            "eval_rejected",
+            "invalid_output",
+            "cancelled"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "status",
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "ProviderProgress": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "submitted",
+            "running"
+          ]
+        },
+        "progressPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "etaMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "ProviderCapabilities": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "modes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "t2v",
+              "i2v",
+              "ref2v",
+              "extend"
+            ]
+          }
+        },
+        "maxDurationSec": {
+          "type": "number"
+        },
+        "resolutions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "480p",
+              "720p",
+              "1080p"
+            ]
+          }
+        },
+        "aspectRatios": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "9:16",
+              "16:9",
+              "1:1"
+            ]
+          }
+        },
+        "maxRefImages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "supportsSeed": {
+          "type": "boolean"
+        },
+        "supportsNegative": {
+          "type": "boolean"
+        },
+        "supportsFirstLastFrame": {
+          "type": "boolean"
+        },
+        "supportsAudio": {
+          "type": "boolean"
+        },
+        "serverSideContentFilter": {
+          "type": "boolean"
+        },
+        "maxConcurrent": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "costModel": {
+          "type": "object",
+          "properties": {
+            "unit": {
+              "type": "string",
+              "enum": [
+                "per_second",
+                "per_clip",
+                "per_token"
+              ]
+            },
+            "microUsdPerUnit": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "unit",
+            "microUsdPerUnit"
+          ]
+        }
+      },
+      "required": [
+        "modes",
+        "maxDurationSec",
+        "resolutions",
+        "aspectRatios",
+        "maxRefImages",
+        "supportsSeed",
+        "supportsNegative",
+        "supportsFirstLastFrame",
+        "supportsAudio",
+        "serverSideContentFilter",
+        "maxConcurrent",
+        "costModel"
+      ]
+    },
+    "ProviderHandle": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "providerId": {
+          "type": "string"
+        },
+        "externalId": {
+          "type": "string"
+        },
+        "submittedAt": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "providerId",
+        "externalId",
+        "submittedAt"
+      ]
+    },
+    "RefImage": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "character",
+            "location",
+            "style",
+            "first_frame",
+            "last_frame"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "role",
+        "url"
+      ]
+    },
+    "ShotIntent": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "shotType": {
+          "type": "string",
+          "enum": [
+            "ecu",
+            "cu",
+            "ms",
+            "ws",
+            "establishing",
+            "ots",
+            "pov"
+          ]
+        },
+        "cameraMove": {
+          "type": "string",
+          "enum": [
+            "static",
+            "pan",
+            "tilt",
+            "dolly",
+            "orbit",
+            "handheld"
+          ]
+        },
+        "action": {
+          "type": "string",
+          "minLength": 4
+        },
+        "emotion": {
+          "type": "string"
+        },
+        "dialogue": {
+          "type": "string"
+        },
+        "durationSec": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "characterNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "shotType",
+        "action",
+        "durationSec",
+        "characterNames"
+      ]
+    },
+    "ContinuityState": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "characters": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "outfit": {
+                "type": "string"
+              },
+              "hairstyle": {
+                "type": "string"
+              },
+              "holding": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "injuries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "lighting": {
+          "type": "string"
+        },
+        "props": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cameraDirection": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "characters"
+      ]
+    },
+    "FaceSet": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "primary": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "profileLeft": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "profileRight": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "threeQuarter": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        }
+      },
+      "required": [
+        "primary"
+      ]
+    },
+    "BodyRef": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "fullBody": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "headPolicy": {
+          "default": "strip",
+          "type": "string",
+          "enum": [
+            "keep",
+            "strip"
+          ]
+        },
+        "poseMap": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "required": [
+        "fullBody"
+      ]
+    },
+    "Outfit": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "wornMasked": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "flatLay": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "wornMasked"
+      ]
+    },
+    "EvalPolicy": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "t0": {
+          "type": "object",
+          "properties": {
+            "requireDecodable": {
+              "default": true,
+              "type": "boolean"
+            },
+            "durationToleranceSec": {
+              "default": 0.5,
+              "type": "number",
+              "minimum": 0
+            },
+            "maxBlackFrameRatio": {
+              "default": 0.1,
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "t2": {
+          "type": "object",
+          "properties": {
+            "identitySimMin": {
+              "default": 0.72,
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "styleSimMin": {
+              "default": 0.65,
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "t3": {
+          "type": "object",
+          "properties": {
+            "intentMatchMin": {
+              "default": 0.7,
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "maxAttemptsPerShot": {
+          "default": 4,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "t0",
+        "t2",
+        "t3"
+      ]
+    },
+    "EvalSummary": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "highestTierRun": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "failedChecks": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scores": {
+          "default": {},
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      },
+      "required": [
+        "passed",
+        "highestTierRun"
+      ]
+    },
+    "StudioEvent": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "shot.status"
+            },
+            "shotId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "draft",
+                "ready",
+                "generating",
+                "review",
+                "locked",
+                "failed",
+                "skipped"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "shotId",
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "job.progress"
+            },
+            "jobId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "shotId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "pct": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "etaMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "type",
+            "jobId",
+            "shotId",
+            "pct"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "take.created"
+            },
+            "shotId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "takeId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "thumbUrl": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "shotId",
+            "takeId",
+            "thumbUrl"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "batch.progress"
+            },
+            "episodeId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "done": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "type",
+            "episodeId",
+            "done",
+            "total",
+            "failed"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "cost.updated"
+            },
+            "projectId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "spentMicroUsd": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "type",
+            "projectId",
+            "spentMicroUsd"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "error"
+            },
+            "shotId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "code": {
+              "type": "string",
+              "enum": [
+                "provider_error",
+                "timeout",
+                "content_filtered",
+                "quota_exceeded",
+                "download_failed",
+                "eval_rejected",
+                "invalid_output",
+                "cancelled"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "message"
+          ]
+        }
+      ]
+    }
+  }
+}
