@@ -10,7 +10,7 @@
 
 ## 现状
 
-📄 **设计阶段** · 文档已完成，代码尚未开始。下一步是 M0 骨架（见 `docs/12-roadmap.md`）。
+📄 **设计阶段** · 文档已完成，代码尚未开始。下一步是 M0 骨架（见 [`docs/12-roadmap.html`](docs/12-roadmap.html)）。
 
 ## 技术选型速览
 
@@ -39,7 +39,7 @@ pnpm db:migrate && pnpm db:seed         # demo: 1 集 / 12 镜 / 2 角色
 pnpm dev                                # web:3000 · control:4000
 ```
 
-打开 `http://localhost:3000` → demo 项目 → 分镜页 →「生成整集」，十几秒后可走完 生成 → 选片 → 渲染 → 播放 全流程。详见 `docs/11-dev-setup.md`。
+打开 `http://localhost:3000` → demo 项目 → 分镜页 →「生成整集」，十几秒后可走完 生成 → 选片 → 渲染 → 播放 全流程。详见 [`docs/11-dev-setup.html`](docs/11-dev-setup.html)。
 
 ## 文档
 
@@ -52,7 +52,7 @@ pnpm dev                                # web:3000 · control:4000
 | [00-overview](docs/00-overview.html) | 范围定义、设计约束、术语表 |
 | [01-architecture](docs/01-architecture.html) | 三平面架构、进程拓扑、目录结构 |
 | [02-data-model](docs/02-data-model.html) | 数据库 schema、状态枚举、Generation Ledger |
-| [03-pipeline](docs/03-pipeline.html) | 七阶段流水线、镜头状态机、评测分层、连续性策略 |
+| [03-pipeline](docs/03-pipeline.html) | 八阶段流水线（含 S8 素材层）、镜头状态机、评测分层、连续性策略 |
 | [04-provider-adapter](docs/04-provider-adapter.html) | 生成后端统一契约与路由器 |
 | [05-job-orchestration](docs/05-job-orchestration.html) | 队列、并发、轮询、重试、成本记账、崩溃恢复 |
 | [06-api-spec](docs/06-api-spec.html) | 控制面 REST + SSE API |
@@ -61,7 +61,7 @@ pnpm dev                                # web:3000 · control:4000
 | [09-python-worker](docs/09-python-worker.html) | Worker Contract、模型选型、远程 GPU 部署 |
 | [10-media-storage](docs/10-media-storage.html) | S3 存储、FFmpeg 拼接、TTS、HLS、容量估算 |
 | [11-dev-setup](docs/11-dev-setup.html) | 环境搭建、环境变量、排错速查 |
-| [12-roadmap](docs/12-roadmap.html) | M0–M5 里程碑与验收标准 |
+| [12-roadmap](docs/12-roadmap.html) | M0–M6 里程碑与验收标准 |
 | [13-character-assets](docs/13-character-assets.html) | 角色资产三路分离、参考图机制、单镜头 prompt 三阶段 |
 
 **架构决策记录**
@@ -76,6 +76,8 @@ pnpm dev                                # web:3000 · control:4000
 | [0006](docs/adr/0006-comfyui-over-diffusers.md) | 推理执行层用 ComfyUI 而非 diffusers |
 | [0007](docs/adr/0007-bullmq-over-temporal.md) | 编排留在 BullMQ，写明 Temporal 迁移触发条件 |
 | [0008](docs/adr/0008-character-asset-separation.md) | 角色资产按 face / body / wardrobe 三路分离 |
+| [0009](docs/adr/0009-modular-monolith-not-microservices.md) | 模块化单体 + 无状态计算 worker，不上微服务 |
+| [0010](docs/adr/0010-http-over-grpc.md) | 跨进程用 HTTP/JSON 而非 gRPC |
 
 ## 里程碑
 
@@ -84,9 +86,10 @@ pnpm dev                                # web:3000 · control:4000
 | **M0** | 骨架跑通（假生成、真流程） | 无 GPU 无 key，5 分钟跑通全链路 |
 | **M1** | 接入云 API | 成本可见，dryRun 预估误差 <20% |
 | **M2** | 远程 GPU 自部署 | 云 API 与自部署同口径成本对比 |
-| **M3** | 音频与成片 | 60 镜带配音字幕成片，改一镜重渲染 <30s |
-| **M4** | 端到端闭环 | 连续 5 集角色一致性可接受 |
-| **M5** | 质量与成本优化 | 每可用镜头成本下降 ≥20% |
+| **M3** | 音频与成片 | 一集（10–25 镜）带配音字幕成片，改一镜重渲染 <30s |
+| **M4** | 素材产线（曝光优先） | 一键产出 L2/L1/L0 三版；自动切出 ≥40 条钩子概念 |
+| **M5** | 端到端闭环 | 连续 5 集角色一致性可接受 |
+| **M6** | 质量与成本优化 | 每可用镜头成本下降 ≥20% |
 
 ## 本阶段明确不做
 

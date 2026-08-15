@@ -75,7 +75,7 @@
 <h2 id="2.-三条硬规则">2. 三条硬规则<a aria-label="链接到此节" class="anchor" href="#2.-三条硬规则">#</a></h2>
 <p>这三条比任何视觉细节都重要，违反了界面就不可用：</p>
 <p><strong>R1 · 进度必须可读。</strong> 生成任务耗时几十秒到几分钟。任何超过 2 秒的操作都必须有真实进度（百分比 + ETA），不能只是转圈。转圈在这里等于「系统卡死」。</p>
-<p><strong>R2 · 花钱操作必须二次确认且显示金额。</strong> 「生成整集」这类按钮，确认弹窗上必须写清「24 个镜头，预估 $3.60」。永远不要让用户在不知道价格的情况下点下去。</p>
+<p><strong>R2 · 花钱操作必须二次确认且显示金额。</strong> 「生成整集」这类按钮，确认弹窗上必须写清「18 个镜头，预估 $3.60」。永远不要让用户在不知道价格的情况下点下去。</p>
 <p><strong>R3 · 失败必须可操作。</strong> 报错不能只说「生成失败」。要说明失败码、是否可重试、以及一个明确的下一步按钮（重试 / 改 prompt / 换 provider）。</p>
 <h2 id="3.-色彩令牌">3. 色彩令牌<a aria-label="链接到此节" class="anchor" href="#3.-色彩令牌">#</a></h2>
 <p>暗色为主模式，浅色为可选。以 CSS 变量定义在 <code>packages/ui/src/tokens.css</code>。</p>
@@ -324,7 +324,7 @@
 <p><strong><code>&lt;AssetGrid&gt;</code></strong> — 虚拟滚动网格（<code>@tanstack/react-virtual</code>）。资产可能几千个，必须虚拟化。</p>
 <p><strong><code>&lt;PromptInspector&gt;</code></strong> — 折叠面板，展示最终 prompt、负向词、参考图缩略、seed、provider 参数。可复制、可覆盖。这是 R3 的落地：失败时用户第一件事就是看这里。</p>
 <h3 id="6.3-反馈">6.3 反馈<a aria-label="链接到此节" class="anchor" href="#6.3-反馈">#</a></h3>
-<p><strong><code>&lt;ConfirmSpend&gt;</code></strong> — 花钱确认弹窗（R2）。必须显示：影响镜头数、预估成本、provider、当前剩余预算。确认按钮文案是「生成 24 个镜头（约 $3.60）」而不是「确定」。</p>
+<p><strong><code>&lt;ConfirmSpend&gt;</code></strong> — 花钱确认弹窗（R2）。必须显示：影响镜头数、预估成本、provider、当前剩余预算。确认按钮文案是「生成 18 个镜头（约 $3.60）」而不是「确定」。</p>
 <p><strong><code>&lt;FailureCard&gt;</code></strong> — 失败卡片（R3）。失败码 + 人话解释 + 可操作按钮组。例：</p>
 <div class="codeblock"><pre><code>✕ 内容被 provider 过滤
    该 prompt 被 vidu 的内容策略拒绝。重试同样会被拒。
@@ -366,6 +366,14 @@
 <tr>
 <td><code>X</code></td>
 <td>拒绝当前 take</td>
+</tr>
+<tr>
+<td><code>Shift + X</code></td>
+<td>拒绝全部 take 并重新生成（花钱，触发 ConfirmSpend）</td>
+</tr>
+<tr>
+<td><code>S</code></td>
+<td>跳过此镜（shot → <code>skipped</code>）</td>
 </tr>
 <tr>
 <td><code>Cmd/Ctrl + Enter</code></td>

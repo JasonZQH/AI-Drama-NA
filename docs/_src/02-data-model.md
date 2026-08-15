@@ -54,7 +54,7 @@ export const projects = pgTable('projects', {
   synopsis:    text('synopsis'),
   styleProfileId: uuid('style_profile_id'),        // 全局风格，注入每个 prompt
   aspectRatio: text('aspect_ratio').notNull().default('9:16'),
-  language:    text('language').notNull().default('zh-CN'),
+  language:    text('language').notNull().default('en-US'),        // 北美 R 级为主市场，见 00-overview §2.5
   rightsRef:   jsonb('rights_ref').$type<RightsRef | null>(),   // 预留：授权链
   ownerId:     text('owner_id').notNull().default('local'),      // 预留：多用户
   status:      text('status').$type<ProjectStatus>().notNull().default('draft'),
@@ -75,7 +75,7 @@ export const episodes = pgTable('episodes', {
   hook:        text('hook'),                        // 开场钩子
   cliffhanger: text('cliffhanger'),                 // 结尾悬念
   scriptMd:    text('script_md'),                   // 本集剧本原文
-  targetDurationSec: integer('target_duration_sec').notNull().default(90),
+  targetDurationSec: integer('target_duration_sec').notNull().default(75),  // 60–90 秒区间的典型值
   status:      text('status').$type<EpisodeStatus>().notNull().default('outline'),
   createdAt:   timestamp('created_at').notNull().defaultNow(),
 }, (t) => ({ uniq: unique().on(t.projectId, t.index) }))
@@ -139,7 +139,7 @@ export const shots = pgTable('shots', {
 
 ### 3.3 一致性资产：`characters` / `locations` / `style_profiles`
 
-三张表同构，统一模式：
+三张表共用同一层骨架——描述 + 参考资产 + `version` + `lockedAt`——但参考资产的内部结构各不相同：
 
 ```ts
 export const characters = pgTable('characters', {
@@ -149,8 +149,8 @@ export const characters = pgTable('characters', {
   description: text('description').notNull(),   // 注入 prompt 的固定描述
 
   // ── 三类参考资产分离（见 13-character-assets.md §2）──
-  faceSet:  jsonb('face_set').$type<FaceSet>().notNull(),    // 多视角人脸基准
-  bodyRef:  jsonb('body_ref').$type<BodyRef>().notNull(),    // 体型基准，去头与否按画风
+  faceSet:  jsonb('face_set').$type<FaceSet | null>(),       // 多视角人脸基准
+  bodyRef:  jsonb('body_ref').$type<BodyRef | null>(),       // 体型基准，去头与否按画风
   wardrobe: jsonb('wardrobe').$type<Outfit[]>().notNull().default(sql`'[]'`),
 
   // ── prompt 辅助 ──
@@ -163,7 +163,7 @@ export const characters = pgTable('characters', {
   loraAssetId: uuid('lora_asset_id'),
   voiceId:     text('voice_id'),
   version:     integer('version').notNull().default(1),
-  lockedAt:    timestamp('locked_at'),          // 锁定后才允许进入 S5 批量生成
+  lockedAt:    timestamp('locked_at'),          // 三路资产齐备的闸门在此；锁定后才允许进入 S5 批量生成
   createdAt:   timestamp('created_at').notNull().defaultNow(),
 })
 ```
@@ -195,7 +195,7 @@ interface PlatformBindings {
 
 > **为什么拆成三个字段而不是一个 `reference_asset_ids` 数组**：三类资产的构图要求、质量闸门、失败模式完全不同——人脸要多视角且中性，体型的去头策略随画风变，服装要抠掉脸。放同一个数组里既无法校验也无法按平台的 role 槽位分发。完整论证见 `13-character-assets.md`。
 
-`locations` 同构（无 `voiceId`，多 `interior boolean`）；`style_profiles` 同构（无 `voiceId`，多 `negativePrompt text`）。
+`locations` 与 `style_profiles` 都没有 `voiceId`，也**不带** face/body/wardrobe 三路人物字段——那三路只对人成立。场景的参考图按时间/光线变体组织（全景、无人物，见 `13-character-assets.md` §2.5），另有 `interior boolean`；`style_profiles` 另有 `negativePrompt text`。
 
 参考图集是一致性的**物理载体**——不要指望靠 prompt 复述维持角色一致，要靠固定的参考资产。
 
@@ -304,9 +304,10 @@ export const assets = pgTable('assets', {
 projects/{projectId}/
   refs/{characterId}/{assetId}.png          # 参考图
   takes/{shotId}/{jobId}.mp4                # 生成产物
-  audio/{shotId}/{takeId}-voice.wav         # 配音
+  audio/{shotId}/{assetId}.wav              # 配音（S6 与 S5 并行，不依赖 take）
+  renders/{episodeId}/normalized/{takeId}.mp4  # 规范化中间件，7 天可重建
   renders/{episodeId}/v{n}/master.mp4       # 集母版
-  renders/{episodeId}/v{n}/master.m3u8      # HLS 切片
+  renders/{episodeId}/v{n}/hls/index.m3u8   # HLS 播放列表，同目录下 seg_*.ts
 ```
 
 ## 6. 评测：`eval_results`
@@ -379,8 +380,12 @@ export const JobStatus = z.enum([
   'succeeded','failed','cancelled',
 ])
 
+export const ShotType       = z.enum(['ecu','cu','ms','ws','establishing','ots','pov'])
+export const CameraMove     = z.enum(['static','pan','tilt','dolly','orbit','handheld'])
+export const TimeOfDay      = z.enum(['day','night','dawn','dusk'])
 export const TakeStatus     = z.enum(['candidate','selected','rejected','archived'])
 export const AssetKind      = z.enum(['image','video','audio','subtitle','lora','master'])
+export const ProducedBy     = z.enum(['generation','render','upload','transcode'])
 export const GenMode        = z.enum(['t2v','i2v','ref2v','extend'])
 export const SafetyProfile  = z.enum(['standard','mature'])
 export const ContentTier    = z.enum(['L0','L1','L2'])   // 投放安全 / 商店安全 / 完整 TV-MA

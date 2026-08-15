@@ -95,7 +95,7 @@
 </tr>
 <tr>
 <td>错误</td>
-<td>统一错误体（见 §7）</td>
+<td>统一错误体（见 §8）</td>
 </tr>
 <tr>
 <td>认证</td>
@@ -139,7 +139,7 @@ POST /api/ai/prompt-preview   { shotId, providerId? }
 <div class="codeblock"><pre><code>GET    /api/projects/:id/characters
 POST   /api/projects/:id/characters       { name, description, voiceId? }
 PATCH  /api/characters/:id                改 description 会 version++
-POST   /api/characters/:id/references     { assetIds[] }  绑定参考图
+PUT    /api/characters/:id/references     { faceSet, bodyRef, wardrobe }  三路参考资产（见 02-data-model.md §3.3）
 DELETE /api/characters/:id
 
 # locations / style-profiles 同构
@@ -254,9 +254,14 @@ data: {"episodeId":"...","done":18,"total":24,"failed":1}
 <td>对 draft 镜头调 generate</td>
 </tr>
 <tr>
+<td>402</td>
+<td><code>BUDGET_EXCEEDED</code></td>
+<td>预算闸门拦截</td>
+</tr>
+<tr>
 <td>404</td>
 <td><code>NOT_FOUND</code></td>
-<td></td>
+<td>资源不存在或已软删除</td>
 </tr>
 <tr>
 <td>409</td>
@@ -272,11 +277,6 @@ data: {"episodeId":"...","done":18,"total":24,"failed":1}
 <td>429</td>
 <td><code>RATE_LIMITED</code></td>
 <td>全局或 provider 限流</td>
-</tr>
-<tr>
-<td>402</td>
-<td><code>BUDGET_EXCEEDED</code></td>
-<td>预算闸门拦截</td>
 </tr>
 <tr>
 <td>503</td>

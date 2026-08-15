@@ -42,6 +42,7 @@ flowchart TD
 | MinIO | Mac (docker) | 9000/9001 | S3 API + 控制台 |
 | `workers/video` | 远程 GPU | 8001 | Python FastAPI |
 | `workers/media` | Mac (docker) | 8002 | FFmpeg，CPU 即可 |
+| `workers/eval` | Mac (docker) | 8003 | 自动评测，M6 启用（见 `09-python-worker.md` §2） |
 
 Mac 与远程 GPU 的连通用 **Tailscale**（推荐）或 SSH 反向隧道，见 `11-dev-setup.md`。GPU worker 直接向 MinIO 写产物——**大文件绝不经过控制面中转**，控制面只收到一个 S3 key。
 
@@ -217,7 +218,8 @@ flowchart LR
     M1["M1 · 一个云 API provider<br/>真实生成与成本记账"]
     M2["M2 · 远程 Python worker<br/>自部署与 Worker Contract"]
     M3["M3 · 音频 + FFmpeg 拼接<br/>产出完整一集"]
-    M4["M4 · 播放器 + 分集管理<br/>端到端闭环"]
-    M5["M5 · 自动评测与智能路由<br/>质量与成本优化"]
-    M0 --> M1 --> M2 --> M3 --> M4 --> M5
+    M4["M4 · 素材产线<br/>分级 conform + 钩子切条<br/>曝光优先，先于播放器"]
+    M5["M5 · 播放器 + 分集管理<br/>端到端闭环"]
+    M6["M6 · 自动评测 + 智能路由<br/>质量与成本优化"]
+    M0 --> M1 --> M2 --> M3 --> M4 --> M5 --> M6
 ```

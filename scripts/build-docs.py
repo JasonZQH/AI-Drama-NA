@@ -38,10 +38,10 @@ GROUPS = [
 
 # 索引页每篇的一句话说明
 BLURBS = {
-    "00": "范围定义、六条设计约束、全项目统一术语表",
+    "00": "范围定义、八条设计约束、全项目统一术语表",
     "01": "三平面架构、进程拓扑、monorepo 目录结构",
     "02": "数据库 schema、状态枚举、Generation Ledger",
-    "03": "七阶段流水线、镜头状态机、评测分层、连续性策略",
+    "03": "八阶段流水线、镜头状态机、评测分层、连续性策略",
     "04": "生成后端统一契约、能力声明与路由器",
     "05": "队列拓扑、并发控制、轮询、重试、成本记账、崩溃恢复",
     "06": "控制面 REST + SSE 接口与错误规范",
@@ -50,7 +50,7 @@ BLURBS = {
     "09": "Worker Contract、模型选型与许可、远程 GPU 部署",
     "10": "S3 存储、FFmpeg 拼接、TTS、HLS、容量估算",
     "11": "环境搭建、环境变量、联调检查、排错速查",
-    "12": "M0–M5 里程碑、验收标准与关键指标",
+    "12": "M0–M6 里程碑、验收标准与关键指标",
     "13": "角色资产三路分离、参考图机制、单镜头 prompt 三阶段",
 }
 
@@ -461,7 +461,7 @@ def main() -> int:
         '<a class="card" href="../README.md"><div class="num">README</div>'
         '<div class="title">项目说明</div><div class="desc">技术选型速览、快速开始、里程碑概览</div></a>'
         '<a class="card" href="adr/"><div class="num">ADR</div>'
-        '<div class="title">架构决策记录</div><div class="desc">五条关键决策的背景、备选与后果</div></a>'
+        '<div class="title">架构决策记录</div><div class="desc">十条关键决策的背景、备选与后果</div></a>'
         "</div>"
     )
 

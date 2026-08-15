@@ -66,7 +66,7 @@
 </blockquote>
 <p>一致性不是写出来的，是<strong>管</strong>出来的。这一篇定义角色/场景资产的结构、生成顺序和质量闸门，以及单镜头 prompt 在流水线三个阶段各自该写什么。</p>
 <h2 id="1.-先理解模型怎么消费参考图">1. 先理解模型怎么消费参考图<a aria-label="链接到此节" class="anchor" href="#1.-先理解模型怎么消费参考图">#</a></h2>
-<p>设计资产结构之前必须接受三条机制事实，否则会做出看似合理、实际无效的设计。</p>
+<p>设计资产结构之前必须接受四条机制事实，否则会做出看似合理、实际无效的设计。</p>
 <h3 id="1.1-视频模型没有人脸专用通路">1.1 视频模型没有人脸专用通路<a aria-label="链接到此节" class="anchor" href="#1.1-视频模型没有人脸专用通路">#</a></h3>
 <p><strong>所有开源视频模型对参考图都是整图过 VAE、拼成 token。</strong> Wan-Animate 中确有 Face Blocks，但它处理的是<strong>驱动视频的表情</strong>，且论文明确说明该通路被设计成「把表情信息与身份属性解耦」——身份 100% 来自参考图的整图 latent。</p>
 <p><strong>含义</strong>：不能指望模型「认出」哪张图是人脸参考并区别对待。把资产拆成脸/体型/服装三类，本身<strong>不产生</strong>收益；收益来自平台侧的 role routing，或 prompt 里的显式绑定。</p>
@@ -122,7 +122,7 @@
 </table></div>
 <p>在 Seedance 这类只有序号的 API 上，多视角参考有 <strong>identity splitting</strong> 风险（同一角色的多张图被判为不同身份），必须在 prompt 里显式声明「这几张是同一个人」，且需实测。</p>
 <h3 id="1.3-高清大图的收益在哪里饱和">1.3 「高清大图」的收益在哪里饱和<a aria-label="链接到此节" class="anchor" href="#1.3-高清大图的收益在哪里饱和">#</a></h3>
-<p>三条通路吃的东西完全不同：</p>
+<p>四条通路吃的东西完全不同：</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -299,7 +299,7 @@
 ⑤ 入库：命名 + 白底 + 质量闸门校验 + 色卡标注
 ⑥ 锁定（locked 后才允许进入 S5 批量生成）
 </code></pre></div>
-<p><strong>S4 未完成时，分镜页的批量生成入口必须禁用。</strong> 参考图没锁死就开始批量生成，等于在流沙上盖楼——「角色设定未完成就开工」是行业公认的五大失败模式之一，后果是一致性问题级联放大、中途修正代价极高。</p>
+<p><strong>S4 未完成时，分镜页的批量生成入口必须禁用。</strong> 参考图没锁死就开始批量生成，等于在流沙上盖楼——「角色设定未完成就开工」是行业公认的失败模式之一，后果是一致性问题级联放大、中途修正代价极高。</p>
 <h2 id="4.-单镜头-prompt三阶段差异化">4. 单镜头 Prompt：三阶段差异化<a aria-label="链接到此节" class="anchor" href="#4.-单镜头-prompt三阶段差异化">#</a></h2>
 <p>Prompt 的槽位模型是稳定的五槽，但<strong>三个阶段填的槽完全不同</strong>。</p>
 <div class="codeblock"><pre><code>style | shot(景别+机位+运镜) | scene | subject + action + expression | lighting
@@ -334,10 +334,11 @@ B. 镜头正文（逐镜变化）
 <p>在这个阶段重复角色外貌描述是常见错误，它会与首帧图争夺控制权。</p>
 <h3 id="4.4-镜头语言词汇表">4.4 镜头语言词汇表<a aria-label="链接到此节" class="anchor" href="#4.4-镜头语言词汇表">#</a></h3>
 <p>统一采用中英双语写法，存为枚举而非自由文本：</p>
-<p><strong>景别</strong> 特写 Close-up · 近景 Near shot · 中景 Medium shot · 全景 Wide shot · 极端全景 Extreme wide shot
-<strong>运镜</strong> 推进 Push in · 拉远 Pull back · 左移 Pan left · 右移 Pan right · 上摇 Tilt up · 下摇 Tilt down · 环绕 Orbital · 固定 Fixed shot
-<strong>机位</strong> 平拍 Eye level · 俯视 Bird's eye · 仰视 Low angle · 过肩 Over-the-shoulder · 航拍 Aerial
+<p><strong>景别</strong>（<code>ShotType</code>）极端特写 ecu · 特写 cu · 中景 ms · 全景 ws · 建立镜 establishing · 过肩 ots · 主观 pov
+<strong>运镜</strong>（<code>CameraMove</code>）固定 static · 横摇 pan · 俯仰 tilt · 推拉 dolly · 环绕 orbit · 手持 handheld —— 推进与拉远同属 <code>dolly</code>，方向和幅度按 §4.5 写成数值
+<strong>机位</strong> 平拍 Eye level · 俯视 Bird's eye · 仰视 Low angle · 航拍 Aerial
 <strong>光线</strong> 日光 Daylight · 柔光 Soft light · 硬光 Hard light · 侧光 Side light · 边缘光 Rim light · 背光 Backlighting · 顶光 Top light</p>
+<p>前两行有对应的 <code>shots</code> 列（<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a> §3.2 的 <code>shotType</code> / <code>cameraMove</code>），机位与光线目前只作为 prompt 槽位存在，未落库。</p>
 <p>每镜<strong>只写一个运镜</strong>。</p>
 <h3 id="4.5-prompt-lint-规则做成校验不是自由文本">4.5 Prompt Lint 规则（做成校验，不是自由文本）<a aria-label="链接到此节" class="anchor" href="#4.5-prompt-lint-规则做成校验不是自由文本">#</a></h3>
 <p>这些必须在分镜阶段就拦截，而不是等生成完才发现：</p>
@@ -370,12 +371,12 @@ B. 镜头正文（逐镜变化）
 <td>如「低角度俯拍平放在桌上的手机屏幕」是矛盾描述</td>
 </tr>
 <tr>
-<td>单镜时长 3–8 秒</td>
+<td>单镜时长 2–8 秒</td>
 <td></td>
 </tr>
 <tr>
-<td>单句台词 ≤10 字</td>
-<td>同时校验 TTS 时长是否超镜头时长</td>
+<td>单句台词 ≤11 词</td>
+<td>英语 2.8 词/秒 × 典型 4 秒镜头折算（中文项目约 ≤18 字 @ 4.5 字/秒，见 <a href="10-media-storage.html" title="媒体存储、拼接与音频"><code>10-media-storage.md</code></a> §5.2）；同时校验 TTS 时长是否超镜头时长</td>
 </tr>
 <tr>
 <td>Prompt 长度软告警</td>
@@ -426,7 +427,7 @@ B. 镜头正文（逐镜变化）
 <p>递归漂移是指数放大而非线性的：训练时模型看到的条件帧是干净的，推理时是自己生成的带误差帧，这个分布错配让误差进入模型没见过的输入域，输出误差更大，形成正反馈。业界的通俗表述是「a copy of a copy」——十秒片段结束时，微小误差已经放大成完全不同的角色。</p>
 <p><code>shots.continuity_from_shot_id</code>（<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a>）的正确用法是<strong>取前序镜头选定 take 的末帧作为本镜 i2v 的首帧条件</strong>，同时<strong>角色参考图仍然来自 master 资产</strong>。两者是叠加关系，不是替代关系。</p>
 <p><strong>高危时刻</strong>：角色转身、被遮挡、走出画面再回来。这些时刻最近的上下文里没有脸可参考，是 identity drift 的高发点，应在分镜阶段就规避，或在遮挡后强制重新注入参考。</p>
-<p><strong>「尽量只过一次生成」要正确翻译。</strong> 这是电影级制作者常给的建议——每多过一道生成就多叠一层误差，所以能一次到位就别返工。但<strong>电影和批量短剧的可行解不同</strong>：一部 95 分钟电影的主角团人数有限、单镜可以精修，靠「一次生成 + 人工挑选」能保证质量；一部 60 集短剧有 3000+ 镜头，人工兜不住。</p>
+<p><strong>「尽量只过一次生成」要正确翻译。</strong> 这是电影级制作者常给的建议——每多过一道生成就多叠一层误差，所以能一次到位就别返工。但<strong>电影和批量短剧的可行解不同</strong>：一部 95 分钟电影的主角团人数有限、单镜可以精修，靠「一次生成 + 人工挑选」能保证质量；一部 80–100 集短剧有 800–2500 个镜头，人工兜不住。</p>
 <p>在本项目的量级下，这条建议应翻译成 <strong>「提高一次通过率」</strong>，而不是「不重试」——即把预算投在参考资产质量、prompt lint、景别约束上，让首次尝试就过闸的比例上升（这正是 <a href="12-roadmap.html" title="里程碑与验收标准"><code>12-roadmap.md</code></a> 把一次通过率列为核心指标的原因），而不是取消 <a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §3 的重试升级策略。两者不矛盾：减少重试次数是目标，保留重试能力是手段。</p>
 <h3 id="5.3-seed-不是一致性机制">5.3 seed 不是一致性机制<a aria-label="链接到此节" class="anchor" href="#5.3-seed-不是一致性机制">#</a></h3>
 <p><strong>把 seed 定位成可复现性字段，不是一致性功能。</strong> 大量中文教程在这点上是错的。</p>
@@ -440,7 +441,7 @@ B. 镜头正文（逐镜变化）
 <h3 id="5.5-角色间辨识度">5.5 角色间辨识度<a aria-label="链接到此节" class="anchor" href="#5.5-角色间辨识度">#</a></h3>
 <p>行业普遍现象是所有角色收敛到同一张「梦幻脸」，观众要靠发色区分。这是<strong>被普遍忽略但真实存在</strong>的痛点。</p>
 <p>建议在资产层加一条闸门：<strong>新角色入库时，与项目内已有角色做身份 embedding 相似度比对，过高则告警</strong>。这是「角色自身一致性」之外的另一个维度。</p>
-<h2 id="5.6-群像与大场面用物理遮蔽掩护模型的失败区">5.6 群像与大场面：用物理遮蔽掩护模型的失败区<a aria-label="链接到此节" class="anchor" href="#5.6-群像与大场面用物理遮蔽掩护模型的失败区">#</a></h2>
+<h3 id="5.6-群像与大场面用物理遮蔽掩护模型的失败区">5.6 群像与大场面：用物理遮蔽掩护模型的失败区<a aria-label="链接到此节" class="anchor" href="#5.6-群像与大场面用物理遮蔽掩护模型的失败区">#</a></h3>
 <p>批量生产里最容易崩的是人群、街景、战斗大场面。Hell Grind 的做法是<strong>三层堆叠 + 雾</strong>：</p>
 <div class="table-wrap"><table>
 <thead>
@@ -470,37 +471,37 @@ B. 镜头正文（逐镜变化）
 </table></div>
 <p>关键在最后一条：<strong>用叙事上合理的物理遮蔽（雾 / 烟 / 雨 / 夜 / 浅景深）为模型必然崩坏的区域提供掩护</strong>。这不是偷懒，是把「模型能力边界」翻译成「美术设定」。</p>
 <p>对短剧的迁移价值很高，而且<strong>模型越弱收益越大</strong>——你用自部署开源模型时比用闭源旗舰更需要这一条。分镜阶段就该把大场面写成「有遮蔽理由的大场面」。</p>
-<h2 id="5.7-废片碎片抢救">5.7 废片碎片抢救<a aria-label="链接到此节" class="anchor" href="#5.7-废片碎片抢救">#</a></h2>
+<h3 id="5.7-废片碎片抢救">5.7 废片碎片抢救<a aria-label="链接到此节" class="anchor" href="#5.7-废片碎片抢救">#</a></h3>
 <p>在低采纳率下，被否决的生成里必然埋着大量可用的 1–3 秒片段。Hell Grind 的做法是<strong>把这些碎片提取入库，当作连接镜、插入镜复用</strong>。</p>
 <p>工程含义：<code>takes</code> 表的 <code>rejected</code> 状态不该等于「无价值」。建议加一条轻量流程——人审拒绝一条 take 时，可标记「部分可用」并框选可用时间段，产出一条 <code>kind=fragment</code> 的派生 asset，按角色/场景/情绪打标进碎片库。</p>
 <p>这条在 98% 都是废片的现实下，是<strong>唯一能把沉没成本变回资产</strong>的机制。</p>
-<h2 id="5.8-采纳率标定m1-的第一个实验">5.8 采纳率标定：M1 的第一个实验<a aria-label="链接到此节" class="anchor" href="#5.8-采纳率标定m1-的第一个实验">#</a></h2>
+<h3 id="5.8-采纳率标定m1-的第一个实验">5.8 采纳率标定：M1 的第一个实验<a aria-label="链接到此节" class="anchor" href="#5.8-采纳率标定m1-的第一个实验">#</a></h3>
 <p>采纳率（首次生成即被采用的比例）直接决定算力预算能否成立：</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
 <th>采纳率</th>
-<th>3000 镜的剧需要的生成次数</th>
+<th>一部剧（典型 1600 镜）需要的生成次数</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>10%</td>
-<td>~3 万次</td>
+<td>~1.6 万次</td>
 </tr>
 <tr>
 <td>25%</td>
-<td>~1.2 万次</td>
+<td>~6400 次</td>
 </tr>
 <tr>
 <td>40%</td>
-<td>~7500 次</td>
+<td>~4000 次</td>
 </tr>
 </tbody>
 </table></div>
 <p><strong>M1 阶段必须先测出自己质量标准下的真实采纳率</strong>，这个数字比任何模型选型都更能决定项目可行性。</p>
 <p>提高采纳率的杠杆按 ROI 排序：① 参考资产质量（§2）② prompt lint 拦掉必崩的镜头（§4.5）③ 景别约束（§5.1）④ 物理遮蔽（§5.6）。<strong>这四条都在生成之前，比事后重试便宜一个数量级。</strong></p>
-<h2 id="5.9-失败模式-qc-清单">5.9 失败模式 QC 清单<a aria-label="链接到此节" class="anchor" href="#5.9-失败模式-qc-清单">#</a></h2>
+<h3 id="5.9-失败模式-qc-清单">5.9 失败模式 QC 清单<a aria-label="链接到此节" class="anchor" href="#5.9-失败模式-qc-清单">#</a></h3>
 <p>来自 Hell Grind 管线的社区整理，八类，可直接做成审片 checklist 与自动检测项：</p>
 <div class="table-wrap"><table>
 <thead>
@@ -596,10 +597,10 @@ B. 镜头正文（逐镜变化）
 <a class="lvl-3" href="#5.3-seed-不是一致性机制">5.3 seed 不是一致性机制</a>
 <a class="lvl-3" href="#5.4-lora-训练集与社区默认建议相反的一条">5.4 LoRA 训练集：与社区默认建议相反的一条</a>
 <a class="lvl-3" href="#5.5-角色间辨识度">5.5 角色间辨识度</a>
-<a class="lvl-2" href="#5.6-群像与大场面用物理遮蔽掩护模型的失败区">5.6 群像与大场面：用物理遮蔽掩护模型的失败区</a>
-<a class="lvl-2" href="#5.7-废片碎片抢救">5.7 废片碎片抢救</a>
-<a class="lvl-2" href="#5.8-采纳率标定m1-的第一个实验">5.8 采纳率标定：M1 的第一个实验</a>
-<a class="lvl-2" href="#5.9-失败模式-qc-清单">5.9 失败模式 QC 清单</a>
+<a class="lvl-3" href="#5.6-群像与大场面用物理遮蔽掩护模型的失败区">5.6 群像与大场面：用物理遮蔽掩护模型的失败区</a>
+<a class="lvl-3" href="#5.7-废片碎片抢救">5.7 废片碎片抢救</a>
+<a class="lvl-3" href="#5.8-采纳率标定m1-的第一个实验">5.8 采纳率标定：M1 的第一个实验</a>
+<a class="lvl-3" href="#5.9-失败模式-qc-清单">5.9 失败模式 QC 清单</a>
 <a class="lvl-2" href="#6.-数据模型影响">6. 数据模型影响</a>
 <a class="lvl-2" href="#7.-待验证清单">7. 待验证清单</a></aside>
 </div>

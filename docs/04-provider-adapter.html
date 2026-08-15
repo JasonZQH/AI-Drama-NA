@@ -240,7 +240,7 @@ export interface ProviderProgress {
 </tbody>
 </table></div>
 <blockquote>
-<p>错峰调度：部分 provider（如 Vidu）有明显的错峰折扣。适配器暴露 <code>estimateCost</code> 时应读取当前时段，路由器据此把低优先级批量任务推到便宜时段。这个能力 M5 再启用，接口先留好。</p>
+<p>错峰调度：部分 provider（如 Vidu）有明显的错峰折扣。适配器暴露 <code>estimateCost</code> 时应读取当前时段，路由器据此把低优先级批量任务推到便宜时段。这个能力 M6 再启用，接口先留好。</p>
 </blockquote>
 <h3 id="4.3-selfhostprovider-远程-python-worker">4.3 <code>SelfHostProvider</code> — 远程 Python worker<a aria-label="链接到此节" class="anchor" href="#4.3-selfhostprovider-远程-python-worker">#</a></h3>
 <p>其内部推理由 <strong>ComfyUI 无头服务</strong>执行（见 <code>adr/0006-comfyui-over-diffusers.md</code>）——但这对控制面完全透明：适配器之后是 diffusers 还是 ComfyUI，业务代码不感知，这正是本层存在的意义。</p>
@@ -283,8 +283,9 @@ export function buildProviderPool(env: Env): VideoProvider[] {
   const pool: VideoProvider[] = [new MockProvider(env)]
   if (env.VIDU_API_KEY)  pool.push(new ViduProvider(env.VIDU_API_KEY))
   if (env.KLING_API_KEY) pool.push(new KlingProvider(env.KLING_API_KEY))
+  if (env.JIMENG_API_KEY) pool.push(new JimengProvider(env.JIMENG_API_KEY))
   if (env.SELFHOST_VIDEO_URL)
-    pool.push(new SelfHostProvider(env.SELFHOST_VIDEO_URL, env.SELFHOST_MODEL ?? 'wan2.2-i2v-a14b'))
+    pool.push(new SelfHostProvider(env.SELFHOST_VIDEO_URL, env.SELFHOST_MODEL ?? 'wan2.2-ti2v-5b'))
   return pool
 }
 </code></pre></div>

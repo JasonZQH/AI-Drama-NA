@@ -25,7 +25,7 @@ minio:
 ```
 projects/{projectId}/refs/{characterId}/{assetId}.png
 projects/{projectId}/takes/{shotId}/{jobId}.mp4
-projects/{projectId}/audio/{shotId}/{takeId}-voice.wav
+projects/{projectId}/audio/{shotId}/{assetId}.wav
 projects/{projectId}/renders/{episodeId}/v{n}/master.mp4
 projects/{projectId}/renders/{episodeId}/v{n}/hls/index.m3u8
 ```
@@ -114,7 +114,7 @@ ffmpeg -y -f concat -safe 0 -i concat_list.txt -c copy master_raw.mp4
 
 ### 2.4 转场
 
-MVP 只支持硬切（`cut`）——硬切在短剧里本来就是主流，节奏快。溶解/淡入淡出需要重编码相邻片段，M4 之后再加：
+MVP 只支持硬切（`cut`）——硬切在短剧里本来就是主流，节奏快。溶解/淡入淡出需要重编码相邻片段，M5 之后再加：
 
 ```bash
 # dissolve 示例（仅在需要时对相邻两 clip 单独处理）
@@ -156,12 +156,14 @@ conform 服务读清单 → 换 concat 列表 → 复用已 normalize 的中间�
 # 生成 VTT：直接用 shots.dialogue + clip 时间轴，不做 ASR
 # 烧录：
 ffmpeg -i master_raw.mp4 -vf "subtitles=sub.srt:force_style=\
-'FontName=PingFang SC,FontSize=16,PrimaryColour=&H00FFFFFF,\
+'FontName=DejaVu Sans,Bold=1,FontSize=16,PrimaryColour=&H00FFFFFF,\
 OutlineColour=&H80000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=90'" \
   -c:a copy master_sub.mp4
 ```
 
 `MarginV=90` 是竖屏适配——字幕要避开底部的播放控件与平台 UI 遮挡区。
+
+字体必须是 media worker 容器（Linux）里真实存在的拉丁字体，镜像构建时装上（`apt-get install -y fonts-dejavu-core`）。libass 找不到指定字体时会静默回退到别的字体，成片直到人眼看到才发现不对。
 
 ### 2.6 音频混合
 
@@ -243,7 +245,7 @@ export interface TTSProvider {
 }
 ```
 
-候选：本地 CosyVoice / Chatterbox（无内容限制、零边际成本）、云端 ElevenLabs（R 级台词在其政策内可用，暴力条款明确豁免虚构语境）。开发期用本地。
+候选：本地 Chatterbox（英语优先、无内容限制、零边际成本）、云端 ElevenLabs（R 级台词在其政策内可用，暴力条款明确豁免虚构语境）。CosyVoice 是中文优先模型，英语音色库满足不了下面的口音多样性要求，留给将来的中文/亚洲语言版本。开发期用本地。
 
 **英语 R 级短剧的四条特殊要求**：
 
@@ -262,7 +264,7 @@ TTS 输出时长常与镜头时长不匹配。三种处理，按优先级：
 2. **微调语速**（±10% 以内）：`atempo=1.08`，超过 10% 人耳能听出不自然。
 3. **重写台词**：太长就改短。这是最根本的解法，UI 上应提示「本镜台词预计 6.2s，镜头仅 4.0s」。
 
-第 3 点要在 S3 分镜阶段就做校验，而不是等到 S6 才发现——`06-api-spec.md` 的 `shotlist` 端点应当估算台词时长（英语按 2.8 词/秒（中文 4.5 字/秒））并回填。
+第 3 点要在 S3 分镜阶段就做校验，而不是等到 S6 才发现——`06-api-spec.md` 的 `shotlist` 端点应当估算台词时长（英语 2.8 词/秒，中文 4.5 字/秒）并回填。
 
 ## 6. 存储生命周期
 
@@ -278,16 +280,16 @@ TTS 输出时长常与镜头时长不匹配。三种处理，按优先级：
 
 ## 7. 容量估算
 
-单集 60 镜、每镜 4 秒 720p：
+按典型一集 18 镜（口径 10–25 镜）、每镜 4 秒 720p，约 72 秒/集：
 
 | 项 | 单个 | 单集合计 |
 |---|---|---|
-| 原始 take（含 2.5 次平均尝试） | ~3 MB | ~450 MB |
-| normalized 中间件 | ~4 MB | ~240 MB |
-| 配音 wav | ~400 KB | ~24 MB |
-| 母版 1080p | — | ~90 MB |
-| HLS 切片 | — | ~90 MB |
-| 缩略图/预览 | ~200 KB | ~12 MB |
-| **合计** | | **~900 MB/集** |
+| 原始 take（含 2.5 次平均尝试） | ~3 MB | ~135 MB |
+| normalized 中间件 | ~4 MB | ~72 MB |
+| 配音 wav | ~400 KB | ~7 MB |
+| 母版 1080p | — | ~27 MB |
+| HLS 切片 | — | ~27 MB |
+| 缩略图/预览 | ~200 KB | ~4 MB |
+| **合计** | | **~270 MB/集** |
 
-一部 60 集的剧约 **55 GB**。Mac 本地盘要预留，或把 MinIO 的数据卷挂到外置 SSD。这个数字值得在项目开始前就知道——它决定了你是否需要立刻上外置存储。
+一部 80–100 集的剧约 **25 GB**。Mac 本地盘要预留，或把 MinIO 的数据卷挂到外置 SSD。这个数字值得在项目开始前就知道——它决定了你是否需要立刻上外置存储。

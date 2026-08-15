@@ -110,7 +110,7 @@
   synopsis:    text('synopsis'),
   styleProfileId: uuid('style_profile_id'),        // 全局风格，注入每个 prompt
   aspectRatio: text('aspect_ratio').notNull().default('9:16'),
-  language:    text('language').notNull().default('zh-CN'),
+  language:    text('language').notNull().default('en-US'),        // 北美 R 级为主市场，见 00-overview §2.5
   rightsRef:   jsonb('rights_ref').$type&lt;RightsRef | null&gt;(),   // 预留：授权链
   ownerId:     text('owner_id').notNull().default('local'),      // 预留：多用户
   status:      text('status').$type&lt;ProjectStatus&gt;().notNull().default('draft'),
@@ -128,7 +128,7 @@
   hook:        text('hook'),                        // 开场钩子
   cliffhanger: text('cliffhanger'),                 // 结尾悬念
   scriptMd:    text('script_md'),                   // 本集剧本原文
-  targetDurationSec: integer('target_duration_sec').notNull().default(90),
+  targetDurationSec: integer('target_duration_sec').notNull().default(75),  // 60–90 秒区间的典型值
   status:      text('status').$type&lt;EpisodeStatus&gt;().notNull().default('outline'),
   createdAt:   timestamp('created_at').notNull().defaultNow(),
 }, (t) =&gt; ({ uniq: unique().on(t.projectId, t.index) }))
@@ -188,7 +188,7 @@ export const scenes = pgTable('scenes', {
 <p><strong>为什么 Shot Intent 与 prompt 必须分离</strong>：prompt 是 provider 相关的（Wan 与 Kling 吃的提示词结构不同），Intent 是叙事相关的。分开之后，换 provider 只需换 <code>prompt-kit</code> 的模板，剧本层一个字不用改。这是 <a href="04-provider-adapter.html" title="Provider 适配器契约"><code>04-provider-adapter.md</code></a> 能成立的前提。</p>
 </blockquote>
 <h3 id="3.3-一致性资产characters-locations-style_profiles">3.3 一致性资产：<code>characters</code> / <code>locations</code> / <code>style_profiles</code><a aria-label="链接到此节" class="anchor" href="#3.3-一致性资产characters-locations-style_profiles">#</a></h3>
-<p>三张表同构，统一模式：</p>
+<p>三张表共用同一层骨架——描述 + 参考资产 + <code>version</code> + <code>lockedAt</code>——但参考资产的内部结构各不相同：</p>
 <div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export const characters = pgTable('characters', {
   id:          uuid('id').primaryKey().defaultRandom(),
   projectId:   uuid('project_id').notNull().references(() =&gt; projects.id, { onDelete: 'cascade' }),
@@ -196,8 +196,8 @@ export const scenes = pgTable('scenes', {
   description: text('description').notNull(),   // 注入 prompt 的固定描述
 
   // ── 三类参考资产分离（见 13-character-assets.md §2）──
-  faceSet:  jsonb('face_set').$type&lt;FaceSet&gt;().notNull(),    // 多视角人脸基准
-  bodyRef:  jsonb('body_ref').$type&lt;BodyRef&gt;().notNull(),    // 体型基准，去头与否按画风
+  faceSet:  jsonb('face_set').$type&lt;FaceSet | null&gt;(),       // 多视角人脸基准
+  bodyRef:  jsonb('body_ref').$type&lt;BodyRef | null&gt;(),       // 体型基准，去头与否按画风
   wardrobe: jsonb('wardrobe').$type&lt;Outfit[]&gt;().notNull().default(sql`'[]'`),
 
   // ── prompt 辅助 ──
@@ -210,7 +210,7 @@ export const scenes = pgTable('scenes', {
   loraAssetId: uuid('lora_asset_id'),
   voiceId:     text('voice_id'),
   version:     integer('version').notNull().default(1),
-  lockedAt:    timestamp('locked_at'),          // 锁定后才允许进入 S5 批量生成
+  lockedAt:    timestamp('locked_at'),          // 三路资产齐备的闸门在此；锁定后才允许进入 S5 批量生成
   createdAt:   timestamp('created_at').notNull().defaultNow(),
 })
 </code></pre></div>
@@ -240,7 +240,7 @@ interface PlatformBindings {
 <blockquote>
 <p><strong>为什么拆成三个字段而不是一个 <code>reference_asset_ids</code> 数组</strong>：三类资产的构图要求、质量闸门、失败模式完全不同——人脸要多视角且中性，体型的去头策略随画风变，服装要抠掉脸。放同一个数组里既无法校验也无法按平台的 role 槽位分发。完整论证见 <a href="13-character-assets.html" title="角色资产与单镜头 Prompt"><code>13-character-assets.md</code></a>。</p>
 </blockquote>
-<p><code>locations</code> 同构（无 <code>voiceId</code>，多 <code>interior boolean</code>）；<code>style_profiles</code> 同构（无 <code>voiceId</code>，多 <code>negativePrompt text</code>）。</p>
+<p><code>locations</code> 与 <code>style_profiles</code> 都没有 <code>voiceId</code>，也<strong>不带</strong> face/body/wardrobe 三路人物字段——那三路只对人成立。场景的参考图按时间/光线变体组织（全景、无人物，见 <a href="13-character-assets.html" title="角色资产与单镜头 Prompt"><code>13-character-assets.md</code></a> §2.5），另有 <code>interior boolean</code>；<code>style_profiles</code> 另有 <code>negativePrompt text</code>。</p>
 <p>参考图集是一致性的<strong>物理载体</strong>——不要指望靠 prompt 复述维持角色一致，要靠固定的参考资产。</p>
 <h2 id="4.-生成记账generation_jobs">4. 生成记账：<code>generation_jobs</code><a aria-label="链接到此节" class="anchor" href="#4.-生成记账generation_jobs">#</a></h2>
 <p>这是 <strong>C4 约束</strong>的落地，也是全系统最有复利的一张表。</p>
@@ -334,9 +334,10 @@ export const assets = pgTable('assets', {
 <div class="codeblock"><pre><code>projects/{projectId}/
   refs/{characterId}/{assetId}.png          # 参考图
   takes/{shotId}/{jobId}.mp4                # 生成产物
-  audio/{shotId}/{takeId}-voice.wav         # 配音
+  audio/{shotId}/{assetId}.wav              # 配音（S6 与 S5 并行，不依赖 take）
+  renders/{episodeId}/normalized/{takeId}.mp4  # 规范化中间件，7 天可重建
   renders/{episodeId}/v{n}/master.mp4       # 集母版
-  renders/{episodeId}/v{n}/master.m3u8      # HLS 切片
+  renders/{episodeId}/v{n}/hls/index.m3u8   # HLS 播放列表，同目录下 seg_*.ts
 </code></pre></div>
 <h2 id="6.-评测eval_results">6. 评测：<code>eval_results</code><a aria-label="链接到此节" class="anchor" href="#6.-评测eval_results">#</a></h2>
 <div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export const evalResults = pgTable('eval_results', {
@@ -399,8 +400,12 @@ export const JobStatus = z.enum([
   'succeeded','failed','cancelled',
 ])
 
+export const ShotType       = z.enum(['ecu','cu','ms','ws','establishing','ots','pov'])
+export const CameraMove     = z.enum(['static','pan','tilt','dolly','orbit','handheld'])
+export const TimeOfDay      = z.enum(['day','night','dawn','dusk'])
 export const TakeStatus     = z.enum(['candidate','selected','rejected','archived'])
 export const AssetKind      = z.enum(['image','video','audio','subtitle','lora','master'])
+export const ProducedBy     = z.enum(['generation','render','upload','transcode'])
 export const GenMode        = z.enum(['t2v','i2v','ref2v','extend'])
 export const SafetyProfile  = z.enum(['standard','mature'])
 export const ContentTier    = z.enum(['L0','L1','L2'])   // 投放安全 / 商店安全 / 完整 TV-MA

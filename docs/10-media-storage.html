@@ -80,7 +80,7 @@ minio:
 <p>单 bucket <code>drama</code>，靠 key 前缀分区（见 <a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a> §5）：</p>
 <div class="codeblock"><pre><code>projects/{projectId}/refs/{characterId}/{assetId}.png
 projects/{projectId}/takes/{shotId}/{jobId}.mp4
-projects/{projectId}/audio/{shotId}/{takeId}-voice.wav
+projects/{projectId}/audio/{shotId}/{assetId}.wav
 projects/{projectId}/renders/{episodeId}/v{n}/master.mp4
 projects/{projectId}/renders/{episodeId}/v{n}/hls/index.m3u8
 </code></pre></div>
@@ -164,7 +164,7 @@ ffmpeg -y -f concat -safe 0 -i concat_list.txt -c copy master_raw.mp4
 </code></pre></div>
 <p><code>inpoint/outpoint</code> 直接对应 <code>timeline_clips.trimStartSec/trimEndSec</code>。</p>
 <h3 id="2.4-转场">2.4 转场<a aria-label="链接到此节" class="anchor" href="#2.4-转场">#</a></h3>
-<p>MVP 只支持硬切（<code>cut</code>）——硬切在短剧里本来就是主流，节奏快。溶解/淡入淡出需要重编码相邻片段，M4 之后再加：</p>
+<p>MVP 只支持硬切（<code>cut</code>）——硬切在短剧里本来就是主流，节奏快。溶解/淡入淡出需要重编码相邻片段，M5 之后再加：</p>
 <div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash"># dissolve 示例（仅在需要时对相邻两 clip 单独处理）
 ffmpeg -i a.mp4 -i b.mp4 -filter_complex \
   "[0][1]xfade=transition=fade:duration=0.4:offset=3.6[v]" -map "[v]" out.mp4
@@ -230,11 +230,12 @@ ffmpeg -i a.mp4 -i b.mp4 -filter_complex \
 <div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash"># 生成 VTT：直接用 shots.dialogue + clip 时间轴，不做 ASR
 # 烧录：
 ffmpeg -i master_raw.mp4 -vf "subtitles=sub.srt:force_style=\
-'FontName=PingFang SC,FontSize=16,PrimaryColour=&amp;H00FFFFFF,\
+'FontName=DejaVu Sans,Bold=1,FontSize=16,PrimaryColour=&amp;H00FFFFFF,\
 OutlineColour=&amp;H80000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=90'" \
   -c:a copy master_sub.mp4
 </code></pre></div>
 <p><code>MarginV=90</code> 是竖屏适配——字幕要避开底部的播放控件与平台 UI 遮挡区。</p>
+<p>字体必须是 media worker 容器（Linux）里真实存在的拉丁字体，镜像构建时装上（<code>apt-get install -y fonts-dejavu-core</code>）。libass 找不到指定字体时会静默回退到别的字体，成片直到人眼看到才发现不对。</p>
 <h3 id="2.6-音频混合">2.6 音频混合<a aria-label="链接到此节" class="anchor" href="#2.6-音频混合">#</a></h3>
 <div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash">ffmpeg -i video.mp4 -i voice.wav -i bgm.mp3 -filter_complex \
   "[1:a]volume=1.0[v1];\
@@ -291,7 +292,7 @@ ffmpeg -i master.mp4 -vf "fps=1/2,scale=160:284,tile=10x10" sprite.jpg
   listVoices(): Promise&lt;Voice[]&gt;
 }
 </code></pre></div>
-<p>候选：本地 CosyVoice / Chatterbox（无内容限制、零边际成本）、云端 ElevenLabs（R 级台词在其政策内可用，暴力条款明确豁免虚构语境）。开发期用本地。</p>
+<p>候选：本地 Chatterbox（英语优先、无内容限制、零边际成本）、云端 ElevenLabs（R 级台词在其政策内可用，暴力条款明确豁免虚构语境）。CosyVoice 是中文优先模型，英语音色库满足不了下面的口音多样性要求，留给将来的中文/亚洲语言版本。开发期用本地。</p>
 <p><strong>英语 R 级短剧的四条特殊要求</strong>：</p>
 <div class="table-wrap"><table>
 <thead>
@@ -326,7 +327,7 @@ ffmpeg -i master.mp4 -vf "fps=1/2,scale=160:284,tile=10x10" sprite.jpg
 <li><strong>微调语速</strong>（±10% 以内）：<code>atempo=1.08</code>，超过 10% 人耳能听出不自然。</li>
 <li><strong>重写台词</strong>：太长就改短。这是最根本的解法，UI 上应提示「本镜台词预计 6.2s，镜头仅 4.0s」。</li>
 </ol>
-<p>第 3 点要在 S3 分镜阶段就做校验，而不是等到 S6 才发现——<a href="06-api-spec.html" title="控制面 API 规范"><code>06-api-spec.md</code></a> 的 <code>shotlist</code> 端点应当估算台词时长（英语按 2.8 词/秒（中文 4.5 字/秒））并回填。</p>
+<p>第 3 点要在 S3 分镜阶段就做校验，而不是等到 S6 才发现——<a href="06-api-spec.html" title="控制面 API 规范"><code>06-api-spec.md</code></a> 的 <code>shotlist</code> 端点应当估算台词时长（英语 2.8 词/秒，中文 4.5 字/秒）并回填。</p>
 <h2 id="6.-存储生命周期">6. 存储生命周期<a aria-label="链接到此节" class="anchor" href="#6.-存储生命周期">#</a></h2>
 <div class="table-wrap"><table>
 <thead>
@@ -360,7 +361,7 @@ ffmpeg -i master.mp4 -vf "fps=1/2,scale=160:284,tile=10x10" sprite.jpg
 </table></div>
 <p><strong>永不自动删除已经花钱生成的东西</strong>——与 <a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §7 同一条原则。清理必须是人主动触发的显式动作，且要显示将释放多少空间、影响哪些资产。</p>
 <h2 id="7.-容量估算">7. 容量估算<a aria-label="链接到此节" class="anchor" href="#7.-容量估算">#</a></h2>
-<p>单集 60 镜、每镜 4 秒 720p：</p>
+<p>按典型一集 18 镜（口径 10–25 镜）、每镜 4 秒 720p，约 72 秒/集：</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -373,41 +374,41 @@ ffmpeg -i master.mp4 -vf "fps=1/2,scale=160:284,tile=10x10" sprite.jpg
 <tr>
 <td>原始 take（含 2.5 次平均尝试）</td>
 <td>~3 MB</td>
-<td>~450 MB</td>
+<td>~135 MB</td>
 </tr>
 <tr>
 <td>normalized 中间件</td>
 <td>~4 MB</td>
-<td>~240 MB</td>
+<td>~72 MB</td>
 </tr>
 <tr>
 <td>配音 wav</td>
 <td>~400 KB</td>
-<td>~24 MB</td>
+<td>~7 MB</td>
 </tr>
 <tr>
 <td>母版 1080p</td>
 <td>—</td>
-<td>~90 MB</td>
+<td>~27 MB</td>
 </tr>
 <tr>
 <td>HLS 切片</td>
 <td>—</td>
-<td>~90 MB</td>
+<td>~27 MB</td>
 </tr>
 <tr>
 <td>缩略图/预览</td>
 <td>~200 KB</td>
-<td>~12 MB</td>
+<td>~4 MB</td>
 </tr>
 <tr>
 <td><strong>合计</strong></td>
 <td></td>
-<td><strong>~900 MB/集</strong></td>
+<td><strong>~270 MB/集</strong></td>
 </tr>
 </tbody>
 </table></div>
-<p>一部 60 集的剧约 <strong>55 GB</strong>。Mac 本地盘要预留，或把 MinIO 的数据卷挂到外置 SSD。这个数字值得在项目开始前就知道——它决定了你是否需要立刻上外置存储。</p><nav class="pager"><a href="09-python-worker.html"><div class="dir">← 上一篇</div><div class="name">09 · Python 生成 Worker 与远程 GPU 部署</div></a><a class="next" href="11-dev-setup.html"><div class="dir">下一篇 →</div><div class="name">11 · 本地开发环境搭建</div></a></nav></main>
+<p>一部 80–100 集的剧约 <strong>25 GB</strong>。Mac 本地盘要预留，或把 MinIO 的数据卷挂到外置 SSD。这个数字值得在项目开始前就知道——它决定了你是否需要立刻上外置存储。</p><nav class="pager"><a href="09-python-worker.html"><div class="dir">← 上一篇</div><div class="name">09 · Python 生成 Worker 与远程 GPU 部署</div></a><a class="next" href="11-dev-setup.html"><div class="dir">下一篇 →</div><div class="name">11 · 本地开发环境搭建</div></a></nav></main>
   <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-存储从第一天就当成-s3">1. 存储：从第一天就当成 S3</a>
 <a class="lvl-3" href="#1.1-bucket-与-key-规范">1.1 Bucket 与 key 规范</a>
 <a class="lvl-3" href="#1.2-三种访问模式">1.2 三种访问模式</a>

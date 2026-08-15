@@ -69,7 +69,7 @@
 <ul>
 <li><strong>长</strong>：远超 HTTP 超时，必须异步。</li>
 <li><strong>贵</strong>：进程重启不能丢，必须持久化，必须幂等。</li>
-<li><strong>多</strong>：一集 60 镜、一部剧 3000 镜，必须有并发控制和优先级。</li>
+<li><strong>多</strong>：一集 10–25 镜、一部剧 800–2500 镜，必须有并发控制和优先级。</li>
 </ul>
 <p>所以：<strong>BullMQ（Redis）做队列，Postgres 做真相源</strong>。Redis 里的任务可以丢——重启后从 Postgres 里 <code>status IN ('queued','submitted','running')</code> 的记录重建即可。反过来不行：<strong>永远不要把价值几美元的任务状态只存在 Redis 里</strong>。</p>
 <h2 id="2.-队列拓扑">2. 队列拓扑<a aria-label="链接到此节" class="anchor" href="#2.-队列拓扑">#</a></h2>
@@ -110,7 +110,7 @@ await withProviderSlot(providerId, capabilities.maxConcurrent, async () =&gt; {
 </code></pre></div>
 <h2 id="4.-轮询策略">4. 轮询策略<a aria-label="链接到此节" class="anchor" href="#4.-轮询策略">#</a></h2>
 <p>云 provider 大多不支持 webhook（或 webhook 需要公网回调，本地开发不可用），所以统一用<strong>轮询</strong>。</p>
-<p>关键设计：<strong>不要为每个任务开一个常驻轮询循环</strong>。一集 60 个镜头就是 60 个循环，Redis 连接和 CPU 都会被吃掉。</p>
+<p>关键设计：<strong>不要为每个任务开一个常驻轮询循环</strong>。一集 10–25 个镜头，多集并行时就是几百个循环，Redis 连接和 CPU 都会被吃掉。</p>
 <p>做法是<strong>自重排的轮询任务</strong>：</p>
 <div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">// q:poll 的 handler
 async function pollHandler(job: Job&lt;PollJobData&gt;) {
@@ -284,7 +284,7 @@ async function pollHandler(job: Job&lt;PollJobData&gt;) {
 </code></pre></div>
 <p><strong>幂等是这套恢复逻辑成立的前提</strong>——<a href="04-provider-adapter.html" title="Provider 适配器契约"><code>04-provider-adapter.md</code></a> §7 把幂等列为契约测试的第一条，原因就在这里。</p>
 <h2 id="9.-可观测性">9. 可观测性<a aria-label="链接到此节" class="anchor" href="#9.-可观测性">#</a></h2>
-<p>三个必须有的面板（M3 之前可以只是几条 SQL）：</p>
+<p>三个必须有的面板（质量与成本两块即 M1 的洞察页 v1；吞吐面板早期可以只是几条 SQL）：</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
