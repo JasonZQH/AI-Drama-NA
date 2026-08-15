@@ -78,6 +78,7 @@ pnpm dev                                # web:3000 · control:4000
 | [0008](docs/adr/0008-character-asset-separation.md) | 角色资产按 face / body / wardrobe 三路分离 |
 | [0009](docs/adr/0009-modular-monolith-not-microservices.md) | 模块化单体 + 无状态计算 worker，不上微服务 |
 | [0010](docs/adr/0010-http-over-grpc.md) | 跨进程用 HTTP/JSON 而非 gRPC |
+| [0011](docs/adr/0011-drizzle-over-alternatives.md) | 数据层用 Drizzle，裸 SQL 校验留给 SafeQL |
 
 ## 里程碑
 
