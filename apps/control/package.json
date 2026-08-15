@@ -7,9 +7,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node --env-file=../../.env dist/db/migrate.js",
-    "db:seed": "node --env-file=../../.env dist/db/seed.js",
-    "db:reset": "node --env-file=../../.env dist/db/reset.js"
+    "db:migrate": "node --env-file-if-exists=../../.env dist/db/migrate.js",
+    "db:seed": "node --env-file-if-exists=../../.env dist/db/seed.js",
+    "db:reset": "node --env-file-if-exists=../../.env dist/db/reset.js"
   },
   "dependencies": {
     "@ai-drama/contracts": "workspace:*",
