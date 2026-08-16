@@ -10,7 +10,7 @@ import { use, useEffect, useState } from 'react'
  * 生产者的眼睛。生产者太容易陷入镜头细节而忘了整体观感，切到这个视角
  * 能发现分镜页发现不了的问题。
  *
- * M0 阶段还没有拼接母版，所以按顺序连播已选定的 take。
+ * 有母版就放母版；还没渲染时退回逐镜连播，好让人在拼接前也能预览。
  */
 interface Playlist {
   title: string
@@ -23,8 +23,16 @@ export default function Watch({ params }: { params: Promise<{ episodeId: string 
   const [list, setList] = useState<Playlist | null>(null)
   const [i, setI] = useState(0)
 
+  const [master, setMaster] = useState<{ assetId: string; durationSec: number | null } | null>(null)
+
   useEffect(() => {
     void (async () => {
+      // 优先母版：拼接过的成片才是「观众看到的东西」
+      const w = await api<{ masterAssetId: string | null; durationSec: number | null }>(
+        `/api/watch/${episodeId}`,
+      )
+      if (w.masterAssetId) setMaster({ assetId: w.masterAssetId, durationSec: w.durationSec })
+
       const tree = await api<{
         episode: { title: string | null; index: number }
         shots: { shot: { id: string; index: number; selectedTakeId: string | null } }[]
@@ -51,6 +59,29 @@ export default function Watch({ params }: { params: Promise<{ episodeId: string 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [list])
+
+  if (master) {
+    return (
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col justify-center p-4">
+        <video
+          src={assetUrl(master.assetId)}
+          className="w-full rounded-md"
+          style={{ background: 'var(--bg-inset)', aspectRatio: '9 / 16' }}
+          controls
+          autoPlay
+          playsInline
+        />
+        <div className="mt-3">
+          <div className="font-medium">
+            第 {list?.index ?? '—'} 集 · {list?.title ?? ''}
+          </div>
+          <div className="tnum" style={{ color: 'var(--text-muted)' }}>
+            成片母版{master.durationSec ? ` · ${master.durationSec.toFixed(1)}s` : ''}
+          </div>
+        </div>
+      </main>
+    )
+  }
 
   if (!list) return <main className="p-8">载入中…</main>
 

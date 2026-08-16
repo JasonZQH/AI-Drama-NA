@@ -8,6 +8,7 @@ import { registerErrorHandler } from './routes/errors.js'
 import { registerSse } from './routes/sse.js'
 import { createConnection, createQueues } from './queue/queues.js'
 import { reconcileOnBoot } from './queue/orchestrator.js'
+import { httpMediaWorker } from './pipeline/render.js'
 import { Storage, storageFromEnv } from './storage/s3.js'
 
 /**
@@ -55,6 +56,7 @@ export async function main(): Promise<void> {
     db,
     queues,
     storage,
+    media: httpMediaWorker(process.env['MEDIA_WORKER_URL'] ?? 'http://localhost:8002'),
     providers,
     maxAttempts: 4,
     healthProbe: () => client`SELECT 1`,

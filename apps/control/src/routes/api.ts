@@ -6,6 +6,7 @@ import { z } from 'zod'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { budgetFromEnv, planBatch } from '../pipeline/batch.js'
+import { renderEpisode, type MediaWorkerClient } from '../pipeline/render.js'
 import { applyShotTransition } from '../pipeline/applyTransition.js'
 import type { ShotEvent } from '../pipeline/shotMachine.js'
 import type { Queues } from '../queue/queues.js'
@@ -15,6 +16,7 @@ import type { VideoProvider } from '@ai-drama/contracts'
 
 export interface ApiDeps {
   readonly db: Db
+  readonly media: MediaWorkerClient
   readonly queues: Queues
   readonly storage: Storage
   readonly providers: readonly VideoProvider[]
@@ -163,6 +165,44 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       return { shotId: take.shotId, status: r.next, remaining: 0 }
     }
     return { shotId: take.shotId, status: 'review', remaining: remaining?.n ?? 0 }
+  })
+
+  /**
+   * 渲染本集（06-api-spec.md §5）。
+   * 控制面只把 clip 清单交给 media worker，字节流不经过这里。
+   */
+  app.post('/api/episodes/:id/render', async (req, reply) => {
+    const { id } = Uuid.parse(req.params)
+    const body = z.object({ quality: z.enum(['preview', 'final']).default('preview') }).parse(req.body ?? {})
+    try {
+      const r = await renderEpisode({ db, media: deps.media }, id, { quality: body.quality })
+      return reply.status(202).send(r)
+    } catch (e) {
+      throw new ApiError('CONFLICT', e instanceof Error ? e.message : String(e))
+    }
+  })
+
+  /** 播放清单。有母版就放母版，没有就退回逐镜连播（M0 允许两种都存在） */
+  app.get('/api/watch/:id', async (req) => {
+    const { id } = Uuid.parse(req.params)
+    const [ep] = await db.select().from(s.episodes).where(eq(s.episodes.id, id))
+    if (!ep) throw new ApiError('NOT_FOUND', `episode ${id} 不存在`)
+
+    const [master] = await db
+      .select({ asset: s.assets, finishedAt: s.renderJobs.finishedAt })
+      .from(s.renderJobs)
+      .innerJoin(s.assets, eq(s.renderJobs.outputAssetId, s.assets.id))
+      .innerJoin(s.timelines, eq(s.renderJobs.timelineId, s.timelines.id))
+      .where(and(eq(s.timelines.episodeId, id), eq(s.renderJobs.status, 'succeeded')))
+      .orderBy(desc(s.renderJobs.finishedAt))
+      .limit(1)
+
+    return {
+      title: ep.title,
+      index: ep.index,
+      masterAssetId: master?.asset.id ?? null,
+      durationSec: master?.asset.durationSec ? Number(master.asset.durationSec) : null,
+    }
   })
 
   /** Generation Ledger 视图：一个镜头的全部生成尝试，含失败的（C4） */

@@ -73,7 +73,8 @@ services:
         condition: service_healthy
     healthcheck:
       # 镜像里没有 curl，用 python 自带的；探活要真打 /v1/health 而不是看进程活着
-      test: ['CMD', 'python3', '-c', 'import urllib.request as u; u.urlopen("http://localhost:8002/v1/health")']
+      test:
+        ['CMD', 'python3', '-c', 'import urllib.request as u; u.urlopen("http://localhost:8002/v1/health")']
       interval: 5s
       timeout: 3s
       retries: 20
