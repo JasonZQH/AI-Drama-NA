@@ -4,8 +4,15 @@ import { createDb } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
 import { Storage, storageFromEnv } from '../storage/s3.js'
+import type { VideoProvider } from '@ai-drama/contracts'
 import { handleIngest, createGenerationJob } from './ingest.js'
-import { handleGenerate, handlePoll, reconcileOnBoot } from './orchestrator.js'
+import {
+  CLAIM_STALE_MS,
+  claimForSubmit,
+  handleGenerate,
+  handlePoll,
+  reconcileOnBoot,
+} from './orchestrator.js'
 import { createConnection, createQueues, pollDelayMs } from './queues.js'
 import { inFlight, release, reset, tryAcquire } from './semaphore.js'
 
@@ -95,6 +102,254 @@ async function newJob(over: Partial<Parameters<typeof createGenerationJob>[1]> =
   })
 }
 
+/**
+ * 数 submit 被调了几次。
+ *
+ * **不能用 spread 包 MockProvider**——方法在原型上，`{ ...p }` 拿不到。
+ * 也不能靠 providerJobRef 判断：buildRequest 用 `requestId: job.id`，mock 又把
+ * externalId 设成 requestId，所以 providerJobRef 恒等于 job.id，submit 调一次
+ * 还是十次它都一模一样。这个包装器是仓库里唯一能观测到调用次数的东西。
+ */
+function counting(p: VideoProvider): { provider: VideoProvider; submits: () => number } {
+  let n = 0
+  return {
+    provider: {
+      id: p.id,
+      capabilities: p.capabilities,
+      validate: (r) => p.validate(r),
+      estimateCost: (r) => p.estimateCost(r),
+      submit: (r) => {
+        n++
+        return p.submit(r)
+      },
+      poll: (h) => p.poll(h),
+      cancel: (h) => p.cancel(h),
+      health: () => p.health(),
+    },
+    submits: () => n,
+  }
+}
+
+/**
+ * 每个用例一套独立计数器，但**包的是模块级那个 provider 实例**。
+ *
+ * 不能 new 一个新的：MockProvider 的任务表在实例内（mock.ts 的 private jobs Map），
+ * 换实例就等于换了一个不认识旧 handle 的 provider，后面的 poll 会拿到「未知任务」。
+ */
+function countingDeps(): { deps: typeof deps; submits: () => number } {
+  const c = counting(provider)
+  return { deps: { ...deps, providers: [c.provider] }, submits: c.submits }
+}
+
+describe('每行至多 submit 一次（花钱的不变量）', () => {
+  /**
+   * 认领本身的 CAS 语义。
+   *
+   * **不要写成 `Promise.all([handleGenerate, handleGenerate])` 然后数 submit** ——
+   * 实测那样测不出东西：postgres.js 会把这几次查询串到同一条连接上顺序执行，
+   * 于是第二、三次调用在 SELECT 时就已经看得见 providerJobRef，走了 :130 那条
+   * 既有的早退分支。把认领整个删掉，那种写法照样绿（已实测：submits=1，
+   * 返回 ["submitted","skipped","skipped"]）。真实的竞态发生在**跨进程**之间
+   * （控制面 reconcile 与 worker、或两个 worker 副本），进程内造不出来。
+   *
+   * 所以直接钉住不变量本身：同一行只可能被认领成功一次。
+   */
+  it('同一行只能被认领一次，第二次必然失败', async () => {
+    const id = await newJob()
+    expect(await claimForSubmit(db, id)).toBe(true)
+    expect(await claimForSubmit(db, id)).toBe(false)
+  })
+
+  /**
+   * 这条才是防退化的那一张网：模拟「另一个进程已经认领并正在提交」，
+   * 断言本进程绝不会再花一次钱。删掉 handleGenerate 里的认领判断，它就会红。
+   */
+  it('行已被别处认领时，handleGenerate 绝不提交', async () => {
+    const { deps: d, submits } = countingDeps()
+    const id = await newJob()
+
+    // 另一个 worker 抢先认领（它还没来得及写 providerJobRef）
+    expect(await claimForSubmit(db, id)).toBe(true)
+
+    expect(await handleGenerate(d, { generationJobId: id })).toBe('skipped')
+    expect(submits(), '认领不属于自己就绝不能调 submit').toBe(0)
+
+    const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    expect(row!.providerJobRef).toBeNull()
+  })
+
+  /**
+   * 事实 5：信号量重排会 re-add 同一个 generationJobId。
+   * 所以认领必须发生在 tryAcquire 成功**之后**——否则重排会白白烧掉认领，
+   * 任务再也提交不了。这条用例专门钉住这个顺序。
+   */
+  it('拿不到信号量槽位时不认领，重排回来仍能正常提交', async () => {
+    const { deps: d, submits } = countingDeps()
+    const id = await newJob()
+    const limit = d.providers[0]!.capabilities.maxConcurrent
+
+    await reset(redis, 'mock')
+    for (let i = 0; i < limit; i++) expect(await tryAcquire(redis, 'mock', limit)).toBe(true)
+
+    expect(await handleGenerate(d, { generationJobId: id })).toBe('requeued')
+    const [parked] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    expect(parked!.startedAt, '重排路径不该碰认领').toBeNull()
+    expect(submits()).toBe(0)
+
+    await reset(redis, 'mock')
+    await queues.generate.drain(true)
+
+    expect(await handleGenerate(d, { generationJobId: id })).toBe('submitted')
+    expect(submits()).toBe(1)
+  })
+
+  /**
+   * submit 抛出时分不清「没发出去」和「发出去了但响应丢了」——OpenRouter 的
+   * POST 没有幂等键。所以认领不释放，走一条不可重试的码停下来等人。
+   */
+  it('submit 抛异常 → submit_unknown，且这一行永不重投', async () => {
+    const boom = counting(new MockProvider({ latencyScale: 0, failureRate: 0 }))
+    const exploding: VideoProvider = {
+      ...boom.provider,
+      submit: () => Promise.reject(new Error('ECONNRESET')),
+    }
+    const d = { ...deps, providers: [exploding] }
+    const id = await newJob()
+
+    expect(await handleGenerate(d, { generationJobId: id })).toBe('skipped')
+
+    const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    expect(row!.failureCode).toBe('submit_unknown')
+    expect(row!.startedAt, '认领不释放——释放了就等于允许重投').not.toBeNull()
+
+    // 再来一次也不会提交：认领还在，且行已终态
+    const again = countingDeps()
+    expect(await handleGenerate(again.deps, { generationJobId: id })).toBe('skipped')
+    expect(again.submits()).toBe(0)
+  })
+
+  /**
+   * 进程死在 submit 里会留下悬空认领。重投可能付第二次钱，不管则镜头永远
+   * 卡在 generating——所以 reconcile 判 submit_unknown，交给人决定。
+   *
+   * 注意这个分支碰不到历史数据：本 PR 之前 started_at 只与 provider_job_ref
+   * 同时写入，所以「有 started_at 而无 provider_job_ref」在旧行里结构上不存在。
+   */
+  it('认领悬空超过阈值 → reconcile 判 submit_unknown，不重投', async () => {
+    const { deps: d, submits } = countingDeps()
+    const id = await newJob()
+    await db
+      .update(s.generationJobs)
+      .set({ startedAt: new Date(Date.now() - CLAIM_STALE_MS - 60_000) })
+      .where(eq(s.generationJobs.id, id))
+
+    // 队列条目重放时认领已被占，不会二次提交
+    expect(await handleGenerate(d, { generationJobId: id })).toBe('skipped')
+    expect(submits()).toBe(0)
+
+    const r = await reconcileOnBoot(deps)
+    expect(r.inDoubt).toBeGreaterThanOrEqual(1)
+
+    const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    expect(row!.failureCode).toBe('submit_unknown')
+    expect(row!.status).toBe('failed')
+  })
+
+  it('认领很新时 reconcile 不动它——可能有 worker 正在 submit 里', async () => {
+    const id = await newJob()
+    await db.update(s.generationJobs).set({ startedAt: new Date() }).where(eq(s.generationJobs.id, id))
+
+    const r = await reconcileOnBoot(deps)
+    expect(r.inFlight).toBeGreaterThanOrEqual(1)
+
+    const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    expect(row!.failureCode).toBeNull()
+    expect(row!.status).toBe('queued')
+  })
+})
+
+describe('终态不被迟到的队列条目改写（Ledger 不说谎）', () => {
+  /**
+   * 同一个 job 可以有不止一条轮询链。没有终态守卫时，后到的那条会把已经判死
+   * 的行改回 running 再写成 succeeded，留下「既成功又带 failure_code」的一行，
+   * 并且每一次判死都可能让状态机再开一个 attempt——一次真实超时烧掉两三笔钱。
+   */
+  it('超时判死之后，第二条轮询链不再改写这一行', async () => {
+    const { deps: d } = countingDeps()
+    const id = await newJob()
+    await handleGenerate(d, { generationJobId: id })
+    const [job] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+
+    // 永远跑不完的 provider，并让它认识这个 externalId（同上面那条超时用例的做法）
+    const slow = new MockProvider({ latencyScale: 1000, failureRate: 0 })
+    await slow.submit({
+      requestId: job!.providerJobRef!,
+      shotId,
+      mode: 't2v',
+      prompt: 'p',
+      refImages: [],
+      durationSec: 4,
+      resolution: '720p',
+      aspectRatio: '9:16',
+      fps: 24,
+      safetyProfile: 'standard',
+      priority: 'normal',
+      providerParams: {},
+    })
+    const stalled = { ...deps, providers: [slow] }
+    const args = {
+      generationJobId: id,
+      providerId: 'mock',
+      externalId: job!.providerJobRef!,
+      submittedAt: Date.now() - 20 * 60 * 1000,
+      pollCount: 3,
+    }
+
+    expect(await handlePoll(stalled, args)).toBe('timeout')
+    const [first] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+
+    // 第二条链撞上终态守卫，一个字段都不该被改
+    expect(await handlePoll(stalled, args)).toBe('skipped')
+    const [second] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+
+    expect(second!.status).toBe('failed')
+    expect(second!.finishedAt?.getTime()).toBe(first!.finishedAt?.getTime())
+    expect(second!.failureCode).toBe('timeout')
+  })
+
+  it('迟到的 ingest 不会把判死的行改写成 succeeded', async () => {
+    const { deps: d } = countingDeps()
+    const id = await newJob()
+    await handleGenerate(d, { generationJobId: id })
+    const [job] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+
+    const res = await provider.poll({
+      providerId: 'mock',
+      externalId: job!.providerJobRef!,
+      submittedAt: Date.now() - 10,
+    })
+    if (res.status !== 'succeeded') throw new Error('mock 应当成功')
+
+    // 先把它判死，模拟另一条链已经超时
+    await db
+      .update(s.generationJobs)
+      .set({ status: 'failed', failureCode: 'timeout', finishedAt: new Date() })
+      .where(eq(s.generationJobs.id, id))
+
+    const out = await handleIngest(
+      { db, storage },
+      { generationJobId: id, shotId, projectId, sourceUrl: res.outputUrl },
+    )
+
+    // 产物照建不误（钱已经花了，不销毁），但 job 不复活、状态机不推进
+    expect(out.settled).toBe(false)
+    expect(out.takeId).toBeTruthy()
+    const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    expect(row!.status).toBe('failed')
+    expect(row!.accepted).not.toBe(true)
+  })
+})
+
 describe('幂等（崩溃恢复整个建立在这条上）', () => {
   it('UNIQUE(shot_id, attempt) 在数据库层挡住重复的尝试', async () => {
     const attempt = nextAttempt()
@@ -118,16 +373,25 @@ describe('幂等（崩溃恢复整个建立在这条上）', () => {
     ).rejects.toThrow()
   })
 
-  it('同一个 job 重复走 generate 不会二次提交给 provider', async () => {
+  /**
+   * 提交成功之后的重放走 providerJobRef 那条早退分支，转轮询而不是重新提交。
+   *
+   * 注意断言里的 `submits()`：这个文件此前那版只断言 providerJobRef 前后相等，
+   * 而 providerJobRef 恒等于 job.id（buildRequest 用 requestId: job.id，mock 又
+   * 把 externalId 设成 requestId），所以 submit 被调两次它照样绿——等于没测。
+   */
+  it('提交成功后重放 generate 只转轮询，不二次提交', async () => {
+    const { deps: d, submits } = countingDeps()
     const id = await newJob()
-    await handleGenerate(deps, { generationJobId: id })
+    await handleGenerate(d, { generationJobId: id })
     const [after1] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
 
     // 模拟崩溃后重放
-    const r2 = await handleGenerate(deps, { generationJobId: id })
+    const r2 = await handleGenerate(d, { generationJobId: id })
     const [after2] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
 
     expect(r2).toBe('skipped') // 已有 providerJobRef，直接转轮询
+    expect(submits()).toBe(1)
     expect(after2!.providerJobRef).toBe(after1!.providerJobRef)
   })
 })

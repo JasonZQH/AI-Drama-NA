@@ -134,8 +134,13 @@ export function nextAttemptPlan(prev: GenerationJob, attempt: number): Partial<G
 | `content_filtered` | 同 prompt 必然再被拒，纯烧配额。需人工改 intent |
 | `quota_exceeded` | 重试加剧问题。应暂停该 provider 并告警 |
 | `invalid_output` | 适配器 bug 或能力不匹配，重试无用，需修代码 |
+| `submit_unknown` | **可能已经计费**。提交请求发出后连接断了，或进程死在提交与记账之间；云 provider 普遍不提供幂等键（`04-provider-adapter.md` §5），所以既问不出来也不能安全重放。自动重投 = 可能付第二次钱 |
 
-这三种直接进人工队列，**不进重试循环**。
+这四种直接进人工队列，**不进重试循环**。出口是 `POST /api/shots/:id/reset`（发 `manual.reset`）——没有这个出口，不可重试就等于只能手工改库。
+
+> **名单是白名单，不是黑名单。** `isRetryable` 用 `RETRYABLE` 正列可重试的码，其余一律不重试。
+> 因为这个返回值直接决定要不要自动开下一次 attempt，而下一次 attempt 就是下一笔钱——
+> 黑名单的默认值是「花钱」，任何人加新码而忘了同步名单，系统就替他自动重投。
 
 ## 6. 成本记账
 

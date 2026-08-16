@@ -91,6 +91,16 @@ Body: {
 ```
 
 ```
+POST /api/shots/:id/reset
+→ 200 { shotId, status: 'ready' }
+```
+
+把判死的镜头拉回 `ready`（发 `manual.reset`）。`failed` 是终态，状态机只认
+`manual.reset` / `intent.edited` 两个事件——没有这条路由，不可重试的失败在产品上
+就等于「只能开 psql 手改」。它也是 `submit_unknown`（`05-job-orchestration.md` §5.3）
+能够存在的前提：提交结果未知时系统故意停下来不自动重投，代价是必须给人一个一键继续的出口。
+
+```
 POST /api/episodes/:id/generate-batch
 Body: {
   scope: 'all' | 'ready' | 'failed' | { shotIds: string[] },

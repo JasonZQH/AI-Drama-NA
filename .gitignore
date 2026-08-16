@@ -3,6 +3,8 @@ node_modules/
 dist/
 build/
 .turbo/
+# CodeGraph 索引与运行状态
+.codegraph/
 *.tsbuildinfo
 
 .env

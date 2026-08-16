@@ -201,9 +201,18 @@ async function pollHandler(job: Job&lt;PollJobData&gt;) {
 <td><code>invalid_output</code></td>
 <td>适配器 bug 或能力不匹配，重试无用，需修代码</td>
 </tr>
+<tr>
+<td><code>submit_unknown</code></td>
+<td><strong>可能已经计费</strong>。提交请求发出后连接断了，或进程死在提交与记账之间；云 provider 普遍不提供幂等键（<a href="04-provider-adapter.html" title="Provider 适配器契约"><code>04-provider-adapter.md</code></a> §5），所以既问不出来也不能安全重放。自动重投 = 可能付第二次钱</td>
+</tr>
 </tbody>
 </table></div>
-<p>这三种直接进人工队列，<strong>不进重试循环</strong>。</p>
+<p>这四种直接进人工队列，<strong>不进重试循环</strong>。出口是 <code>POST /api/shots/:id/reset</code>（发 <code>manual.reset</code>）——没有这个出口，不可重试就等于只能手工改库。</p>
+<blockquote>
+<p><strong>名单是白名单，不是黑名单。</strong> <code>isRetryable</code> 用 <code>RETRYABLE</code> 正列可重试的码，其余一律不重试。
+因为这个返回值直接决定要不要自动开下一次 attempt，而下一次 attempt 就是下一笔钱——
+黑名单的默认值是「花钱」，任何人加新码而忘了同步名单，系统就替他自动重投。</p>
+</blockquote>
 <h2 id="6.-成本记账">6. 成本记账<a aria-label="链接到此节" class="anchor" href="#6.-成本记账">#</a></h2>
 <p>每个任务在三个时刻写成本：</p>
 <figure class="diagram"><div class="mermaid">flowchart LR
