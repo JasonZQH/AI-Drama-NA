@@ -1,0 +1,35 @@
+[project]
+name = "ai-drama-media-worker"
+version = "0.0.0"
+description = "FFmpeg 拼接 / 转码 / 字幕烧录 worker（CPU，本机 docker）"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.120",
+    "uvicorn[standard]>=0.40",
+    "pydantic>=2.12",
+    "boto3>=1.42",
+]
+
+[dependency-groups]
+dev = ["pytest>=9.0", "ruff>=0.14", "mypy>=1.19", "httpx>=0.29", "boto3-stubs[s3]>=1.42"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+module = "boto3.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# app/ 在仓库根下，不是安装的包——测试要能直接 import 它
+pythonpath = ["."]

@@ -43,3 +43,6 @@ docs/_to_delete/
 .playwright-mcp/
 # 调试截图不进库（Playwright 的默认输出会落在仓库根）
 /*.png
+
+# Python worker
+workers/media/.venv/

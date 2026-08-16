@@ -13,7 +13,8 @@ concurrency:
 
 # 两条独立的链，各自内部按 needs 串行：
 #
-#   docs ────────────────────────────────────────────────  Python，与 Node 链无关
+#   docs ────────────────────────────────────────────────  文档，独立
+#   python ──────────────────────────────────────────────  media worker，独立
 #
 #   contracts ──→ format ──→ lint ──→ typecheck ──→ test ──→ db ──→ integration
 #   类型真相源      快失败的排前面                              最贵的排最后
@@ -46,6 +47,32 @@ jobs:
             echo "::error::docs/*.html 与 docs/_src/*.md 不同步。本地运行 'python3 scripts/build-docs.py' 后提交生成结果。"
             exit 1
           fi
+
+  # Python 工具链，与 Node 链无关，并行跑
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers/media
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: workers/media/uv.lock
+
+      - run: uv sync --frozen
+
+      # 测试用真实 ffmpeg 跑真实文件——命令构造对不对只有真跑才知道
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy app
+      - run: uv run pytest -q
 
   # 排在链首：TS 类型、运行时校验、给 Python 的 JSON Schema 都由它派生。
   # 它一漂移，后面每一步的结论都不可信（01-architecture.md §3）。
