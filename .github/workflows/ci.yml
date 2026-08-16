@@ -11,6 +11,16 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 两条独立的链，各自内部按 needs 串行：
+#
+#   docs ────────────────────────────────────────────────  Python，与 Node 链无关
+#
+#   contracts ──→ format ──→ lint ──→ typecheck ──→ test ──→ db
+#   类型真相源      快失败的排前面                              最贵的排最后
+#
+# 拆成多节点是为了让失败位置在 Actions 图上直接可见，而不是埋在一个大 job 的日志里。
+# 代价是每个 job 都要重新起 runner 并装依赖——用墙钟时间换归因速度。
+# 重复的准备步骤抽在 .github/actions/setup，不在各 job 里复制粘贴。
 jobs:
   docs:
     name: docs
@@ -37,24 +47,16 @@ jobs:
             exit 1
           fi
 
-  checks:
-    name: checks
+  # 排在链首：TS 类型、运行时校验、给 Python 的 JSON Schema 都由它派生。
+  # 它一漂移，后面每一步的结论都不可信（01-architecture.md §3）。
+  contracts:
+    name: contracts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup
         with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # 三语言类型一致的兑现点，所以放在最前（01-architecture.md §3）
-      - name: Build contracts
-        run: pnpm contracts:build
+          build-contracts: 'true'
 
       - name: Assert generated contracts are in sync with src
         run: |
@@ -63,17 +65,57 @@ jobs:
             exit 1
           fi
 
-      - name: Format
-        run: pnpm format
+  format:
+    name: format
+    needs: contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: pnpm format
 
-      - name: Lint（含模块边界规则，见 01-architecture.md §5.2）
-        run: pnpm lint
+  # 含模块边界规则（01-architecture.md §5.2）与断言防护（ADR-0011）
+  lint:
+    name: lint
+    needs: format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          build-contracts: 'true'
+      - run: pnpm lint
 
-      - name: Typecheck
-        run: pnpm typecheck
+  typecheck:
+    name: typecheck
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          build-contracts: 'true'
+      - run: pnpm typecheck
 
-      - name: Test
-        run: pnpm test
+  test:
+    name: test
+    needs: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          build-contracts: 'true'
+      - run: pnpm test
+
+  # 最贵的一步排最后：起三个容器 + 真实迁移 + seed
+  db:
+    name: db
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
 
       # 用仓库自己的 compose 起服务：GHA 的 services: 块无法覆写容器 command，
       # 而 minio 需要 `server /data`。同一份文件，本地与 CI 零分歧。
