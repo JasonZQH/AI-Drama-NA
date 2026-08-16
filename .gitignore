@@ -13,10 +13,14 @@ build/
 .data/
 uploads/
 outputs/
+# 生成的媒体产物不进库
 *.mp4
 *.wav
 *.mov
 !docs/assets/**
+# 例外：MockProvider 的 fixture 必须进库。共 56KB，而「无 GPU 无 key 五分钟
+# 跑通全链路」这条硬约束不能依赖开发者本地装了 ffmpeg（scripts/make-fixtures.mjs）
+!apps/control/fixtures/*.mp4
 
 __pycache__/
 *.py[cod]
