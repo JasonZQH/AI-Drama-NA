@@ -41,3 +41,5 @@ docs/_to_delete/
 
 # Playwright MCP 的截图与快照
 .playwright-mcp/
+# 调试截图不进库（Playwright 的默认输出会落在仓库根）
+/*.png
