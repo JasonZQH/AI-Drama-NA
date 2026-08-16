@@ -70,6 +70,17 @@ export const ProviderFailure = z.object({
   retryable: z.boolean(),
   /** 限流时 provider 给的建议，由队列层做退避——适配器内不 sleep */
   retryAfterMs: z.number().int().nonnegative().optional(),
+  /**
+   * 这次**失败**的计费。可选，但缺省不等于免费。
+   *
+   * 真 provider 对失败、超时、取消的生成照样计费——算力已经消耗掉了。
+   * 适配器知道就填；不知道就留空，由编排层按价目表估算并标 costEstimated。
+   * 唯一该留空**且**确实为零的，是从未真正发出请求的那种失败（能力校验不通过）。
+   *
+   * 缺了这个字段，预算闸门读到的是一串 0：一个镜头重试到 maxAttempts 可以
+   * 产生四笔真实扣费而账面全空，日限额永远不会触发。
+   */
+  costMicroUsd: z.number().int().nonnegative().optional(),
 })
 export type ProviderFailure = z.infer<typeof ProviderFailure>
 

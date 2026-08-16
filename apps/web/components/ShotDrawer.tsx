@@ -431,7 +431,15 @@ function JobCard({
             </>
           )}
         </span>
-        <span>{usd(job.costMicroUsd)}</span>
+        {/*
+          估算值要看得出来是估算的。
+          超时与「提交结果未知」这两种失败照样计费，但金额只能按价目表估——
+          把它和 provider 回报的真实计费画成一样，就是在报表上撒谎（约束 C4）。
+        */}
+        <span title={job.costEstimated ? '按价目表估算，非 provider 回报的真实计费' : undefined}>
+          {job.costEstimated ? '≈' : ''}
+          {usd(job.costMicroUsd)}
+        </span>
         <span>{job.latencyMs === null ? '—' : `${(job.latencyMs / 1000).toFixed(1)}s`}</span>
         <span>seed {job.seed ?? '—'}</span>
         <span>{new Date(job.createdAt).toLocaleString('zh-CN', { hour12: false })}</span>

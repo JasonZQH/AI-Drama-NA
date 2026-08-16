@@ -150,9 +150,28 @@ export function nextAttemptPlan(prev: GenerationJob, attempt: number): Partial<G
 flowchart LR
     A["① 入队前<br/>estimateCost()<br/>预算闸门检查 · 不写库"]
     B["② 提交后<br/>provider 回报实际计费<br/>→ generation_jobs.cost_micro_usd"]
-    C["③ 终态<br/>未回报则按价目表 × 实际时长回填<br/>标记 costEstimated"]
+    C["③ 终态<br/>未回报则按价目表 × 实际时长回填<br/>标记 cost_estimated"]
     A --> B --> C
 ```
+
+### 6.1 失败也要记账
+
+**这是 M0 遗留下来最贵的一个假设。** mock 的失败不花钱，于是「失败 = 免费」这条
+从来没有被检验过；而真 provider 对失败、超时、取消的生成照样计费——算力已经消耗掉了。
+
+五个失败入口各是一种事实，不能一刀切：
+
+| 入口 | 花钱了吗 | 写什么 |
+|---|---|---|
+| 能力校验不通过（`validate` 前置） | **没有**。`validate` 不得有 IO，一次调用都没发生 | `0`，非估算 |
+| provider 回报失败且带了金额 | 是，且**它知道确切数字** | 真数，非估算 |
+| provider 回报失败但没带金额 | 多半是。没报 ≠ 免费 | 估算值，标 `cost_estimated` |
+| 超时 | 是。任务真跑了十几分钟，且 `cancel` 是 best-effort，可能还在烧 | 估算值，标 `cost_estimated` |
+| 提交结果未知（`submit_unknown`） | **不知道** | 估算值，标 `cost_estimated` |
+
+最后一行是个两难：记 `0` 会让预算闸门失效（闸门读的就是 `cost_micro_usd` 的和），
+记成真账则是 Ledger 在说谎。`cost_estimated` 让两者同时成立——闸门照样把它算进
+今日花费，报表能把估算与真实计费分开显示。没有这一列，只能二选一。
 
 **预算闸门**在项目级：
 

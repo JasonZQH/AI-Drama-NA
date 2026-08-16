@@ -14,6 +14,7 @@ import {
   reconcileOnBoot,
 } from './orchestrator.js'
 import { createConnection, createQueues, pollDelayMs } from './queues.js'
+import { spentToday } from '../pipeline/batch.js'
 import { inFlight, release, reset, tryAcquire } from './semaphore.js'
 
 /**
@@ -265,6 +266,130 @@ describe('每行至多 submit 一次（花钱的不变量）', () => {
     const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
     expect(row!.failureCode).toBeNull()
     expect(row!.status).toBe('queued')
+  })
+})
+
+describe('失败也记账（预算闸门读的就是这些数）', () => {
+  /** 驱动一个注入了失败的 job 走到终态，返回落库后的行 */
+  async function failWith(code: 'provider_error' | 'content_filtered') {
+    const { deps: d } = countingDeps()
+    const id = await newJob({
+      params: {
+        durationSec: 4,
+        resolution: '720p',
+        aspectRatio: '9:16',
+        fps: 24,
+        providerParams: { mock: { failFirstAttempt: code } },
+      },
+    })
+    await handleGenerate(d, { generationJobId: id })
+    const [job] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    await handlePoll(d, {
+      generationJobId: id,
+      providerId: 'mock',
+      externalId: job!.providerJobRef!,
+      submittedAt: Date.now() - 100,
+      pollCount: 0,
+    })
+    const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    return row!
+  }
+
+  it('provider 回报了失败成本就用真数，不标估算', async () => {
+    const row = await failWith('provider_error')
+    expect(row.failureCode).toBe('provider_error')
+    expect(row.costMicroUsd).toBeGreaterThan(0) // 失败的算力也是钱
+    expect(row.costEstimated).toBe(false)
+  })
+
+  /**
+   * mock 对 content_filtered 刻意不报成本（提交即被策略拒，没真跑推理）。
+   * 这条走的是编排层的兜底：**没报不等于免费**，按价目表估并标成估算。
+   */
+  it('provider 没报成本时按价目表估，并标成估算', async () => {
+    const row = await failWith('content_filtered')
+    expect(row.failureCode).toBe('content_filtered')
+    expect(row.costMicroUsd).toBeGreaterThan(0)
+    expect(row.costEstimated).toBe(true)
+  })
+
+  it('超时按估算记账——任务在 provider 那边真的跑了十几分钟', async () => {
+    const { deps: d } = countingDeps()
+    const id = await newJob()
+    await handleGenerate(d, { generationJobId: id })
+    const [job] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+
+    const slow = new MockProvider({ latencyScale: 1000, failureRate: 0 })
+    await slow.submit({
+      requestId: job!.providerJobRef!,
+      shotId,
+      mode: 't2v',
+      prompt: 'p',
+      refImages: [],
+      durationSec: 4,
+      resolution: '720p',
+      aspectRatio: '9:16',
+      fps: 24,
+      safetyProfile: 'standard',
+      priority: 'normal',
+      providerParams: {},
+    })
+
+    expect(
+      await handlePoll(
+        { ...deps, providers: [slow] },
+        {
+          generationJobId: id,
+          providerId: 'mock',
+          externalId: job!.providerJobRef!,
+          submittedAt: Date.now() - 20 * 60 * 1000,
+          pollCount: 3,
+        },
+      ),
+    ).toBe('timeout')
+
+    const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    expect(row!.costMicroUsd).toBeGreaterThan(0)
+    expect(row!.costEstimated).toBe(true)
+  })
+
+  /** 唯一确知没花钱的失败：validate 不得有 IO，走到这里一次调用都没发生 */
+  it('能力校验不通过记 0，且不标估算', async () => {
+    const { deps: d, submits } = countingDeps()
+    const id = await newJob({ params: { durationSec: 99 } }) // 超过 mock 的 10 秒上限
+
+    expect(await handleGenerate(d, { generationJobId: id })).toBe('skipped')
+    expect(submits()).toBe(0)
+
+    const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    expect(row!.failureCode).toBe('invalid_output')
+    expect(row!.costMicroUsd).toBe(0)
+    expect(row!.costEstimated).toBe(false)
+  })
+
+  it('提交结果未知按估算记账——记 0 的话闸门就拦不住了', async () => {
+    const exploding: VideoProvider = {
+      ...counting(provider).provider,
+      submit: () => Promise.reject(new Error('ECONNRESET')),
+    }
+    const id = await newJob()
+    await handleGenerate({ ...deps, providers: [exploding] }, { generationJobId: id })
+
+    const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    expect(row!.failureCode).toBe('submit_unknown')
+    expect(row!.costMicroUsd).toBeGreaterThan(0)
+    expect(row!.costEstimated).toBe(true)
+  })
+
+  /**
+   * 这一条才是本 PR 的目的：闸门读的是 spentToday，而 spentToday 求和的
+   * 就是 cost_micro_usd。失败不记账 = 日限额永远不会触发。
+   */
+  it('失败的花费进得了 spentToday，闸门才看得见', async () => {
+    const before = await spentToday(db, projectId)
+    const row = await failWith('provider_error')
+    const after = await spentToday(db, projectId)
+    expect(after - before).toBe(row.costMicroUsd)
   })
 })
 
