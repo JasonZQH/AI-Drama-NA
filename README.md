@@ -119,8 +119,8 @@ Module boundaries are enforced at build time, not by convention — ESLint block
 
 ```
 apps/
-  web/          Next.js · storyboard, review, player
-  control/      Fastify · domain, pipeline, providers, queue, routes, db
+  web/          Next.js · admin panel (dashboard, project, episode, assets), review, player
+  control/      Fastify · routes, pipeline, queue, providers, db, storage
 packages/
   contracts/    zod schemas — the single source of truth for all three languages
 workers/

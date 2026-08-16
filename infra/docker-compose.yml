@@ -58,8 +58,11 @@ services:
       echo 'bucket drama ready'"
 
   media-worker:
-    # image + build 双声明：CI 预先 build 好并打这个 tag（不再重复构建），
-    # 本地 `docker compose up --build` 直接从源码起
+    # image + build 双声明：本地没有这个 tag 时 compose 会自动从 build 上下文
+    # 构建（实测 `docker compose create` 直接走 build，不会去 registry 拉）。
+    # 注意 CI **不构建也不启动**这个容器——python job 是在 runner 上装 ffmpeg
+    # 后直跑 pytest。所以这条路径以及控制面↔media-worker 的 HTTP 边界目前
+    # 只有人工验证过。
     image: ai-drama/media-worker:local
     build: ../workers/media
     ports: ['${MEDIA_WORKER_PORT:-8002}:8002']

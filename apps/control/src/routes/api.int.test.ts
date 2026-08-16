@@ -15,7 +15,7 @@ import { resolveDependencies } from '../pipeline/batch.js'
  * 但不占端口，能并行跑。
  */
 
-const DB_URL = process.env['DATABASE_URL'] ?? 'postgresql://drama:drama@localhost:5433/drama'
+const DB_URL = process.env['DATABASE_URL'] ?? 'postgresql://drama:drama@localhost:5432/drama'
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379'
 
 const { db, client } = createDb(DB_URL, 3)
