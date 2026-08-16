@@ -9,3 +9,6 @@ packages:
 # 所以这里选 false（明知且不执行）而不是 true。不执行的脚本比执行的脚本安全。
 allowBuilds:
   esbuild: false
+  # msgpackr-extract 是 bullmq → msgpackr 的原生加速器，纯 JS 有完整 fallback。
+  # 队列里跑的是花真钱的任务，这里选不执行而非放行；集成测试会实证队列可用。
+  msgpackr-extract: false

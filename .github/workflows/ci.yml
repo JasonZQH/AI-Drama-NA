@@ -15,7 +15,7 @@ concurrency:
 #
 #   docs ────────────────────────────────────────────────  Python，与 Node 链无关
 #
-#   contracts ──→ format ──→ lint ──→ typecheck ──→ test ──→ db
+#   contracts ──→ format ──→ lint ──→ typecheck ──→ test ──→ db ──→ integration
 #   类型真相源      快失败的排前面                              最贵的排最后
 #
 # 拆成多节点是为了让失败位置在 Actions 图上直接可见，而不是埋在一个大 job 的日志里。
@@ -130,6 +130,39 @@ jobs:
         run: pnpm build && pnpm db:migrate && pnpm db:seed
         env:
           DATABASE_URL: postgresql://drama:drama@localhost:5432/drama
+
+      - name: Dump infra logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs --tail=50
+
+  # 队列层的 bug（幂等、恢复、限流）在单测里几乎不可见，在生产上表现为
+  # 「莫名其妙多扣了钱」或「任务卡死」，所以必须打真实 Redis / PG / MinIO
+  integration:
+    name: integration
+    needs: db
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          build-contracts: 'true'
+
+      - name: Start infra
+        run: |
+          docker compose -f infra/docker-compose.yml up -d --wait postgres redis minio
+          docker compose -f infra/docker-compose.yml run --rm minio-init
+
+      - name: Migrate + seed
+        run: pnpm build && pnpm db:migrate && pnpm db:seed
+        env:
+          DATABASE_URL: postgresql://drama:drama@localhost:5432/drama
+
+      - name: Integration tests（真实 Redis + Postgres + MinIO）
+        run: pnpm test:int
+        env:
+          DATABASE_URL: postgresql://drama:drama@localhost:5432/drama
+          REDIS_URL: redis://localhost:6379
+          S3_INTERNAL_ENDPOINT: http://localhost:9000
 
       - name: Dump infra logs on failure
         if: failure()
