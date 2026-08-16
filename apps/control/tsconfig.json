@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"],
+    "lib": ["ES2023"]
+  },
+  // drizzle.config.ts 不进构建：它在 rootDir 之外，且 drizzle-kit 自己会加载并执行它
+  "include": ["src/**/*.ts"],
+  // 测试与契约套件都不进 dist：否则 vitest 会把 src 与编译产物各跑一遍，用例数悄悄翻倍
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts", "src/**/*.int.test.ts"]
+}

@@ -461,7 +461,7 @@ def main() -> int:
         '<a class="card" href="../README.md"><div class="num">README</div>'
         '<div class="title">项目说明</div><div class="desc">技术选型速览、快速开始、里程碑概览</div></a>'
         '<a class="card" href="adr/"><div class="num">ADR</div>'
-        '<div class="title">架构决策记录</div><div class="desc">十条关键决策的背景、备选与后果</div></a>'
+        '<div class="title">架构决策记录</div><div class="desc">十一条关键决策的背景、备选与后果</div></a>'
         "</div>"
     )
 

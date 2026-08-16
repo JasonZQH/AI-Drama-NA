@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { FailureCode, ShotStatus } from './enums.js'
+import { GenStage } from './provider.js'
 
 /**
  * SSE 事件负载（05-job-orchestration.md §7、06-api-spec.md §7）。
@@ -15,6 +16,8 @@ export const StudioEvent = z.discriminatedUnion('type', [
     shotId: z.string().uuid(),
     pct: z.number().min(0).max(100),
     etaMs: z.number().int().nonnegative().optional(),
+    /** 阶段比百分比更能解释「为什么现在不动」，尤其是模型加载那 60–90 秒 */
+    stage: GenStage.optional(),
   }),
   z.object({
     type: z.literal('take.created'),

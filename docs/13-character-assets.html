@@ -371,8 +371,8 @@ B. 镜头正文（逐镜变化）
 <td>如「低角度俯拍平放在桌上的手机屏幕」是矛盾描述</td>
 </tr>
 <tr>
-<td>单镜时长 2–8 秒</td>
-<td></td>
+<td>单镜时长上限 10 秒</td>
+<td><strong>唯一硬规则</strong>，三处同口径：<code>ShotIntent</code> schema、<code>shots.duration_sec</code> 的 CHECK、以及本条 lint。2–8 秒是推荐区间，超出只提示不拦截</td>
 </tr>
 <tr>
 <td>单句台词 ≤11 词</td>

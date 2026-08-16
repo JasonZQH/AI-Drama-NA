@@ -24,7 +24,8 @@ cp .env.example .env                    # 默认即 mock provider，无需任何
 docker compose -f infra/docker-compose.yml up -d
 pnpm db:migrate
 pnpm db:seed                            # demo project：1 集 / 12 镜 / 2 角色
-pnpm dev                                # 并行起 web:3000 + control:4000 + worker
+pnpm build                              # control 跑 dist，dev 前先构建一次
+pnpm dev                                # 并行起 web:3000 + control:4000 + 队列 worker
 ```
 
 打开 `http://localhost:3000`，进入 demo 项目 → 分镜页 → 「生成整集」→ 十几秒后就能看到 mock 视频填充进卡片，走完 review → timeline → 渲染 → 播放的全链路。

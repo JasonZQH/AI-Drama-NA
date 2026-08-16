@@ -168,7 +168,7 @@ export interface BudgetPolicy {
 ```ts
 type StudioEvent =
   | { type: 'shot.status',    shotId: string, status: ShotStatus }
-  | { type: 'job.progress',   jobId: string, shotId: string, pct: number, etaMs?: number }
+  | { type: 'job.progress',   jobId: string, shotId: string, pct: number, etaMs?: number, stage?: GenStage }
   | { type: 'take.created',   shotId: string, takeId: string, thumbUrl: string }
   | { type: 'batch.progress', episodeId: string, done: number, total: number, failed: number }
   | { type: 'cost.updated',   projectId: string, spentMicroUsd: number }
@@ -178,6 +178,12 @@ type StudioEvent =
 选 SSE 不选 WebSocket 的理由：进度是**单向广播**，SSE 够用且天然支持断线重连与 HTTP/2 多路复用，不需要维护双向连接的状态机。有交互需求（比如协同编辑）时再上 WS 不迟。
 
 节流：`job.progress` 每个 job 最多 1 秒 1 条，服务端合并后再发，避免几十个任务同时刷把浏览器打爆。
+
+**发出点是 `handlePoll` 的 running 分支**：`provider.poll()` 返回的 `progressPct` / `stage` 必须转成事件，否则整条链路是死的——契约有、节流有、前端进度条在等，就是没人发。这个洞真实存在过，mock 跑得太快所以一直没暴露。
+
+**`stage` 不是锦上添花。** 取值 `queued | loading_model | denoising | decoding | uploading`，来自 Worker Contract 的 `JobState.stage`（`09` §2.3），源头是 ComfyUI 的进度事件。ComfyUI 首次加载 14B 权重要 60–90 秒，这期间 `pct` 一直是 0——只画一条不动的进度条，用户读到的是「挂了」，于是去点重试，而重试会把模型再加载一遍。所以 `pct` 缺省时也要发事件：**「加载模型中」配一条不动的 0% 条是「系统在忙」，什么都不发是「系统死了」**，这两者在 `07` §2 R1 下完全不同。
+
+云 provider 给不出阶段就留空，界面退回纯百分比。
 
 ## 7.5 BullMQ 生产加固（三条必改的默认值）
 

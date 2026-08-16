@@ -250,6 +250,16 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "loading_model",
+            "denoising",
+            "decoding",
+            "uploading"
+          ]
         }
       },
       "required": [
@@ -763,6 +773,16 @@
               "type": "integer",
               "minimum": 0,
               "maximum": 9007199254740991
+            },
+            "stage": {
+              "type": "string",
+              "enum": [
+                "queued",
+                "loading_model",
+                "denoising",
+                "decoding",
+                "uploading"
+              ]
             }
           },
           "required": [

@@ -25,9 +25,36 @@ const boundaryRules = {
   ],
 }
 
+/**
+ * 断言防护。
+ *
+ * 起因是一个真实事故：`db.delete(x).where(sql`...` as never)` —— 那个 `as never`
+ * 压掉了本该报错的类型检查，drizzle 于是把驱动的 Query 对象当成参数值，生成
+ * `delete from "projects" where $1`，**不报错、count=0、一行没删**。
+ * 唯一能在编译期拦住它的机制，被我亲手关掉了。
+ *
+ * `as any` 与 `<any>x` 已由 no-explicit-any 覆盖（实测确认）；这里补另外两种。
+ * 需要逃生舱时用 eslint-disable-next-line 并写明理由——代价是必须说出口。
+ */
+const assertionRules = {
+  'no-restricted-syntax': [
+    'error',
+    {
+      selector: 'TSAsExpression > TSNeverKeyword',
+      message:
+        '禁止 `as never`：它会静默压制真实的类型错误。若确有必要，用 eslint-disable-next-line 并写明为什么这里是安全的。',
+    },
+    {
+      selector: 'TSAsExpression > TSAsExpression > TSUnknownKeyword',
+      message:
+        '禁止 `as unknown as T` 双重断言：它绕过所有类型检查。先问「为什么类型对不上」，那通常才是真正的 bug。',
+    },
+  ],
+}
+
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/.next/**', '**/.turbo/**', 'docs/**', '.venv/**'],
+    ignores: ['**/dist/**', '**/.next/**', '**/.turbo/**', 'docs/**', '**/.venv/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -39,14 +66,16 @@ export default tseslint.config(
   {
     rules: {
       ...boundaryRules,
+      ...assertionRules,
       // 控制面处理钱与长任务，隐式 any 会让状态机的错误悄悄溜过去（11-dev-setup.md §9）
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/consistent-type-imports': 'error',
     },
   },
   {
-    // domain/ 必须零 IO，才能被穷举测试而无需起数据库（01-architecture.md §5.1）
-    files: ['apps/control/src/domain/**'],
+    // domain/ 与状态机必须零 IO，才能被穷举测试而无需起数据库（01-architecture.md §5.1）。
+    // shotMachine 在 pipeline/ 下（文档指定的位置），但它自称纯函数——这条得可执行。
+    files: ['apps/control/src/domain/**', 'apps/control/src/pipeline/shotMachine.ts'],
     rules: {
       'no-restricted-imports': [
         'error',

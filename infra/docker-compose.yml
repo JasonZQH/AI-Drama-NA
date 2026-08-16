@@ -2,6 +2,9 @@
 # 不用 GitHub Actions 的 services: 块——后者无法覆写容器 command，minio 需要 `server /data`。
 #
 # 镜像全部多架构，不写 platform:（Mac 是 arm64，CI 是 x64，钉死任一边都会触发 QEMU）。
+#
+# 宿主端口可用环境变量避让——开发机上常已有原生 Postgres 占着 5432。默认值仍是文档口径：
+#   POSTGRES_PORT=5433 docker compose -f infra/docker-compose.yml up -d
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,7 +12,7 @@ services:
       POSTGRES_USER: drama
       POSTGRES_PASSWORD: drama
       POSTGRES_DB: drama
-    ports: ['5432:5432']
+    ports: ['${POSTGRES_PORT:-5432}:5432']
     volumes: ['../.data/pg:/var/lib/postgresql/data']
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U drama -d drama']
@@ -21,7 +24,7 @@ services:
     image: redis:7-alpine
     # noeviction：默认策略会在内存压力下淘汰 key，直接损坏队列（05-job-orchestration.md §7.5）
     command: redis-server --appendonly yes --maxmemory-policy noeviction
-    ports: ['6379:6379']
+    ports: ['${REDIS_PORT:-6379}:6379']
     volumes: ['../.data/redis:/data']
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
@@ -35,7 +38,7 @@ services:
     environment:
       MINIO_ROOT_USER: adminlocal
       MINIO_ROOT_PASSWORD: adminlocal123
-    ports: ['9000:9000', '9001:9001']
+    ports: ['${MINIO_PORT:-9000}:9000', '${MINIO_CONSOLE_PORT:-9001}:9001']
     volumes: ['../.data/minio:/data']
     healthcheck:
       test: ['CMD', 'mc', 'ready', 'local']
@@ -53,3 +56,28 @@ services:
       mc alias set local http://minio:9000 adminlocal adminlocal123 &&
       mc mb -p local/drama &&
       echo 'bucket drama ready'"
+
+  media-worker:
+    # image + build 双声明：本地没有这个 tag 时 compose 会自动从 build 上下文
+    # 构建（实测 `docker compose create` 直接走 build，不会去 registry 拉）。
+    # 注意 CI **不构建也不启动**这个容器——python job 是在 runner 上装 ffmpeg
+    # 后直跑 pytest。所以这条路径以及控制面↔media-worker 的 HTTP 边界目前
+    # 只有人工验证过。
+    image: ai-drama/media-worker:local
+    build: ../workers/media
+    ports: ['${MEDIA_WORKER_PORT:-8002}:8002']
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: drama
+      S3_ACCESS_KEY: adminlocal
+      S3_SECRET_KEY: adminlocal123
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      # 镜像里没有 curl，用 python 自带的；探活要真打 /v1/health 而不是看进程活着
+      test:
+        ['CMD', 'python3', '-c', 'import urllib.request as u; u.urlopen("http://localhost:8002/v1/health")']
+      interval: 5s
+      timeout: 3s
+      retries: 20
