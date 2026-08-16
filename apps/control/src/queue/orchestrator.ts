@@ -1,4 +1,4 @@
-import type { GenerationRequest, VideoProvider } from '@ai-drama/contracts'
+import type { GenerationRequest, ProviderProgress, StudioEvent, VideoProvider } from '@ai-drama/contracts'
 import { eq, inArray } from 'drizzle-orm'
 import type IORedis from 'ioredis'
 import type { Db } from '../db/client.js'
@@ -31,6 +31,35 @@ export interface OrchestratorDeps {
 }
 
 export const PROVIDER_TIMEOUT_MS = 15 * 60 * 1000
+
+/**
+ * 进度 → SSE。
+ *
+ * pct 缺省时补 0 而不是跳过：`stage` 单独也有价值——「加载模型中」配一条
+ * 不动的 0% 条，是「系统在忙」；什么都不发，是「系统死了」。这两者在
+ * 07 §2 R1 下是完全不同的两件事。
+ */
+async function publishProgress(
+  deps: OrchestratorDeps,
+  generationJobId: string,
+  res: ProviderProgress,
+): Promise<void> {
+  const [row] = await deps.db
+    .select({ shotId: s.generationJobs.shotId })
+    .from(s.generationJobs)
+    .where(eq(s.generationJobs.id, generationJobId))
+  if (!row) return
+
+  const event: StudioEvent = {
+    type: 'job.progress',
+    jobId: generationJobId,
+    shotId: row.shotId,
+    pct: res.progressPct ?? 0,
+    ...(res.etaMs === undefined ? {} : { etaMs: res.etaMs }),
+    ...(res.stage === undefined ? {} : { stage: res.stage }),
+  }
+  await deps.queues.notify.add('notify', { projectId: '', payload: event })
+}
 
 function providerOf(deps: OrchestratorDeps, id: string): VideoProvider {
   const p = deps.providers.find((x) => x.id === id)
@@ -162,6 +191,17 @@ export async function handlePoll(
       .update(s.generationJobs)
       .set({ status: 'running' })
       .where(eq(s.generationJobs.id, data.generationJobId))
+
+    /*
+     * 把 provider 报的进度转成 SSE。
+     *
+     * 这一步以前是缺的：poll() 返回的 progressPct / stage 被原地丢掉，于是
+     * `job.progress` 这个事件从来没有人发过——契约里有、SSE 层专门为它写了
+     * 节流、前端进度条在等它，整条路径却是死的。mock 跑得太快所以没人发现，
+     * 但接上真 provider 后一次生成要几十秒到几分钟，进度条不动等于 R1 失效。
+     */
+    await publishProgress(deps, data.generationJobId, res)
+
     await deps.queues.poll.add(
       'poll',
       { ...data, pollCount: data.pollCount + 1 },

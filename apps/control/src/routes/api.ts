@@ -68,6 +68,8 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
         shot: s.shots,
         takeCount: sql<number>`(select count(*) from ${s.takes} where ${s.takes.shotId} = ${s.shots.id} and ${s.takes.status} = 'candidate')::int`,
         costMicroUsd: sql<number>`(select coalesce(sum(${s.generationJobs.costMicroUsd}), 0) from ${s.generationJobs} where ${s.generationJobs.shotId} = ${s.shots.id})::bigint`,
+        // mock 的钱不是真花的钱，界面要能把这两者分开标（见 routes/stats.ts）
+        mockCostMicroUsd: sql<number>`(select coalesce(sum(${s.generationJobs.costMicroUsd}), 0) from ${s.generationJobs} where ${s.generationJobs.shotId} = ${s.shots.id} and ${s.generationJobs.providerId} = 'mock')::bigint`,
       })
       .from(s.shots)
       .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))

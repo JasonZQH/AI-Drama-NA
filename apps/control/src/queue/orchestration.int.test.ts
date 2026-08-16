@@ -179,6 +179,48 @@ describe('自重排轮询（§4）', () => {
     expect(after!.latencyMs).toBeGreaterThanOrEqual(0)
   })
 
+  /**
+   * 这条路径此前是**死的**：poll() 返回的 progressPct / stage 被 handlePoll 原地
+   * 丢掉，`job.progress` 从来没有人发过——契约里有、SSE 层为它写了节流、前端
+   * 进度条在等它。mock 默认 latencyScale=0 会立刻跑完，所以谁也没撞见 running
+   * 分支。这个测试专门用一个慢 provider 把那个分支钉住。
+   */
+  it('还在跑时把 provider 的进度发成 job.progress（含 stage）', async () => {
+    const slow = new MockProvider({ latencyScale: 1, failureRate: 0 })
+    const slowDeps = { ...deps, providers: [slow] }
+
+    const id = await newJob()
+    await handleGenerate(slowDeps, { generationJobId: id })
+    const [job] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+
+    const r = await handlePoll(slowDeps, {
+      generationJobId: id,
+      providerId: 'mock',
+      externalId: job!.providerJobRef!,
+      submittedAt: Date.now(),
+      pollCount: 0,
+    })
+    expect(r).toBe('running')
+
+    /*
+     * 按 jobId 而非 shotId 认领事件。
+     *
+     * 整套测试复用同一个 shot，而 BullMQ 会保留 completed 任务——按 shotId 找
+     * 会捞到上一轮跑剩的事件，于是把 publishProgress 整个删掉测试照样绿
+     * （已实测）。generationJobId 每次 newJob() 都是新的，才真的钉得住这一次调用。
+     */
+    const queued = await queues.notify.getJobs(['waiting', 'delayed', 'completed', 'active'], 0, 500)
+    const mine = queued
+      .map((j) => (j.data as { payload?: Record<string, unknown> }).payload)
+      .find((p) => p?.['type'] === 'job.progress' && p['jobId'] === id) as
+      { pct: number; stage?: string } | undefined
+
+    expect(mine, 'handlePoll 没有把本次轮询的进度发到 notify 队列').toBeDefined()
+    expect(mine!.pct).toBeGreaterThanOrEqual(0)
+    // 刚提交就轮询，必然落在加载模型那一段——这正是「0% 停很久」的场景
+    expect(mine!.stage).toBe('loading_model')
+  })
+
   it('超时会取消并标记 timeout，而不是无限轮询下去', async () => {
     const id = await newJob()
     await handleGenerate(deps, { generationJobId: id })

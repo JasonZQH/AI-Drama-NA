@@ -62,9 +62,31 @@ Open <http://localhost:3000>, pick the demo project, and press **Generate episod
 | `pnpm dev` | Web + control plane + queue worker, all watching |
 | `pnpm test` | Unit tests (no infrastructure needed) |
 | `pnpm test:int` | Integration tests against real Postgres/Redis/MinIO |
-| `pnpm db:reset` | Drop **both** `public` and `drizzle` schemas, then re-migrate |
+| `pnpm db:reset` | Drop **both** `public` and `drizzle` schemas. Does **not** re-migrate — see [Clearing the demo data](#clearing-the-demo-data) |
 | `pnpm contracts:build` | zod → JSON Schema for the Python side |
 | `python3 scripts/build-docs.py` | Re-render `docs/_src/*.md` into the HTML doc site |
+
+### Clearing the demo data
+
+Everything `db:seed` creates is **mock data**: costs come from a fixed price table, failures are injected, and the video files are bundled fixtures. The admin panel labels it — every figure that traces back to `provider_id = 'mock'` carries a `MOCK` chip, and the top bar says so outright. None of it is real billing.
+
+Wiping it takes **two** commands, because the data lives in two stores:
+
+```bash
+# 1. Postgres — drops both schemas, so migrations must be re-applied
+pnpm db:reset && pnpm db:migrate
+
+# 2. MinIO — db:reset does not touch object storage
+docker compose -f infra/docker-compose.yml run --rm --entrypoint sh minio-init -c \
+  "mc alias set local http://minio:9000 adminlocal adminlocal123 && \
+   mc rm -r --force local/drama && mc mb -p local/drama"
+```
+
+Then either `pnpm db:seed` for a fresh demo, or skip it and start empty — the panel handles the no-data case and tells you what to run.
+
+**Why the second command matters.** `db:reset` drops the `projects` rows but leaves every generated clip under `drama/projects/<uuid>/takes/` on disk. Re-seeding mints new UUIDs, so the old objects are never referenced again and never cleaned up. A few episodes of experimentation leaves hundreds of megabytes that nothing points at.
+
+**Why `db:reset` alone leaves you with an empty database.** It drops the `drizzle` schema too — deliberately, because that is where the migration ledger lives. Dropping only `public` would make the migrator believe `0000` had already run, report success, and create no tables at all. That failure is silent and thoroughly misleading, which is why resetting and migrating are two explicit steps rather than one.
 
 ---
 

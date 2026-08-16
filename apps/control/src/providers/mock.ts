@@ -1,6 +1,7 @@
 import type {
   GenerationRequest,
   GenerationResult,
+  GenStage,
   PollOutcome,
   ProviderCapabilities,
   ProviderFailure,
@@ -59,6 +60,20 @@ function hash(s: string): number {
     h = Math.imul(h, 16777619)
   }
   return (h >>> 0) / 0xffffffff
+}
+
+/**
+ * 按 ComfyUI 的真实形状排阶段（09 §2.3）。
+ *
+ * 前 20% 记为 loading_model：真机上首次加载 14B 权重要 60–90 秒，这段时间
+ * 百分比几乎不动。mock 里照这个形状走，是为了让界面在 M0 就被这个「0% 停很久」
+ * 的场景压过一遍，而不是等 M2 接上 GPU 才发现进度条读起来像挂了。
+ */
+function mockStage(frac: number): GenStage {
+  if (frac < 0.2) return 'loading_model'
+  if (frac < 0.8) return 'denoising'
+  if (frac < 0.95) return 'decoding'
+  return 'uploading'
 }
 
 export class MockProvider implements VideoProvider {
@@ -181,10 +196,12 @@ export class MockProvider implements VideoProvider {
 
     const elapsed = Date.now() - job.startedAt
     if (elapsed < job.durationMs) {
+      const frac = elapsed / job.durationMs
       return Promise.resolve({
         status: 'running' as const,
-        progressPct: Math.min(99, Math.round((elapsed / job.durationMs) * 100)),
+        progressPct: Math.min(99, Math.round(frac * 100)),
         etaMs: Math.max(0, Math.round(job.durationMs - elapsed)),
+        stage: mockStage(frac),
       })
     }
 
