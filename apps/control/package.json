@@ -10,7 +10,8 @@
     "db:migrate": "node --env-file-if-exists=../../.env dist/db/migrate.js",
     "db:seed": "node --env-file-if-exists=../../.env dist/db/seed.js",
     "db:reset": "node --env-file-if-exists=../../.env dist/db/reset.js",
-    "dev:worker": "node --env-file-if-exists=../../.env dist/worker.js"
+    "dev:worker": "node --watch --env-file-if-exists=../../.env dist/worker.js",
+    "dev": "node --watch --env-file-if-exists=../../.env dist/server.js & node --watch --env-file-if-exists=../../.env dist/worker.js & wait"
   },
   "dependencies": {
     "@ai-drama/contracts": "workspace:*",
