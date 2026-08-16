@@ -1,97 +1,243 @@
 # ai-drama-studio
 
-本地优先的 AI 短剧生产系统：**输入一个故事，输出可播放的分集短剧成片**。
+A local-first production system for AI-generated short-form drama: **feed it a story, get back playable episodes.**
 
-它既是生产工具（Studio），也是播放器（Player）。第一阶段的目标不是商业化，而是把「文本 → 可播放视频」这条主干在本地完整跑通，并让主干的每一环都可替换、可观测、可计价。
+It is both the factory (Studio) and the storefront (Player). The goal of this phase is not monetisation — it is to make the path from **text to a playable master** run end to end on a laptop, with every link in that chain replaceable, observable, and priced.
 
 ```
-故事 → 分集 → 分场 → 分镜 → 资产 → 批量生成 → 评测选片 → 配音字幕 → 拼接 → 播放
+Story → Episodes → Scenes → Shots → Reference assets → Batch generation
+      → Evaluation & selection → Voice/subtitles → FFmpeg assembly → Playback
 ```
 
-## 现状
+---
 
-📄 **设计阶段** · 文档已完成，代码尚未开始。下一步是 M0 骨架（见 [`docs/12-roadmap.html`](docs/12-roadmap.html)）。
+## Status
 
-## 技术选型速览
+**M0 complete.** The trunk runs end to end with **no GPU and no API keys** — every generation call is served by a first-class mock provider that fails 15% of the time on purpose, so retry logic and error states are exercised from day one.
 
-| 层 | 选型 | 位置 |
-|---|---|---|
-| Web | Next.js 15 · TypeScript · Tailwind v4 · Radix | Mac |
-| 控制面 | Fastify · TypeScript · Drizzle | Mac |
-| 状态 | PostgreSQL 16（真相源）· Redis（BullMQ 队列） | Mac / docker |
-| 存储 | MinIO（S3 兼容） | Mac / docker |
-| 视频生成 | Python · FastAPI · Wan2.2 / HunyuanVideo | **远程 GPU** |
-| 媒体处理 | Python · FFmpeg | Mac / docker |
+A verified run of the full acceptance path:
 
-三条核心约束：
+| Step | Result |
+|---|---|
+| Batch-generate one episode | 12 shots, **14 attempts, 2 automatic retries** |
+| Select takes | 12 locked |
+| Render | **36.02 s master, 1080×1920, 24 fps** |
+| Re-render after a change | 12 normalised clips reused, **4 s → 0 s** |
 
-1. **生成后端可替换** —— 一切藏在 Provider 适配器后，业务代码不认识任何厂商。
-2. **无 GPU 也能跑通全链路** —— `MockProvider` 是一等公民，不是玩具。
-3. **一切生成留痕** —— 每次尝试（含失败）都写 Generation Ledger：参数、种子、耗时、成本、是否采用。
+Test suites: **127 unit**, **26 integration** (real Postgres + Redis + MinIO), **10 media** (real FFmpeg, real files).
 
-## 快速开始（无 GPU / 无 API key）
+Next milestone is M1 — a real cloud provider behind the same adapter, with cost per usable shot measured against the mock baseline.
+
+---
+
+## Quick start
+
+No GPU. No API keys. Nothing to sign up for.
 
 ```bash
+git clone https://github.com/JasonZQH/AI-Drama-NA.git ai-drama-studio
+cd ai-drama-studio
+
 pnpm install
-cp .env.example .env                    # 默认 mock provider
-docker compose -f infra/docker-compose.yml up -d
-pnpm db:migrate && pnpm db:seed         # demo: 1 集 / 12 镜 / 2 角色
-pnpm dev                                # web:3000 · control:4000
+cp .env.example .env
+
+docker compose -f infra/docker-compose.yml up -d --wait postgres redis minio
+docker compose -f infra/docker-compose.yml run --rm minio-init
+docker compose -f infra/docker-compose.yml up -d --wait media-worker
+
+pnpm build
+pnpm db:migrate && pnpm db:seed     # demo: 1 episode / 12 shots / 2 characters
+pnpm dev                            # web :3000 · control :4000 · queue worker
 ```
 
-打开 `http://localhost:3000` → demo 项目 → 分镜页 →「生成整集」，十几秒后可走完 生成 → 选片 → 渲染 → 播放 全流程。详见 [`docs/11-dev-setup.html`](docs/11-dev-setup.html)。
+Open <http://localhost:3000>, pick the demo project, and press **Generate episode**. A confirmation dialog shows the shot count and the estimated spend before anything is queued. Watch the cards move through `generating → review` over SSE, select takes, render, and play the master.
 
-## 文档
+> **Port 5432 already taken?** A native Postgres is common on dev machines. Every host port is overridable:
+> `POSTGRES_PORT=5433 docker compose -f infra/docker-compose.yml up -d` — then update `DATABASE_URL` in `.env`.
 
-文档已渲染为带设计的 HTML —— 打开 **[`docs/index.html`](docs/index.html)** 作为入口（支持深浅色切换、目录跟随、跨篇互链；流程图与架构图为 Mermaid 矢量渲染，随主题重绘）。Markdown 源保留在 `docs/_src/`，改完运行 `python3 scripts/build-docs.py` 重新生成。
+### Useful commands
 
-**先读这三篇**：`00-overview`（范围与术语）→ `01-architecture`（架构全貌）→ `12-roadmap`（从哪开始动手）。
-
-| 文档 | 内容 |
+| Command | What it does |
 |---|---|
-| [00-overview](docs/00-overview.html) | 范围定义、设计约束、术语表 |
-| [01-architecture](docs/01-architecture.html) | 三平面架构、进程拓扑、目录结构 |
-| [02-data-model](docs/02-data-model.html) | 数据库 schema、状态枚举、Generation Ledger |
-| [03-pipeline](docs/03-pipeline.html) | 八阶段流水线（含 S8 素材层）、镜头状态机、评测分层、连续性策略 |
-| [04-provider-adapter](docs/04-provider-adapter.html) | 生成后端统一契约与路由器 |
-| [05-job-orchestration](docs/05-job-orchestration.html) | 队列、并发、轮询、重试、成本记账、崩溃恢复 |
-| [06-api-spec](docs/06-api-spec.html) | 控制面 REST + SSE API |
-| [07-design-system](docs/07-design-system.html) | 前端设计系统：色彩、排版、组件、交互模式 |
-| [08-screen-specs](docs/08-screen-specs.html) | 七个页面的布局与交互规格 |
-| [09-python-worker](docs/09-python-worker.html) | Worker Contract、模型选型、远程 GPU 部署 |
-| [10-media-storage](docs/10-media-storage.html) | S3 存储、FFmpeg 拼接、TTS、HLS、容量估算 |
-| [11-dev-setup](docs/11-dev-setup.html) | 环境搭建、环境变量、排错速查 |
-| [12-roadmap](docs/12-roadmap.html) | M0–M6 里程碑与验收标准 |
-| [13-character-assets](docs/13-character-assets.html) | 角色资产三路分离、参考图机制、单镜头 prompt 三阶段 |
+| `pnpm dev` | Web + control plane + queue worker, all watching |
+| `pnpm test` | Unit tests (no infrastructure needed) |
+| `pnpm test:int` | Integration tests against real Postgres/Redis/MinIO |
+| `pnpm db:reset` | Drop **both** `public` and `drizzle` schemas, then re-migrate |
+| `pnpm contracts:build` | zod → JSON Schema for the Python side |
+| `python3 scripts/build-docs.py` | Re-render `docs/_src/*.md` into the HTML doc site |
 
-**架构决策记录**
+---
 
-| ADR | 决策 |
+## Architecture
+
+Three planes, split by **responsibility rather than by tech stack**. Nothing crosses a plane boundary except over HTTP — no shared database connections, no shared memory.
+
+```
+┌─ PRESENTATION ─┐   Next.js 16 · TypeScript      Studio UI · Player · live progress
+        │ REST + SSE
+┌─ CONTROL ──────┐   Fastify 5 · Drizzle · BullMQ  Domain model · state machine
+        │                                          Provider routing · Generation Ledger
+        │ HTTP Worker Contract                     ── the only process that writes Postgres ──
+┌─ GENERATION ───┐   Python · FastAPI · FFmpeg     Media assembly (CPU, local)
+        └──────────→ MinIO (S3)                    Wan2.2 / ComfyUI (remote GPU, M2)
+```
+
+**Why the control plane is TypeScript and not Python.** Domain types — `Shot`, `Asset`, `JobStatus` — are shared with the frontend. Writing them twice is a permanent source of drift. `packages/contracts` defines them once in zod and emits three things: TS types, runtime validation, and JSON Schema for the Python workers. The language boundary sits at **business logic vs. computation**, not at frontend vs. backend.
+
+The generated schema carries real constraints, not just shapes:
+
+```json
+"durationSec": { "type": "number", "minimum": 1, "maximum": 10 }
+"role": { "type": "string", "enum": ["character","location","style","first_frame","last_frame"] }
+```
+
+Module boundaries are enforced at build time, not by convention — ESLint blocks vendor SDK imports outside `providers/` and any I/O inside `domain/`. Try it: adding `import { createDb } from '../db/client'` to the state machine fails lint.
+
+### Repository layout
+
+```
+apps/
+  web/          Next.js · storyboard, review, player
+  control/      Fastify · domain, pipeline, providers, queue, routes, db
+packages/
+  contracts/    zod schemas — the single source of truth for all three languages
+workers/
+  media/        Python · FFmpeg normalise/concat/probe/thumbnail
+infra/          docker compose: postgres · redis · minio · media-worker
+docs/           14 design documents + 11 ADRs (rendered to HTML)
+```
+
+---
+
+## How a shot becomes video
+
+The pipeline has eight stages. S4 gates S5: batch generation stays disabled until reference assets are locked, because starting a 3000-shot run on unlocked characters is the industry's most expensive known mistake.
+
+```
+S1 STORY → S2 SCRIPT → S3 SHOTLIST → S4 ASSETS → S5 GENERATE
+                                   → S6 AUDIO  ↗
+                                   → S7 ASSEMBLE → S8 PROMOTE
+```
+
+Inside S5, one shot's journey:
+
+1. **Shot Intent → prompt.** Intent is structured narrative data (framing, camera move, action, emotion, duration). It is deliberately **not** a prompt — prompts are provider-specific, intent is not. Swapping providers changes a template, not the script layer.
+2. **Router picks a backend.** Hard capability filters first, then failure avoidance, then historical `usd_per_accepted` — rules before statistics.
+3. **Submit and return.** The queue job writes the job row and finishes immediately. It never blocks waiting for generation; a self-rescheduling poll job tracks progress with exponential backoff. No persistent loops means thousands of concurrent jobs cost nothing but Redis entries.
+4. **Ingest.** Output lands in MinIO, hashed for content-addressed dedup, recorded as an asset plus a take.
+5. **Evaluate.** Tier 0 technical checks first — cheap checks reject cheaply, before anything expensive runs.
+6. **Retry, correctly.** Infrastructure failures replay with identical parameters. Quality failures escalate: new seed → reinforced prompt → different provider. `content_filtered` never retries at all — the same prompt will be rejected again, and retrying only burns quota.
+7. **Human selects.** The review screen is built for keyboard: `J/K` to move, `Space` to play all candidates in sync, `1–9` to pick, `Enter` to confirm and jump to the next. Target is three seconds per shot.
+
+Assembly is two-pass by necessity. Clips from different providers carry different profiles, GOPs and colour spaces, so lossless `-c copy` concatenation cannot work directly. Each clip is normalised to identical parameters first — and that normalised output is cached, which is why changing one shot re-renders an episode in seconds rather than minutes.
+
+### Three constraints that shape everything
+
+1. **The generation backend is replaceable.** Every capability hides behind a provider adapter. Business code never imports a vendor SDK. Without this, comparing "Vidu on close-ups vs. self-hosted Wan2.2" is impossible — and that comparison is the entire point of the architecture.
+2. **It runs with no GPU.** `MockProvider` is a first-class implementation, not a stub: real fixtures, real latency, real cost figures, real failures.
+3. **Every generation is recorded.** Each attempt — including failures — writes a Generation Ledger row: parameters, seed, latency, cost, verdict. Cost is stored as integer micro-USD, because floating point and money do not mix.
+
+That ledger answers the only question that matters long-term:
+
+```sql
+SELECT provider_id, shot_type,
+       count(*)                                  AS attempts,
+       avg((accepted)::int)                      AS pass_rate,
+       sum(cost_micro_usd)/1e6
+         / nullif(sum((accepted)::int), 0)       AS usd_per_accepted
+FROM generation_jobs JOIN shots ON shots.id = shot_id
+GROUP BY 1, 2 ORDER BY usd_per_accepted;
+```
+
+**Cost per usable shot** — not cost per second — is the real unit price, because it folds in the retry rate.
+
+---
+
+## Positioning
+
+This targets the **North American R-rated (MPA R / TV-MA) vertical short-drama market**, and that choice is architectural, not editorial:
+
+- **Marketing outspends production roughly 9:1.** The system's primary output is therefore not 80–100 finished episodes but 600–1200 deliverables — episodes *plus* promo cuts, store assets, and affiliate packages. `HookConcept` and `Render` are first-class entities, not afterthoughts.
+- **Three content tiers, separated at the shot level.** L0 (ad-safe) / L1 (store-safe) / L2 (full TV-MA). Plot-bearing shots and explicit shots are never the same shot, so downgrading swaps clips instead of re-cutting scenes. Generating two extra covers costs 10–20% of a shot; re-shooting a version costs 80–100%.
+- **Format:** 80–100 episodes × 60–90 seconds, 10–25 shots per episode.
+
+---
+
+## Documentation
+
+The design docs are the specification this code is written against. They are rendered to a browsable site — open **[`docs/index.html`](docs/index.html)** (dark/light, cross-linked, Mermaid diagrams). Sources live in `docs/_src/`; run `python3 scripts/build-docs.py` after editing, or CI will reject the change.
+
+> Design documents are written in Chinese.
+
+**Read these three first:** [00-overview](docs/00-overview.html) → [01-architecture](docs/01-architecture.html) → [12-roadmap](docs/12-roadmap.html)
+
+| Document | Contents |
 |---|---|
-| [0001](docs/adr/0001-monorepo-and-language-split.md) | Monorepo；语言边界划在「业务 vs 计算」 |
-| [0002](docs/adr/0002-provider-adapter-over-direct-sdk.md) | Provider 适配器而非直连 SDK |
-| [0003](docs/adr/0003-postgres-as-system-of-record.md) | Postgres 为真相源，Redis 仅作队列 |
-| [0004](docs/adr/0004-s3-compatible-storage-from-day-one.md) | 从第一天用 S3 兼容存储 |
-| [0005](docs/adr/0005-remote-gpu-worker-http-contract.md) | GPU worker 用 HTTP 契约而非共享队列 |
-| [0006](docs/adr/0006-comfyui-over-diffusers.md) | 推理执行层用 ComfyUI 而非 diffusers |
-| [0007](docs/adr/0007-bullmq-over-temporal.md) | 编排留在 BullMQ，写明 Temporal 迁移触发条件 |
-| [0008](docs/adr/0008-character-asset-separation.md) | 角色资产按 face / body / wardrobe 三路分离 |
-| [0009](docs/adr/0009-modular-monolith-not-microservices.md) | 模块化单体 + 无状态计算 worker，不上微服务 |
-| [0010](docs/adr/0010-http-over-grpc.md) | 跨进程用 HTTP/JSON 而非 gRPC |
-| [0011](docs/adr/0011-drizzle-over-alternatives.md) | 数据层用 Drizzle，裸 SQL 校验留给 SafeQL |
+| [00-overview](docs/00-overview.html) | Scope, eight design constraints, glossary |
+| [01-architecture](docs/01-architecture.html) | Three planes, process topology, module boundaries |
+| [02-data-model](docs/02-data-model.html) | Schema, status enums, Generation Ledger |
+| [03-pipeline](docs/03-pipeline.html) | Eight stages, shot state machine, eval tiers, continuity |
+| [04-provider-adapter](docs/04-provider-adapter.html) | Provider contract, capabilities, router |
+| [05-job-orchestration](docs/05-job-orchestration.html) | Queues, concurrency, polling, retries, accounting, recovery |
+| [06-api-spec](docs/06-api-spec.html) | Control plane REST + SSE |
+| [07-design-system](docs/07-design-system.html) | Tokens, components, interaction, accessibility |
+| [08-screen-specs](docs/08-screen-specs.html) | Seven screens, layout and behaviour |
+| [09-python-worker](docs/09-python-worker.html) | Worker Contract, model selection, remote GPU |
+| [10-media-storage](docs/10-media-storage.html) | S3, FFmpeg, TTS, HLS, capacity |
+| [11-dev-setup](docs/11-dev-setup.html) | Environment, variables, troubleshooting |
+| [12-roadmap](docs/12-roadmap.html) | M0–M6 milestones and acceptance criteria |
+| [13-character-assets](docs/13-character-assets.html) | Three-way asset separation, prompt strategy |
 
-## 里程碑
+### Architecture decisions
 
-| | 目标 | 关键验收 |
+Each ADR records the alternatives rejected and — where relevant — the conditions under which the decision should be revisited.
+
+| ADR | Decision |
+|---|---|
+| [0001](docs/adr/0001-monorepo-and-language-split.md) | Monorepo; language boundary at business vs. computation |
+| [0002](docs/adr/0002-provider-adapter-over-direct-sdk.md) | Provider adapter, never a direct SDK |
+| [0003](docs/adr/0003-postgres-as-system-of-record.md) | Postgres is the system of record; Redis is only a queue |
+| [0004](docs/adr/0004-s3-compatible-storage-from-day-one.md) | S3-compatible storage from day one |
+| [0005](docs/adr/0005-remote-gpu-worker-http-contract.md) | GPU workers speak HTTP, not a shared queue |
+| [0006](docs/adr/0006-comfyui-over-diffusers.md) | ComfyUI as the inference executor, not diffusers |
+| [0007](docs/adr/0007-bullmq-over-temporal.md) | Stay on BullMQ; explicit triggers for migrating to Temporal |
+| [0008](docs/adr/0008-character-asset-separation.md) | Character assets split into face / body / wardrobe |
+| [0009](docs/adr/0009-modular-monolith-not-microservices.md) | Modular monolith plus stateless compute workers |
+| [0010](docs/adr/0010-http-over-grpc.md) | HTTP/JSON across processes, not gRPC |
+| [0011](docs/adr/0011-drizzle-over-alternatives.md) | Drizzle for the data layer; SafeQL deferred to M1 |
+
+---
+
+## Roadmap
+
+| | Goal | Key acceptance |
 |---|---|---|
-| **M0** | 骨架跑通（假生成、真流程） | 无 GPU 无 key，5 分钟跑通全链路 |
-| **M1** | 接入云 API | 成本可见，dryRun 预估误差 <20% |
-| **M2** | 远程 GPU 自部署 | 云 API 与自部署同口径成本对比 |
-| **M3** | 音频与成片 | 一集（10–25 镜）带配音字幕成片，改一镜重渲染 <30s |
-| **M4** | 素材产线（曝光优先） | 一键产出 L2/L1/L0 三版；自动切出 ≥40 条钩子概念 |
-| **M5** | 端到端闭环 | 连续 5 集角色一致性可接受 |
-| **M6** | 质量与成本优化 | 每可用镜头成本下降 ≥20% |
+| **M0** ✅ | Skeleton — fake generation, real pipeline | Clean clone runs end to end with no GPU and no keys |
+| **M1** | First cloud provider | Cost visible; dry-run estimate within 20% of actual |
+| **M2** | Self-hosted GPU worker | Cloud vs. self-hosted compared on identical accounting |
+| **M3** | Audio and masters | Clean master + M&E stems; single-shot re-render under 30 s |
+| **M4** | Promo pipeline *(deliberately ahead of the player)* | One-click L2/L1/L0; ≥40 hook concepts extracted |
+| **M5** | End-to-end loop | Character consistency holds across 5 consecutive episodes |
+| **M6** | Quality and cost | Cost per usable shot down ≥20% via routing |
 
-## 本阶段明确不做
+**Deliberately out of scope this phase:** payments, multi-tenancy, CDN distribution, content-moderation gates, mobile apps, Kubernetes. The data model reserves fields and hooks for these; none are implemented.
 
-支付与订阅、多用户、CDN 分发、内容审核闸门、移动 App、Kubernetes。数据模型里留了字段和钩子（见 `02-data-model.md` §10），但不实现。
+---
+
+## Contributing
+
+CI runs two independent chains. Every check must pass before merge.
+
+```
+docs   ───────────────────────────────────────────  doc site is in sync with source
+python ───────────────────────────────────────────  ruff · format · mypy strict · pytest
+
+contracts → format → lint → typecheck → test → db → integration
+```
+
+Cheap checks fail first; the expensive ones (real containers, real migrations, real queues) run last. Failure attribution is visible in the job graph rather than buried in a log.
+
+Two rules worth knowing before you open a PR:
+
+- **Generated output is committed and verified.** `docs/*.html` and `packages/contracts/generated/` are checked for drift. Change the source without regenerating and CI rejects it.
+- **`as any`, `as never`, and `as unknown as T` are lint errors.** They exist to silence the type checker, and the type checker is usually right. This rule was added after one of them caused a delete statement to silently match zero rows.

@@ -114,7 +114,8 @@ cp .env.example .env                    # 默认即 mock provider，无需任何
 docker compose -f infra/docker-compose.yml up -d
 pnpm db:migrate
 pnpm db:seed                            # demo project：1 集 / 12 镜 / 2 角色
-pnpm dev                                # 并行起 web:3000 + control:4000 + worker
+pnpm build                              # control 跑 dist，dev 前先构建一次
+pnpm dev                                # 并行起 web:3000 + control:4000 + 队列 worker
 </code></pre></div>
 <p>打开 <code>http://localhost:3000</code>，进入 demo 项目 → 分镜页 → 「生成整集」→ 十几秒后就能看到 mock 视频填充进卡片，走完 review → timeline → 渲染 → 播放的全链路。</p>
 <p><strong>这一步跑通是 M0 的验收标准。</strong> 它证明状态机、队列、SSE、存储、渲染这条主干是通的，而这一切都不需要 GPU 或云账号。</p>
