@@ -17,7 +17,7 @@ import { inFlight, release, reset, tryAcquire } from './semaphore.js'
  * 所以它必须打真实依赖，不能 mock 掉。
  */
 
-const DB_URL = process.env['DATABASE_URL'] ?? 'postgresql://drama:drama@localhost:5433/drama'
+const DB_URL = process.env['DATABASE_URL'] ?? 'postgresql://drama:drama@localhost:5432/drama'
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379'
 
 const { db, client } = createDb(DB_URL, 3)
