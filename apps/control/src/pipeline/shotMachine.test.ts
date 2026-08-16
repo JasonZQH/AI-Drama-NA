@@ -112,7 +112,13 @@ describe('重试降级（05-job-orchestration.md §5）', () => {
     expect(r.ok && r.next).toBe('failed')
   })
 
-  const NON_RETRYABLE: FailureCode[] = ['content_filtered', 'quota_exceeded', 'invalid_output']
+  const NON_RETRYABLE: FailureCode[] = [
+    'content_filtered',
+    'quota_exceeded',
+    'invalid_output',
+    // 提交结果未知：自动重投可能是第二次付费，必须停下来等人
+    'submit_unknown',
+  ]
   it.each(NON_RETRYABLE)('%s 直接 failed，不管还剩几次重试——重试它们只会烧配额', (code) => {
     const r = transition(shot('generating', { attemptCount: 0 }), { type: 'attempt.failed', code }, CTX)
     expect(r.ok && r.next).toBe('failed')

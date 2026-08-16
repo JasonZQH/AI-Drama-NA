@@ -111,6 +111,16 @@ const FAILURE: Record<string, { retryable: boolean; why: string; next: string }>
     why: '产物不符合契约——适配器 bug 或该模型能力不匹配，重试无用。',
     next: '换 provider 生成；同时这是需要修代码的信号。',
   },
+  /**
+   * 这一条的措辞是全表最要紧的：**它是唯一一个「可能已经计费」的失败码**。
+   * 缺了它会落到兜底文案「先看详情，再决定重试还是改 Intent」——把
+   * 「钱可能已经花了、别急着重来」显示成「大概可以重试」，正好说反。
+   */
+  submit_unknown: {
+    retryable: false,
+    why: '提交请求已发出，但没收到回应——可能已经计费，也可能根本没送到。系统故意停在这里，不替你自动再花一次钱。',
+    next: '先到 provider 后台核对这笔有没有产生账单，确认没有再点「重新发起」。',
+  },
 }
 
 interface Props {

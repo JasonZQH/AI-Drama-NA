@@ -46,7 +46,8 @@
       "download_failed",
       "eval_rejected",
       "invalid_output",
-      "cancelled"
+      "cancelled",
+      "submit_unknown"
     ],
     "GenMode": [
       "t2v",

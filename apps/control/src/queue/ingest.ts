@@ -1,4 +1,5 @@
-import { eq } from 'drizzle-orm'
+import { TERMINAL_JOB_STATUSES } from '@ai-drama/contracts'
+import { and, eq, notInArray } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
@@ -38,6 +39,8 @@ export interface IngestResult {
   readonly assetId: string
   readonly takeId: string
   readonly deduped: boolean
+  /** false = 这条 ingest 迟到了，job 已经结算过，状态机未被推进（见下方终态守卫） */
+  readonly settled: boolean
 }
 
 export async function handleIngest(deps: IngestDeps, input: IngestInput): Promise<IngestResult> {
@@ -78,14 +81,31 @@ export async function handleIngest(deps: IngestDeps, input: IngestInput): Promis
     })
     .returning({ id: s.takes.id })
 
-  await deps.db
+  /*
+   * 终态守卫，与 handlePoll 开头那道同源。
+   *
+   * 一条迟到的 ingest（重复轮询链、reconcile 恢复出来的旧链）会把一个已经判
+   * failed 的行改写成 succeeded，而 failure_code 还留在行上——Ledger 里出现
+   * 自相矛盾的一行，并被 stats 计进 usdPerAcceptedMicro 的分母。
+   *
+   * take 与 asset 已经建好，**不回滚**：字节已经在 MinIO 里、钱已经花过，
+   * 系统永不自动销毁已经花钱生成的东西（03-pipeline.md §7）。只是不再推状态机——
+   * 镜头已经走到别处，硬推只会被状态机拒掉并留下一个没人看的孤儿 take。
+   */
+  const settled = await deps.db
     .update(s.generationJobs)
     .set({ status: 'succeeded', accepted: true, finishedAt: new Date() })
-    .where(eq(s.generationJobs.id, input.generationJobId))
+    .where(
+      and(
+        eq(s.generationJobs.id, input.generationJobId),
+        notInArray(s.generationJobs.status, [...TERMINAL_JOB_STATUSES]),
+      ),
+    )
+    .returning({ id: s.generationJobs.id })
 
-  await deps.onTakeAccepted?.(input.shotId, take!.id)
+  if (settled.length > 0) await deps.onTakeAccepted?.(input.shotId, take!.id)
 
-  return { assetId, takeId: take!.id, deduped: existing !== undefined }
+  return { assetId, takeId: take!.id, deduped: existing !== undefined, settled: settled.length > 0 }
 }
 
 /** mock provider 返回的是本地 fixture 路径；真 provider 返回 http(s) URL */

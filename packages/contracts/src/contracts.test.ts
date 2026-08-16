@@ -3,7 +3,7 @@ import {
   ContentTier,
   FailureCode,
   GenerationRequest,
-  NON_RETRYABLE,
+  RETRYABLE,
   ShotIntent,
   StudioEvent,
   isRetryable,
@@ -12,20 +12,36 @@ import {
 const UUID = '00000000-0000-4000-8000-000000000000'
 
 describe('重试分类（05-job-orchestration.md §5.3）', () => {
-  it('三种失败不可重试——重试它们只会烧配额或掩盖 bug', () => {
+  it('四种失败不可重试——重试它们只会烧配额、掩盖 bug、或重复计费', () => {
     expect(isRetryable('content_filtered')).toBe(false)
     expect(isRetryable('quota_exceeded')).toBe(false)
     expect(isRetryable('invalid_output')).toBe(false)
+    // 提交结果未知时自动重投 = 可能的二次计费，必须停下来交给人
+    expect(isRetryable('submit_unknown')).toBe(false)
   })
 
-  it('其余失败可重试', () => {
-    const retryable = FailureCode.options.filter((c) => !NON_RETRYABLE.includes(c))
-    expect(retryable).toEqual(['provider_error', 'timeout', 'download_failed', 'eval_rejected', 'cancelled'])
-    for (const c of retryable) expect(isRetryable(c)).toBe(true)
+  it('可重试名单是白名单，逐条列全', () => {
+    expect([...RETRYABLE]).toEqual([
+      'provider_error',
+      'timeout',
+      'download_failed',
+      'eval_rejected',
+      'cancelled',
+    ])
+    for (const c of RETRYABLE) expect(isRetryable(c)).toBe(true)
   })
 
-  it('分类覆盖全部失败码，没有漏网的', () => {
-    for (const c of FailureCode.options) expect(typeof isRetryable(c)).toBe('boolean')
+  /**
+   * 这条是这组测试里唯一真正防退化的一条。
+   *
+   * 白名单的意义在于「新加的码默认不重试」，而不是「名单碰巧是对的」。
+   * 上一版这里写的是 `options.filter(c => !NON_RETRYABLE.includes(c))`——
+   * 它跟着黑名单一起变，任何新码加进来都自动被断言成可重试，等于没测。
+   */
+  it('白名单之外的码一律不可重试，加新码不会默认变成花钱', () => {
+    for (const c of FailureCode.options) {
+      expect(isRetryable(c)).toBe(RETRYABLE.includes(c))
+    }
   })
 })
 

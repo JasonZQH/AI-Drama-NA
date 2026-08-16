@@ -419,6 +419,7 @@ export const Transition     = z.enum(['cut','dissolve','fade_black','whip'])
 export const FailureCode    = z.enum([
   'provider_error','timeout','content_filtered','quota_exceeded',
   'download_failed','eval_rejected','invalid_output','cancelled',
+  'submit_unknown',   // 提交已发出但结果未知——可能已计费，见 05 §5.3
 ])
 </code></pre></div>
 <h2 id="8.5-素材层hook_concepts-与-renders">8.5 素材层：<code>hook_concepts</code> 与 <code>renders</code><a aria-label="链接到此节" class="anchor" href="#8.5-素材层hook_concepts-与-renders">#</a></h2>

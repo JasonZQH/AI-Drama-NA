@@ -86,6 +86,22 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
   })
 
   /**
+   * 把判死的镜头拉回 ready。
+   *
+   * `failed` 是终态，状态机只接受 `manual.reset` / `intent.edited` 两个事件把它
+   * 唤醒（pipeline/shotMachine.ts），而在这条路由之前**没有任何接口发得出它们**——
+   * 于是「失败」在产品上等于「只能开 psql 手改」。
+   *
+   * 这条路由是 `submit_unknown` 能存在的前提：提交结果未知时系统故意停下来
+   * 不自动重投（绝不自动付第二次钱），代价是必须给人一个一键继续的出口。
+   */
+  app.post('/api/shots/:id/reset', async (req) => {
+    const { id } = Uuid.parse(req.params)
+    const r = await applyTransition(deps, id, { type: 'manual.reset' })
+    return { shotId: id, status: r.next }
+  })
+
+  /**
    * 「生成整集」。**dryRun 是必须先用的**——它把「这批要花多少钱、有几个镜头
    * 会被依赖阻塞」先算出来，UI 的确认弹窗就靠它（06 §4）。
    */

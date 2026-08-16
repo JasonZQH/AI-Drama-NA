@@ -208,7 +208,8 @@
             "download_failed",
             "eval_rejected",
             "invalid_output",
-            "cancelled"
+            "cancelled",
+            "submit_unknown"
           ]
         },
         "message": {
@@ -902,7 +903,8 @@
                 "download_failed",
                 "eval_rejected",
                 "invalid_output",
-                "cancelled"
+                "cancelled",
+                "submit_unknown"
               ]
             },
             "message": {

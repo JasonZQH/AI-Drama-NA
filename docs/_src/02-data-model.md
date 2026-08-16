@@ -399,6 +399,7 @@ export const Transition     = z.enum(['cut','dissolve','fade_black','whip'])
 export const FailureCode    = z.enum([
   'provider_error','timeout','content_filtered','quota_exceeded',
   'download_failed','eval_rejected','invalid_output','cancelled',
+  'submit_unknown',   // 提交已发出但结果未知——可能已计费，见 05 §5.3
 ])
 ```
 

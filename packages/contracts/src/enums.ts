@@ -31,6 +31,20 @@ export const JobStatus = z.enum([
 export type JobStatus = z.infer<typeof JobStatus>
 
 /**
+ * 已结算的任务状态：到这里就不该再被任何迟到的队列条目改写。
+ *
+ * 同一个 job 可以有不止一条轮询链（reconcileOnBoot 会为非终态行再加一条，
+ * 而旧链是自重排的、不会自己消失）。没有这道守卫，后到的那条会把已经判
+ * failed 的行改回 running 再写成 succeeded，留下一行「既成功又带失败码」的
+ * 记录——而 Ledger 的全部价值就在于它不说谎（约束 C4）。
+ */
+export const TERMINAL_JOB_STATUSES: readonly JobStatus[] = ['succeeded', 'failed', 'cancelled'] as const
+
+export function isTerminalJobStatus(status: string): boolean {
+  return (TERMINAL_JOB_STATUSES as readonly string[]).includes(status)
+}
+
+/**
  * 取值在文档中从未出现过，此处为最小可用定义。见 issue #4。
  * 若与实际发行流程不符，改这里即可——它还没有被任何业务逻辑依赖。
  */
@@ -96,21 +110,35 @@ export const FailureCode = z.enum([
   'eval_rejected',
   'invalid_output',
   'cancelled',
+  /**
+   * 提交请求已发出，但结果未知——连接在响应途中断掉、或进程死在 submit 与记账之间。
+   *
+   * 与其他所有码的区别：**我们不知道钱花没花**。OpenRouter 的 POST /api/v1/videos
+   * 没有幂等键（04-provider-adapter.md §5），所以既问不出来也不能安全重放。
+   * 唯一正确的动作是停下来交给人，故它必须留在 RETRYABLE 之外。
+   */
+  'submit_unknown',
 ])
 export type FailureCode = z.infer<typeof FailureCode>
 
 /**
- * 不可重试的失败码（05-job-orchestration.md §5.3）。
- * content_filtered：同 prompt 必然再被拒，重试纯烧配额。
- * quota_exceeded：重试加剧问题，应暂停该 provider 并告警。
- * invalid_output：适配器 bug 或能力不匹配，重试无用，需修代码。
+ * **可重试**的失败码（05-job-orchestration.md §5.3）。
+ *
+ * 这里是白名单而不是黑名单，方向是刻意的：`isRetryable` 的返回值直接决定
+ * `afterFailure` 会不会自动开下一次 attempt，而下一次 attempt 就是下一笔钱。
+ * 黑名单的默认值是「花钱」——将来任何人加一个新失败码而忘了同步名单，
+ * 系统就会替他自动重投。白名单的默认值是「停下来等人」，错的方向便宜得多。
+ *
+ * 名单本身与改成白名单之前完全一致，这次没有改变任何现有码的行为。
  */
-export const NON_RETRYABLE: readonly FailureCode[] = [
-  'content_filtered',
-  'quota_exceeded',
-  'invalid_output',
+export const RETRYABLE: readonly FailureCode[] = [
+  'provider_error', // 多为临时故障
+  'timeout', // provider 未按时返回
+  'download_failed', // 产物已生成，只是没搬回来
+  'eval_rejected', // 换 seed 或参数有机会过
+  'cancelled', // 人工取消后可再次发起
 ] as const
 
 export function isRetryable(code: FailureCode): boolean {
-  return !NON_RETRYABLE.includes(code)
+  return RETRYABLE.includes(code)
 }

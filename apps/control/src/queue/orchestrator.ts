@@ -1,5 +1,6 @@
 import type { GenerationRequest, ProviderProgress, StudioEvent, VideoProvider } from '@ai-drama/contracts'
-import { eq, inArray } from 'drizzle-orm'
+import { TERMINAL_JOB_STATUSES, isTerminalJobStatus } from '@ai-drama/contracts'
+import { and, eq, inArray, isNull, notInArray } from 'drizzle-orm'
 import type IORedis from 'ioredis'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
@@ -31,6 +32,47 @@ export interface OrchestratorDeps {
 }
 
 export const PROVIDER_TIMEOUT_MS = 15 * 60 * 1000
+
+/**
+ * 认领悬空多久才判定为「提交期间进程死了」。
+ *
+ * 远大于一次 POST 的 RTT，又远小于人的耐心。判早了会把一个还活着的提交
+ * 误判成悬空；判晚了镜头多卡一会儿——两害相权，误判的代价是重复计费，所以宁可判晚。
+ * ponytail: 常量即校准旋钮。真 provider 的 submit p99 有数据后按实测调，别拍脑袋调小。
+ */
+export const CLAIM_STALE_MS = 10 * 60 * 1000
+
+/**
+ * 提交认领——本 PR 的全部要点。
+ *
+ * 把「这一行的花钱许可证」写进 Postgres，而不是靠「队列里至多一个条目」。
+ * 后者做不到：orchestrator 的信号量重排本来就会 re-add 同一个 generationJobId，
+ * reconcileOnBoot 也会在 worker 仍持有条目时再加一条，而 add() 没有去重。
+ *
+ * 单条 `UPDATE ... WHERE` 在 READ COMMITTED 下天然原子：并发的第二个认领者
+ * 阻塞在行锁上，锁释放后重新求值 WHERE，此时 started_at 已非空，匹配 0 行。
+ * 不需要显式事务、不需要 SELECT FOR UPDATE、不需要 advisory lock。
+ *
+ * 用已有的 started_at 列而不是新加一列：它此前的语义是「provider 受理的时刻」，
+ * 前移一个 RTT 变成「我们开始提交的时刻」——这才是 job 表里 started_at 的通常
+ * 含义，且唯一的消费者（reconcile 回填给 poll 的 submittedAt）只会让 15 分钟的
+ * 超时判定早几秒触发。
+ */
+export async function claimForSubmit(db: Db, jobId: string): Promise<boolean> {
+  const rows = await db
+    .update(s.generationJobs)
+    .set({ startedAt: new Date() })
+    .where(
+      and(
+        eq(s.generationJobs.id, jobId),
+        eq(s.generationJobs.status, 'queued'),
+        isNull(s.generationJobs.startedAt),
+        isNull(s.generationJobs.providerJobRef),
+      ),
+    )
+    .returning({ id: s.generationJobs.id })
+  return rows.length === 1
+}
 
 /**
  * 进度 → SSE。
@@ -111,10 +153,30 @@ export async function handleGenerate(
       return 'skipped'
     }
 
-    const handle = await provider.submit(req)
+    // 认领在 validate 之后、submit 之前。拿不到就闭嘴走人——别人已经在花这笔钱了
+    if (!(await claimForSubmit(deps.db, job.id))) return 'skipped'
+
+    let handle
+    try {
+      handle = await provider.submit(req)
+    } catch (e) {
+      /*
+       * 抛出时我们**分不清**「请求根本没发出去」和「发出去了但响应丢了」。
+       * OpenRouter 的 POST 没有幂等键，所以既问不出来、也不能安全重放。
+       *
+       * 于是不释放认领，走一条不可重试的码停下来交给人（配 POST /shots/:id/reset）。
+       * 代价是一次 ECONNREFUSED 也要人点一下；收益是绝不会自动付第二次钱。
+       * 这个方向的错误便宜得多——真 provider 的第一笔重复扣费是查不回来的。
+       * ponytail: 一刀切保守。等适配器能抛出带「请求是否已发出」的类型化错误再放宽。
+       */
+      await fail(deps, job.id, 'submit_unknown', `提交结果未知，本行不再重投：${String(e)}`)
+      return 'skipped'
+    }
+
     await deps.db
       .update(s.generationJobs)
-      .set({ status: 'submitted', providerJobRef: handle.externalId, startedAt: new Date() })
+      // startedAt 不再在这里写——它已经是上面那次认领的时刻
+      .set({ status: 'submitted', providerJobRef: handle.externalId })
       .where(eq(s.generationJobs.id, job.id))
 
     await enqueuePoll(deps, job.id, provider.id, handle.externalId, handle.submittedAt)
@@ -175,7 +237,26 @@ export async function handlePoll(
     submittedAt: number
     pollCount: number
   },
-): Promise<'running' | 'succeeded' | 'failed' | 'timeout'> {
+): Promise<'running' | 'succeeded' | 'failed' | 'timeout' | 'skipped'> {
+  /*
+   * 终态守卫：这一行已经结算过了就别再碰。
+   *
+   * 同一个 job 可以有不止一条轮询链——reconcileOnBoot 无条件为每个有
+   * providerJobRef 的非终态行再 add 一条，而旧链是自重排的、不会自己消失。
+   * 两条链先后越过超时判定时，后到的那条会把已经判 failed 的行改回 running，
+   * 再一路写成 succeeded + accepted=true，而 failure_code 还留在行上——
+   * Ledger 里就出现一行「既成功又失败」的自相矛盾记录，且被计入
+   * usdPerAcceptedMicro 的分母（routes/stats.ts）。C4 那张表的价值全在于它不说谎。
+   *
+   * 一次 select 关掉下面所有写入口，比在三处 UPDATE 各挂一个谓词好懂。
+   */
+  const [current] = await deps.db
+    .select({ status: s.generationJobs.status })
+    .from(s.generationJobs)
+    .where(eq(s.generationJobs.id, data.generationJobId))
+  if (!current) return 'skipped'
+  if (isTerminalJobStatus(current.status)) return 'skipped'
+
   const provider = providerOf(deps, data.providerId)
   const handle = { providerId: data.providerId, externalId: data.externalId, submittedAt: data.submittedAt }
 
@@ -281,7 +362,14 @@ async function fail(
     .from(s.generationJobs)
     .where(eq(s.generationJobs.id, generationJobId))
 
-  await deps.db
+  /*
+   * 判死是**幂等**的：只有从非终态翻过去的那一次才推状态机。
+   *
+   * 没有这个守卫时，两条轮询链先后超时会各调一次 fail()，而每一次 fail() 都
+   * 可能让状态机开一个新 attempt——一次真实超时能烧掉两三笔钱，并把
+   * maxAttempts 提前耗光。行级认领对此完全无能为力，因为每一笔都是新行。
+   */
+  const claimed = await deps.db
     .update(s.generationJobs)
     .set({
       status: 'failed',
@@ -290,7 +378,14 @@ async function fail(
       finishedAt: new Date(),
       accepted: false,
     })
-    .where(eq(s.generationJobs.id, generationJobId))
+    .where(
+      and(
+        eq(s.generationJobs.id, generationJobId),
+        notInArray(s.generationJobs.status, [...TERMINAL_JOB_STATUSES]),
+      ),
+    )
+    .returning({ id: s.generationJobs.id })
+  if (claimed.length === 0) return
 
   if (!job) return
   const tdeps = {
@@ -314,7 +409,7 @@ async function fail(
  */
 export async function reconcileOnBoot(
   deps: OrchestratorDeps,
-): Promise<{ requeued: number; resumed: number }> {
+): Promise<{ requeued: number; resumed: number; inFlight: number; inDoubt: number }> {
   const stuck = await deps.db
     .select()
     .from(s.generationJobs)
@@ -322,21 +417,45 @@ export async function reconcileOnBoot(
 
   let requeued = 0
   let resumed = 0
+  let inFlight = 0
+  let inDoubt = 0
 
   for (const job of stuck) {
-    if (!job.providerJobRef) {
-      await deps.queues.generate.add('generate', { generationJobId: job.id, shotId: job.shotId })
-      requeued++
-    } else {
-      await deps.queues.poll.add('poll', {
-        generationJobId: job.id,
-        providerId: job.providerId,
-        externalId: job.providerJobRef,
-        submittedAt: job.startedAt?.getTime() ?? Date.now(),
-        pollCount: 0,
-      })
-      resumed++
+    /*
+     * 每行单独 try：这个函数跑在 app.listen 之前（server.ts）。加了写操作之后，
+     * 一行历史坏数据不该让整个控制面起不来。
+     */
+    try {
+      if (job.providerJobRef) {
+        await deps.queues.poll.add('poll', {
+          generationJobId: job.id,
+          providerId: job.providerId,
+          externalId: job.providerJobRef,
+          submittedAt: job.startedAt?.getTime() ?? Date.now(),
+          pollCount: 0,
+        })
+        resumed++
+      } else if (!job.startedAt) {
+        // 从未认领过，重新提交是安全的
+        await deps.queues.generate.add('generate', { generationJobId: job.id, shotId: job.shotId })
+        requeued++
+      } else if (Date.now() - job.startedAt.getTime() < CLAIM_STALE_MS) {
+        // 认领了但还没记账，且很新——多半有个 worker 正在 submit 里。别碰
+        inFlight++
+      } else {
+        /*
+         * 认领悬空：提交期间进程没了，**钱花没花不知道**。
+         *
+         * 重新入队等于可能付第二次；就这么留着等于镜头永远卡在 generating。
+         * 两者之间选「停下来交给人」——submit_unknown 不可重试，人在面板上
+         * 看到解释后用 POST /api/shots/:id/reset 决定要不要再来一次。
+         */
+        await fail(deps, job.id, 'submit_unknown', '提交期间进程中断，是否已计费未知，需人工确认')
+        inDoubt++
+      }
+    } catch (e) {
+      console.error(`[reconcile] job ${job.id} 处理失败，跳过：`, e instanceof Error ? e.message : e)
     }
   }
-  return { requeued, resumed }
+  return { requeued, resumed, inFlight, inDoubt }
 }
