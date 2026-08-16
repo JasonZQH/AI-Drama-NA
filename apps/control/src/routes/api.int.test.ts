@@ -59,7 +59,9 @@ beforeAll(async () => {
   projectId = p.id
   const [ep] = await db.select().from(s.episodes).where(eq(s.episodes.projectId, projectId)).limit(1)
   episodeId = ep!.id
-  const [sh] = await db.select().from(s.shots).limit(1)
+  // 必须 ORDER BY：不加的话 Postgres 返回顺序不确定，会与并发/后续的测试
+  // 文件抢同一个镜头，表现为「有时过有时不过」
+  const [sh] = await db.select().from(s.shots).orderBy(s.shots.index).limit(1)
   shotId = sh!.id
 
   await cleanup()
@@ -77,7 +79,18 @@ async function cleanup(): Promise<void> {
     await db.delete(s.takes).where(inArray(s.takes.jobId, ids))
     await db.delete(s.generationJobs).where(inArray(s.generationJobs.id, ids))
   }
-  // 把镜头拨回 ready，让每轮从同一起点开始
+  // 本文件走真实端点，创建的是自然 attempt（1、2…），不落在保留号段里，
+  // 所以要按 shot 清而不是按号段清——否则下一轮重放 attempt=1 会撞唯一约束
+  const mine = await db
+    .select({ id: s.generationJobs.id })
+    .from(s.generationJobs)
+    .where(eq(s.generationJobs.shotId, shotId))
+  if (mine.length > 0) {
+    const ids = mine.map((r) => r.id)
+    await db.delete(s.takes).where(inArray(s.takes.jobId, ids))
+    await db.delete(s.generationJobs).where(inArray(s.generationJobs.id, ids))
+  }
+
   await db.update(s.shots).set({ status: 'ready', selectedTakeId: null, attemptCount: 0 })
   await queues.generate.drain(true)
 }

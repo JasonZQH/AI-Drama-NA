@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lt } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
 import * as s from '../db/schema.js'
@@ -44,7 +44,8 @@ const TEST_ATTEMPT_MAX = 1000
 
 beforeAll(async () => {
   // 复用 seed 出来的 demo 项目，不自己造数据——夹具漂移了测试要能发现
-  const [shot] = await db.select({ id: s.shots.id }).from(s.shots).limit(1)
+  // 取最后一个镜头，与 api.int.test.ts（取第一个）错开，避免共享真实数据库时互相干扰
+  const [shot] = await db.select({ id: s.shots.id }).from(s.shots).orderBy(desc(s.shots.index)).limit(1)
   if (!shot) throw new Error('库里没有 shot，先跑 pnpm db:seed')
   shotId = shot.id
   const [p] = await db.select({ id: s.projects.id }).from(s.projects).limit(1)
