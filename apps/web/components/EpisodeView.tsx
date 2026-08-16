@@ -2,7 +2,7 @@
 
 import { ConfirmSpend } from '@/components/ConfirmSpend'
 import { ShotDrawer } from '@/components/ShotDrawer'
-import { ShotGrid, type SceneGroup, type ShotEntry } from '@/components/ShotGrid'
+import { ShotGrid, type SceneGroup, type ShotEntry, type ShotProgress } from '@/components/ShotGrid'
 import { statusColor } from '@/components/StatusPill'
 import { api, type DryRunPlan, type EpisodeTree } from '@/lib/api'
 import { useStudioEvent } from '@/lib/events'
@@ -45,7 +45,7 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
   const [plan, setPlan] = useState<DryRunPlan | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [progress, setProgress] = useState<Record<string, { pct: number; etaMs?: number }>>({})
+  const [progress, setProgress] = useState<Record<string, ShotProgress>>({})
 
   const load = useCallback(async () => {
     try {
@@ -97,7 +97,14 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
   useStudioEvent((e) => {
     if (e.type === 'job.progress') {
       if (!shotIds.has(e.shotId)) return
-      setProgress((p) => ({ ...p, [e.shotId]: { pct: e.pct, ...(e.etaMs ? { etaMs: e.etaMs } : {}) } }))
+      setProgress((p) => ({
+        ...p,
+        [e.shotId]: {
+          pct: e.pct,
+          ...(e.etaMs ? { etaMs: e.etaMs } : {}),
+          ...(e.stage ? { stage: e.stage } : {}),
+        },
+      }))
     } else if (e.type === 'shot.status' || e.type === 'take.created') {
       if (!shotIds.has(e.shotId)) return
       // 状态跃迁了就清掉这一镜的进度条——它已经不在生成中

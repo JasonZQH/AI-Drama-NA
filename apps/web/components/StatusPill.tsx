@@ -105,11 +105,36 @@ export function StatusPill({
 }
 
 /**
+ * 生成阶段（contracts 的 `GenStage`，源头是 ComfyUI 的进度事件）。
+ *
+ * **`loading_model` 是这张表存在的理由。** 首次加载 14B 权重要 60–90 秒，
+ * 期间百分比一直是 0；只画一条不动的进度条，用户读到的是「挂了」，
+ * 于是去点重试，而重试会把模型再加载一遍。
+ */
+const STAGE: Record<string, string> = {
+  queued: '排队中',
+  loading_model: '加载模型',
+  denoising: '生成中',
+  decoding: '解码',
+  uploading: '上传',
+}
+
+/**
  * 进度条。优先 determinate——任何超过 2 秒的操作都必须有真实进度，
  * 转圈在这里等于「系统卡死」（§2 R1）。
  */
-export function Progress({ pct, etaMs }: { pct?: number; etaMs?: number }): React.ReactElement {
+export function Progress({
+  pct,
+  etaMs,
+  stage,
+}: {
+  pct?: number
+  etaMs?: number
+  stage?: string
+}): React.ReactElement {
   const determinate = pct !== undefined
+  // 0% 配阶段文字才说得清「在忙什么」；没有阶段时才退回纯百分比
+  const label = stage ? (STAGE[stage] ?? stage) : determinate ? `${Math.round(pct)}%` : '排队中'
   return (
     <div className="flex items-center gap-2">
       <div className="h-1 flex-1 overflow-hidden rounded-sm" style={{ background: 'var(--bg-inset)' }}>
@@ -121,8 +146,9 @@ export function Progress({ pct, etaMs }: { pct?: number; etaMs?: number }): Reac
           }}
         />
       </div>
-      <span className="tnum text-[11px]" style={{ color: 'var(--text-muted)' }}>
-        {determinate ? `${Math.round(pct)}%` : '排队中'}
+      <span className="tnum shrink-0 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+        {label}
+        {stage && determinate && ` ${Math.round(pct)}%`}
         {etaMs !== undefined && etaMs > 0 && ` · 约 ${Math.ceil(etaMs / 1000)}s`}
       </span>
     </div>

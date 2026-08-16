@@ -1,6 +1,13 @@
 'use client'
 
 import type { EpisodeTree } from '@/lib/api'
+
+/** 一镜的实时进度。stage 来自 provider（ComfyUI 的 loading_model / denoising / …） */
+export interface ShotProgress {
+  pct: number
+  etaMs?: number
+  stage?: string
+}
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Progress, StatusPill, statusColor } from './StatusPill'
@@ -48,7 +55,7 @@ export function ShotGrid({
   selectedId: string | null
   onSelect: (shotId: string) => void
   /** shotId → 实时进度。R1：超过 2 秒的操作必须有真实进度，不能只转圈 */
-  progress?: Record<string, { pct: number; etaMs?: number }>
+  progress?: Record<string, ShotProgress>
 }): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [width, setWidth] = useState(0)
@@ -157,7 +164,7 @@ function ShotCard({
   entry: ShotEntry
   selected: boolean
   onSelect: (shotId: string) => void
-  progress?: { pct: number; etaMs?: number }
+  progress?: ShotProgress
 }): React.ReactElement {
   const { shot, takeCount, costMicroUsd, mockCostMicroUsd } = entry
   return (
@@ -201,7 +208,11 @@ function ShotCard({
         <div className="mt-0.5 line-clamp-2">{shot.action}</div>
         {progress && (
           <div className="mt-2">
-            <Progress pct={progress.pct} {...(progress.etaMs ? { etaMs: progress.etaMs } : {})} />
+            <Progress
+              pct={progress.pct}
+              {...(progress.etaMs ? { etaMs: progress.etaMs } : {})}
+              {...(progress.stage ? { stage: progress.stage } : {})}
+            />
           </div>
         )}
         <div

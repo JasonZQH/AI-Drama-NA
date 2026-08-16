@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { api, usd, type Overview } from '@/lib/api'
-import { EventBusProvider, useEventBus, type StudioEvent } from '@/lib/events'
+import { useEventBus, type StudioEvent } from '@/lib/events'
 import { MockChip } from './Mock'
 
 /**
@@ -14,6 +14,9 @@ import { MockChip } from './Mock'
  *
  * 导航一律走真实路由，项目/分集在**新浏览器标签**打开——所以这里没有应用内
  * 标签栈，也没有 LRU。代价是每个浏览器标签一条 SSE，这是浏览器标签的固有成本。
+ *
+ * SSE 的 provider 在根 layout，不在这里：分集页自己渲染 Shell，provider 放这层
+ * 会让它的 useStudioEvent 落在 context 之上，一条事件也收不到。
  */
 export function Shell({
   nav,
@@ -26,15 +29,13 @@ export function Shell({
   const { connected, subscribe } = useEventBus()
 
   return (
-    <EventBusProvider value={subscribe}>
-      <div className="flex h-screen flex-col overflow-hidden">
-        <TopBar connected={connected} subscribe={subscribe} />
-        <div className="flex min-h-0 flex-1">
-          <Sidebar>{nav}</Sidebar>
-          <main className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</main>
-        </div>
+    <div className="flex h-screen flex-col overflow-hidden">
+      <TopBar connected={connected} subscribe={subscribe} />
+      <div className="flex min-h-0 flex-1">
+        <Sidebar>{nav}</Sidebar>
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</main>
       </div>
-    </EventBusProvider>
+    </div>
   )
 }
 

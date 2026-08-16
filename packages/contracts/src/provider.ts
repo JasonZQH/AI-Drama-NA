@@ -73,10 +73,21 @@ export const ProviderFailure = z.object({
 })
 export type ProviderFailure = z.infer<typeof ProviderFailure>
 
+/**
+ * 生成阶段。对应 Worker Contract 的 `JobState.stage`（09 §2.3）。
+ *
+ * **有它才能解释「0% 停很久」。** ComfyUI 首次加载 14B 模型要 60–90 秒，
+ * 这期间 progressPct 一直是 0——只画进度条的话用户读到的是「挂了」，
+ * 于是去点重试，而重试会把模型再加载一遍。云 provider 给不出阶段就留空。
+ */
+export const GenStage = z.enum(['queued', 'loading_model', 'denoising', 'decoding', 'uploading'])
+export type GenStage = z.infer<typeof GenStage>
+
 export const ProviderProgress = z.object({
   status: z.enum(['submitted', 'running']),
   progressPct: z.number().min(0).max(100).optional(),
   etaMs: z.number().int().nonnegative().optional(),
+  stage: GenStage.optional(),
 })
 export type ProviderProgress = z.infer<typeof ProviderProgress>
 

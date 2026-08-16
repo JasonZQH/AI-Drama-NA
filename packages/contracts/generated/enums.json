@@ -54,6 +54,13 @@
       "ref2v",
       "extend"
     ],
+    "GenStage": [
+      "queued",
+      "loading_model",
+      "denoising",
+      "decoding",
+      "uploading"
+    ],
     "HookType": [
       "betrayal",
       "reveal",
