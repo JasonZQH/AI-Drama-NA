@@ -107,7 +107,7 @@ export const shots = pgTable('shots', {
   action:      text('action').notNull(),                       // 画面里发生什么
   emotion:     text('emotion'),
   dialogue:    text('dialogue'),                               // 本镜台词，驱动 TTS
-  durationSec: numeric('duration_sec', { precision: 4, scale: 1 }).notNull().default('4.0'),
+  durationSec: numeric('duration_sec', { precision: 4, scale: 1 }).notNull().default('4.0'),  // CHECK 0 < x ≤ 10
 
   // ── 一致性引用 ──
   characterIds: uuid('character_ids').array().notNull().default(sql`'{}'`),
@@ -132,6 +132,8 @@ export const shots = pgTable('shots', {
 }, (t) => ({
   sceneIdx:  index('shots_scene_idx').on(t.sceneId, t.index),
   statusIdx: index('shots_status_idx').on(t.status),
+  // 最后一道防线：绕过 zod 直接写库的路径（手写 SQL、迁移脚本）也不许塞进非法时长
+  durationCk: check('shots_duration_ck', sql`${t.durationSec} > 0 AND ${t.durationSec} <= 10`),
 }))
 ```
 
