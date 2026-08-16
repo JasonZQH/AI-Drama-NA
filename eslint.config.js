@@ -73,8 +73,9 @@ export default tseslint.config(
     },
   },
   {
-    // domain/ 必须零 IO，才能被穷举测试而无需起数据库（01-architecture.md §5.1）
-    files: ['apps/control/src/domain/**'],
+    // domain/ 与状态机必须零 IO，才能被穷举测试而无需起数据库（01-architecture.md §5.1）。
+    // shotMachine 在 pipeline/ 下（文档指定的位置），但它自称纯函数——这条得可执行。
+    files: ['apps/control/src/domain/**', 'apps/control/src/pipeline/shotMachine.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
