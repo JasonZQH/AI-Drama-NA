@@ -19,7 +19,8 @@
     "db:migrate": "pnpm --filter @ai-drama/control db:migrate",
     "db:seed": "pnpm --filter @ai-drama/control db:seed",
     "db:reset": "pnpm --filter @ai-drama/control db:reset",
-    "test:int": "vitest run --passWithNoTests --no-file-parallelism int.test.ts"
+    "test:int": "vitest run --passWithNoTests --no-file-parallelism int.test.ts",
+    "dev:worker": "pnpm --filter @ai-drama/control dev:worker"
   },
   "//typescript": "钉在 5.9.x：TS 7.0（原生编译器）已发布，但 typescript-eslint 8.x 的 peer 范围是 >=4.8.4 <6.1.0 且尚无 9.x/10.x。lint 是必过的 CI 门禁，所以先不上 7。等 typescript-eslint 支持后再评估。",
   "devDependencies": {

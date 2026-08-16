@@ -3,6 +3,7 @@ import { eq, inArray } from 'drizzle-orm'
 import type IORedis from 'ioredis'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
+import { applyShotTransition } from '../pipeline/applyTransition.js'
 import { release, tryAcquire } from './semaphore.js'
 import { pollDelayMs, type Queues } from './queues.js'
 
@@ -220,12 +221,26 @@ async function projectOfShot(db: Db, shotId: string): Promise<string> {
   return first.projectId
 }
 
+/**
+ * 失败要做两件事，缺一条流水线就会卡住：
+ * 1. 写 job 的失败记录（Ledger 要留痕，含失败的尝试——约束 C4）
+ * 2. **推进镜头状态机**。曾经漏了这条，撞上失败的镜头永远停在 generating
+ *
+ * 状态机判定还能重试时会回到 ready，这里立刻再发一次 generate.requested，
+ * 由它创建下一个 attempt——这就是 05 §5.2 的「换 seed / 参数 / provider」
+ * 升级路径的驱动点。
+ */
 async function fail(
   deps: OrchestratorDeps,
   generationJobId: string,
-  code: (typeof s.generationJobs.$inferSelect)['failureCode'],
+  code: NonNullable<(typeof s.generationJobs.$inferSelect)['failureCode']>,
   detail: string,
 ): Promise<void> {
+  const [job] = await deps.db
+    .select({ shotId: s.generationJobs.shotId })
+    .from(s.generationJobs)
+    .where(eq(s.generationJobs.id, generationJobId))
+
   await deps.db
     .update(s.generationJobs)
     .set({
@@ -236,6 +251,19 @@ async function fail(
       accepted: false,
     })
     .where(eq(s.generationJobs.id, generationJobId))
+
+  if (!job) return
+  const tdeps = {
+    db: deps.db,
+    queues: deps.queues,
+    providerId: deps.providers[0]?.id ?? 'mock',
+    maxAttempts: deps.maxAttempts,
+  }
+  const r = await applyShotTransition(tdeps, job.shotId, { type: 'attempt.failed', code })
+  // 回到 ready 说明还能重试——立刻创建下一次尝试，不等人来点
+  if (r?.ok && r.next === 'ready') {
+    await applyShotTransition(tdeps, job.shotId, { type: 'generate.requested' })
+  }
 }
 
 /**

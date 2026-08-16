@@ -17,6 +17,11 @@ import { s3Key, type Storage } from '../storage/s3.js'
 export interface IngestDeps {
   readonly db: Db
   readonly storage: Storage
+  /**
+   * 建完 take 后要推进镜头状态机。缺了它整条流水线会停在 generating——
+   * 生成完成了、成本记了、take 也建了，但没人告诉镜头「有候选了」。
+   */
+  readonly onTakeAccepted?: (shotId: string, takeId: string) => Promise<unknown>
 }
 
 export interface IngestInput {
@@ -77,6 +82,8 @@ export async function handleIngest(deps: IngestDeps, input: IngestInput): Promis
     .update(s.generationJobs)
     .set({ status: 'succeeded', accepted: true, finishedAt: new Date() })
     .where(eq(s.generationJobs.id, input.generationJobId))
+
+  await deps.onTakeAccepted?.(input.shotId, take!.id)
 
   return { assetId, takeId: take!.id, deduped: existing !== undefined }
 }

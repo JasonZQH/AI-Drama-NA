@@ -6,8 +6,8 @@ import { z } from 'zod'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { budgetFromEnv, planBatch } from '../pipeline/batch.js'
-import { transition, type ShotEvent, type ShotState } from '../pipeline/shotMachine.js'
-import { createGenerationJob } from '../queue/ingest.js'
+import { applyShotTransition } from '../pipeline/applyTransition.js'
+import type { ShotEvent } from '../pipeline/shotMachine.js'
 import type { Queues } from '../queue/queues.js'
 import type { Storage } from '../storage/s3.js'
 import { ApiError } from './errors.js'
@@ -23,66 +23,15 @@ export interface ApiDeps {
 
 const Uuid = z.object({ id: z.string().uuid() })
 
-/** 状态迁移统一入口：非法迁移回 400，effects 交给调用方执行（03 §3） */
-async function applyTransition(
-  deps: ApiDeps,
-  shotId: string,
-  event: ShotEvent,
-): Promise<{ next: ShotStatus }> {
-  const [row] = await deps.db.select().from(s.shots).where(eq(s.shots.id, shotId))
-  if (!row) throw new ApiError('NOT_FOUND', `shot ${shotId} 不存在`)
-
-  const state: ShotState = {
-    id: row.id,
-    status: row.status,
-    attemptCount: row.attemptCount,
-    selectedTakeId: row.selectedTakeId,
-  }
-  const r = transition(state, event, { maxAttempts: deps.maxAttempts })
-  if (!r.ok) throw new ApiError('INVALID_STATE_TRANSITION', r.reason, { from: row.status, event: event.type })
-
-  for (const e of r.effects) {
-    switch (e.type) {
-      case 'enqueue.generation': {
-        const jobId = await createGenerationJob(deps.db, {
-          shotId: e.shotId,
-          attempt: e.attempt,
-          providerId: deps.providers[0]!.id,
-          modelId: 'mock-v1',
-          mode: 't2v',
-          promptText: row.promptOverride ?? `${row.action}, ${row.shotType}`,
-          params: {
-            durationSec: Number(row.durationSec),
-            resolution: '720p',
-            aspectRatio: '9:16',
-            fps: 24,
-          },
-        })
-        await deps.queues.generate.add('generate', { generationJobId: jobId, shotId: e.shotId })
-        await deps.db.update(s.shots).set({ attemptCount: e.attempt }).where(eq(s.shots.id, e.shotId))
-        break
-      }
-      case 'set.selectedTake':
-        await deps.db.update(s.takes).set({ status: 'selected' }).where(eq(s.takes.id, e.takeId))
-        await deps.db.update(s.shots).set({ selectedTakeId: e.takeId }).where(eq(s.shots.id, e.shotId))
-        break
-      case 'clear.selectedTake':
-        await deps.db.update(s.shots).set({ selectedTakeId: null }).where(eq(s.shots.id, e.shotId))
-        break
-      case 'archive.takes':
-        // 归档而非删除：系统永不自动销毁已经花钱生成的东西（03 §7）
-        await deps.db
-          .update(s.takes)
-          .set({ status: 'archived' })
-          .where(and(eq(s.takes.shotId, e.shotId), eq(s.takes.status, 'candidate')))
-        break
-      case 'publish':
-        await deps.queues.notify.add('notify', { projectId: '', payload: e.event })
-        break
-    }
-  }
-
-  await deps.db.update(s.shots).set({ status: r.next, updatedAt: new Date() }).where(eq(s.shots.id, shotId))
+/** 非法迁移回 400；真正的执行在 pipeline/applyTransition，路由与队列共用 */
+async function applyTransition(deps: ApiDeps, shotId: string, event: ShotEvent): Promise<{ next: string }> {
+  const r = await applyShotTransition(
+    { db: deps.db, queues: deps.queues, providerId: deps.providers[0]!.id, maxAttempts: deps.maxAttempts },
+    shotId,
+    event,
+  )
+  if (r === null) throw new ApiError('NOT_FOUND', `shot ${shotId} 不存在`)
+  if (!r.ok) throw new ApiError('INVALID_STATE_TRANSITION', r.reason, { from: r.from, event: event.type })
   return { next: r.next }
 }
 
