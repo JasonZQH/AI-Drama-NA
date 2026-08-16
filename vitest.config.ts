@@ -21,4 +21,21 @@ try {
   // 没有 .env 是正常的（CI 就没有）。此时用进程环境里已有的值
 }
 
+/**
+ * 上面那句把整个 `.env` 灌进测试进程，**包括会计费的 API key**。
+ *
+ * 这不是假设的风险：`buildProviderPool(env = process.env)` 的默认参数就是
+ * `process.env`，任何走默认路径的构造都会拿到一个真实计费的适配器。而
+ * `pnpm test` 恰恰是 CI 里最便宜、不起容器、也没有任何出网限制的那条车道。
+ * OpenRouter 尤其危险——一把 key 解锁全部视频模型。
+ *
+ * 所以默认把它们摘掉。只有显式 `RECORD=1`（录制卡带那一次）才放行，
+ * 那是唯一应该真的花钱的场景。
+ */
+if (process.env['RECORD'] !== '1') {
+  for (const k of Object.keys(process.env)) {
+    if (/_API_KEY$/.test(k)) delete process.env[k]
+  }
+}
+
 export default defineConfig({})
