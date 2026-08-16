@@ -94,7 +94,7 @@ export default function Review({ params }: { params: Promise<{ id: string }> }):
         className="flex items-center gap-4 px-4 py-2"
         style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}
       >
-        <Link href={`/projects/${projectId}/storyboard`}>← 分镜</Link>
+        <Link href="/">← 工作台</Link>
         <span className="tnum">待选 {queue.length} 个</span>
         {current && (
           <span className="tnum" style={{ color: 'var(--text-secondary)' }}>
@@ -111,8 +111,8 @@ export default function Review({ params }: { params: Promise<{ id: string }> }):
       {!current ? (
         <div className="p-8" style={{ color: 'var(--text-secondary)' }}>
           没有待选镜头。去{' '}
-          <Link href={`/projects/${projectId}/storyboard`} style={{ color: 'var(--accent-text)' }}>
-            分镜页
+          <Link href="/" style={{ color: 'var(--accent-text)' }}>
+            工作台
           </Link>{' '}
           生成一些。
         </div>

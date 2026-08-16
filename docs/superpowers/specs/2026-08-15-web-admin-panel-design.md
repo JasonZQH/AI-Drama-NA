@@ -96,12 +96,14 @@
   "range": "30d",
   "granularity": "day",          // day | week | month，由 range 推导
   "points": [
-    { "at": "2026-08-01", "costMicroUsd": 420000, "attempts": 24, "accepted": 14 }
+    { "at": "2026-08-01", "costMicroUsd": 420000, "attempts": 24, "accepted": 14, "firstPass": 9 }
   ]
 }
 ```
 
-一次通过率由 `accepted / attempts` 在前端算，不预先算好——这样同一份数据也能画尝试次数。
+比率一律在前端算，端点只给计数——这样同一份数据也能画尝试次数与废片率，不必为每个比率加一个端点。
+
+**一次通过率 = `firstPass / attempts`，不是 `accepted / attempts`。** 后者算的是「最终被采用的比例」：一镜重试三次后成功，三次尝试里有一次 accepted，得数 33%，但这一镜其实是**没有**一次通过的。`firstPass` 的分子是 `accepted AND attempt = 1`，才对得上「一次通过」这四个字。两个分子都返回，想画哪个都行。
 
 ### 5.3 项目列表要带聚合
 

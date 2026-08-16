@@ -1,5 +1,5 @@
 import type { StudioEvent } from '@ai-drama/contracts'
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, RouteHandlerMethod } from 'fastify'
 import type IORedis from 'ioredis'
 
 /**
@@ -42,7 +42,17 @@ export function registerSse(
   app: FastifyInstance,
   deps: { redisUrl: string; makeSubscriber: () => IORedis },
 ): void {
-  app.get('/api/projects/:id/events', async (req, reply) => {
+  /**
+   * 两条路径同一个处理器。
+   *
+   * `/api/events` 是管理面板用的：外壳持一条连接，按 projectId 在前端分发给
+   * 各标签（见 web-admin-panel-design §3.1）。多标签下每标签一条连接会让
+   * Redis 订阅者数量随标签数线性增长，而事件本来就是全局广播的。
+   *
+   * 保留 `/api/projects/:id/events` 是因为分镜页与选片页还在用它。注意它
+   * **并不按 :id 过滤**——这个频道从来就是全量广播，路径里的 id 只是历史形状。
+   */
+  const handler: RouteHandlerMethod = async (req, reply) => {
     /**
      * CORS 头必须在这里手写。
      *
@@ -90,5 +100,8 @@ export function registerSse(
 
     // 让 Fastify 知道响应由我们自己接管
     return reply
-  })
+  }
+
+  app.get('/api/events', handler)
+  app.get('/api/projects/:id/events', handler)
 }

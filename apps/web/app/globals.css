@@ -30,6 +30,20 @@
   --status-error: #e66767;
   --status-cancelled: #4a4a52;
 
+  /*
+   * 图表系列色（07 §3.4）。与状态色是两套东西：状态色只表达状态，
+   * 拿 --text-secondary 当系列色则会让「一条数据线」和「一段说明文字」同色。
+   * 按系列身份分配、不按排名分配——筛选后剩下的线不能变色，否则会被误读。
+   */
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+  --chart-6: #008300;
+  --chart-7: #9085e9;
+  --chart-8: #e66767;
+
   /* 不引入 Web Font：工具类应用，加载速度优先于字体个性 */
   --font-sans: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;

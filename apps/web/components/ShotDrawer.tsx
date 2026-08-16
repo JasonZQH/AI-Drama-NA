@@ -1,0 +1,589 @@
+'use client'
+
+import { StatusPill, statusColor } from '@/components/StatusPill'
+import { api, assetUrl, usd, type JobRow, type TakeRow } from '@/lib/api'
+import { useEffect, useRef, useState } from 'react'
+
+/**
+ * 镜头详情抽屉 —— `07-design-system.md` §6.2 的 `PromptInspector` 落点。
+ *
+ * 「这是 R3 的落地：失败时用户第一件事就是看这里。」所以三个区块的次序
+ * 不是随意的：意图 → 每次尝试的完整 prompt 与失败码 → 产出的 takes。
+ * 中间那块是主角，另外两块是它的上下文。
+ *
+ * intent 由调用方传入而非本组件拉取：镜头网格手上已有 `EpisodeTree` 的
+ * 整行 shot，再发一次请求纯属浪费；也没有单镜头端点可用。
+ */
+export interface ShotIntent {
+  index: number
+  shotType: string
+  action: string
+  durationSec: string
+  status: string
+  dialogue?: string | null
+  cameraMove?: string | null
+  emotion?: string | null
+}
+
+const SHOT_TYPE: Record<string, string> = {
+  ecu: '大特写',
+  cu: '特写',
+  ms: '中景',
+  ws: '全景',
+  establishing: '定场',
+  ots: '过肩',
+  pov: '主观',
+}
+
+const CAMERA_MOVE: Record<string, string> = {
+  static: '固定',
+  pan: '横摇',
+  tilt: '纵摇',
+  dolly: '推轨',
+  orbit: '环绕',
+  handheld: '手持',
+}
+
+const JOB_STATUS: Record<string, { label: string; color: string }> = {
+  queued: { label: '排队中', color: 'var(--status-idle)' },
+  submitted: { label: '已提交', color: 'var(--status-running)' },
+  running: { label: '生成中', color: 'var(--status-running)' },
+  downloading: { label: '下载中', color: 'var(--status-running)' },
+  evaluating: { label: '评估中', color: 'var(--status-running)' },
+  succeeded: { label: '成功', color: 'var(--status-success)' },
+  failed: { label: '失败', color: 'var(--status-error)' },
+  cancelled: { label: '已取消', color: 'var(--status-cancelled)' },
+}
+
+const TAKE_STATUS: Record<string, { label: string; color: string }> = {
+  candidate: { label: '候选', color: 'var(--status-review)' },
+  selected: { label: '已选用', color: 'var(--status-success)' },
+  rejected: { label: '已拒绝', color: 'var(--status-cancelled)' },
+  archived: { label: '已归档', color: 'var(--status-cancelled)' },
+}
+
+/**
+ * 失败码解释与可重试性，逐条对应 `packages/contracts` 的 `NON_RETRYABLE`
+ * （`05-job-orchestration.md` §5.3）。这里重写一份而不是 import：只为三个
+ * 字符串把 zod 与全部 schema 拉进客户端包不划算，且每条都要配中文解释。
+ * **不可重试的意思是「同 prompt 再来一次只会再被拒，纯烧配额」**，
+ * 界面必须说出来，否则用户会一直点重试。
+ */
+const FAILURE: Record<string, { retryable: boolean; why: string; next: string }> = {
+  provider_error: {
+    retryable: true,
+    why: 'provider 侧报错，多为临时故障。',
+    next: '可直接重试；连续多次同码要考虑换 provider。',
+  },
+  timeout: {
+    retryable: true,
+    why: 'provider 超时未返回结果。',
+    next: '可直接重试；反复超时说明该档位排队严重，换 provider 更快。',
+  },
+  download_failed: {
+    retryable: true,
+    why: '产物已生成但下载失败，通常是网络或存储抖动。',
+    next: '可直接重试，成本已经花了但资产没落地。',
+  },
+  eval_rejected: {
+    retryable: true,
+    why: '自动评估判定不达标（清晰度 / 一致性 / 时长）。',
+    next: '可重试；同一原因连续出现时改 Intent 比换 seed 有效。',
+  },
+  cancelled: {
+    retryable: true,
+    why: '任务被取消，不是生成质量问题。',
+    next: '可直接重新发起。',
+  },
+  content_filtered: {
+    retryable: false,
+    why: '该 prompt 被 provider 的内容策略拒绝。同 prompt 重试必然再被拒，纯烧配额。',
+    next: '改写 Intent 里触发策略的措辞，或改用 self-host provider 生成。',
+  },
+  quota_exceeded: {
+    retryable: false,
+    why: '该 provider 的配额或限流已耗尽。重试只会加剧问题。',
+    next: '暂停该 provider，换一个再生成，或等配额窗口重置。',
+  },
+  invalid_output: {
+    retryable: false,
+    why: '产物不符合契约——适配器 bug 或该模型能力不匹配，重试无用。',
+    next: '换 provider 生成；同时这是需要修代码的信号。',
+  },
+}
+
+interface Props {
+  shotId: string | null
+  /** 镜头意图。调用方（镜头网格）手上已有这行数据，直接传下来 */
+  shot?: ShotIntent | null
+  onClose: () => void
+}
+
+export function ShotDrawer({ shotId, shot, onClose }: Props): React.ReactElement | null {
+  if (!shotId) return null
+  // key 让换镜头时整块重挂载：复制反馈、details 展开态都跟着重置，
+  // 省掉一整套「shotId 变了要清哪些 state」的手工同步
+  return <Panel key={shotId} shotId={shotId} {...(shot ? { shot } : {})} onClose={onClose} />
+}
+
+function Panel({
+  shotId,
+  shot,
+  onClose,
+}: {
+  shotId: string
+  shot?: ShotIntent
+  onClose: () => void
+}): React.ReactElement {
+  const [jobs, setJobs] = useState<JobRow[] | null>(null)
+  const [takes, setTakes] = useState<TakeRow[] | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let alive = true
+    setErr(null)
+    void (async () => {
+      try {
+        const [j, t] = await Promise.all([
+          api<{ jobs: JobRow[] }>(`/api/shots/${shotId}/jobs`),
+          api<{ takes: TakeRow[] }>(`/api/shots/${shotId}/takes`),
+        ])
+        if (!alive) return
+        setJobs(j.jobs)
+        setTakes(t.takes)
+      } catch (e) {
+        if (alive) setErr(e instanceof Error ? e.message : String(e))
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [shotId, reload])
+
+  // 焦点移进抽屉，关闭时还回原处，否则键盘用户看不见自己在操作什么。
+  // 这个 effect 的依赖必须是空的：onClose 的引用随父组件每次渲染而变，
+  // 挂在它上面会在每次 SSE 心跳后把焦点从用户正在操作的元素上抢走
+  useEffect(() => {
+    const prev = document.activeElement
+    panelRef.current?.focus()
+    return () => {
+      if (prev instanceof HTMLElement) prev.focus()
+    }
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const spent = (jobs ?? []).reduce((a, j) => a + (j.costMicroUsd ?? 0), 0)
+
+  /*
+   * 随流的右侧栏，不是覆盖全屏的模态。
+   *
+   * 模态会盖住外壳的标签栏与常驻队列指示——而读一条 prompt 的典型场景恰恰是
+   * 「另外 11 个镜头正在生成」，此时禁止切标签、看不见队列是本末倒置。
+   * 代价是网格变窄一档（虚拟化的 ResizeObserver 会自己重排列数）。
+   */
+  return (
+    <>
+      <style>{`
+        @keyframes sd-in { from { transform: translateX(100%) } to { transform: none } }
+        .sd-panel { animation: sd-in .18s ease-out }
+        @media (prefers-reduced-motion: reduce) { .sd-panel { animation: none } }
+      `}</style>
+
+      <aside
+        ref={panelRef}
+        role="complementary"
+        aria-label={shot ? `镜头 ${shot.index} 详情` : '镜头详情'}
+        tabIndex={-1}
+        className="sd-panel flex h-full shrink-0 flex-col"
+        style={{
+          width: 'min(480px, 100vw)',
+          background: 'var(--bg-surface)',
+          borderLeft: '1px solid var(--border)',
+        }}
+      >
+        <header
+          className="flex items-center gap-2 px-4 py-3"
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          <span className="tnum font-medium">{shot ? `镜头 #${shot.index}` : '镜头详情'}</span>
+          {shot && <StatusPill status={shot.status} />}
+          <span className="flex-1" />
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="关闭"
+            className="rounded-sm px-2 py-1"
+            style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+          >
+            ✕
+          </button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto">
+          {shot && <Intent shot={shot} />}
+
+          <Section title="Prompt 检视器" hint={jobs ? `${jobs.length} 次尝试 · 合计 ${usd(spent)}` : ''}>
+            {err ? (
+              /* R3：失败要说明是什么、以及下一步 */
+              <div
+                className="rounded-md p-3"
+                style={{ background: 'var(--bg-inset)', border: '1px solid var(--status-error)' }}
+              >
+                <div style={{ color: 'var(--status-error)' }}>✕ 生成记录载入失败</div>
+                <div className="mt-1" style={{ color: 'var(--text-secondary)' }}>
+                  {err}
+                </div>
+                <button
+                  type="button"
+                  className="mt-2 rounded-sm px-2 py-1"
+                  style={{ border: '1px solid var(--border-strong)' }}
+                  onClick={() => setReload((n) => n + 1)}
+                >
+                  重新载入
+                </button>
+              </div>
+            ) : !jobs ? (
+              <Skeleton lines={3} label="正在读取生成记录…" />
+            ) : jobs.length === 0 ? (
+              <Empty
+                text="这个镜头还没有任何生成尝试，所以没有 prompt 可看。"
+                next="回到镜头网格，对本镜点「生成」——确认弹窗会先告诉你要花多少钱。"
+              />
+            ) : (
+              /* 倒序：诊断失败时最新一次尝试才是现场，历史是佐证 */
+              [...jobs]
+                .sort((a, b) => b.attempt - a.attempt)
+                .map((job, i) => (
+                  <JobCard
+                    key={job.id}
+                    job={job}
+                    prev={jobs.find((x) => x.attempt === job.attempt - 1) ?? null}
+                    open={i === 0}
+                  />
+                ))
+            )}
+          </Section>
+
+          <Section title="Takes" hint={takes ? `${takes.length} 个` : ''}>
+            {!takes && !err ? (
+              <Skeleton lines={2} label="正在读取候选片段…" />
+            ) : takes && takes.length === 0 ? (
+              <Empty
+                text="还没有候选片段——尝试要么全失败了，要么还在跑。"
+                next="先看上面最后一次尝试的失败码：可重试的直接重试，不可重试的先改 Intent 或换 provider。"
+              />
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                {(takes ?? []).map((t) => (
+                  <TakeCard key={t.take.id} row={t} />
+                ))}
+              </div>
+            )}
+          </Section>
+        </div>
+      </aside>
+    </>
+  )
+}
+
+function Intent({ shot }: { shot: ShotIntent }): React.ReactElement {
+  const rows: [string, string][] = [
+    ['景别', SHOT_TYPE[shot.shotType] ?? shot.shotType.toUpperCase()],
+    ['运镜', shot.cameraMove ? (CAMERA_MOVE[shot.cameraMove] ?? shot.cameraMove) : '—'],
+    ['动作', shot.action],
+    ['情绪', shot.emotion ?? '—'],
+    ['台词', shot.dialogue ?? '—'],
+    ['时长', `${Number(shot.durationSec).toFixed(1)}s`],
+  ]
+  return (
+    <Section title="Intent">
+      <div
+        className="rounded-md"
+        style={{
+          background: 'var(--bg-inset)',
+          border: '1px solid var(--border)',
+          borderLeft: `3px solid ${statusColor(shot.status)}`,
+        }}
+      >
+        <dl className="grid grid-cols-[52px_1fr] gap-x-3 gap-y-1.5 p-3">
+          {rows.map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt style={{ color: 'var(--text-muted)' }}>{k}</dt>
+              <dd className={k === '时长' ? 'tnum' : undefined}>{v}</dd>
+            </div>
+          ))}
+          <dt style={{ color: 'var(--text-muted)' }}>状态</dt>
+          <dd>
+            <StatusPill status={shot.status} />
+          </dd>
+        </dl>
+      </div>
+    </Section>
+  )
+}
+
+/**
+ * 一次尝试一张卡。**跟上一次比有什么变化**必须一眼看得出来——重试升级
+ * 策略是换 seed → 强化 prompt → 换 provider（`05` §5.2），看不出变化的
+ * 记录没有诊断价值，用户只会看到「又失败了」。
+ */
+function JobCard({
+  job,
+  prev,
+  open,
+}: {
+  job: JobRow
+  prev: JobRow | null
+  /** 最新一次尝试默认展开——失败诊断的现场就在这里 */
+  open: boolean
+}): React.ReactElement {
+  const [copied, setCopied] = useState<'ok' | 'fail' | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current)
+    }
+  }, [])
+
+  async function copy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(job.promptText)
+      setCopied('ok')
+    } catch {
+      // 非安全上下文（http 直连 IP）下 clipboard 不可用，说出来好过静默
+      setCopied('fail')
+    }
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => setCopied(null), 1600)
+  }
+
+  const st = JOB_STATUS[job.status] ?? { label: job.status, color: 'var(--status-idle)' }
+  const fail = job.failureCode ? FAILURE[job.failureCode] : undefined
+
+  const changes: string[] = []
+  if (prev) {
+    if (prev.providerId !== job.providerId || prev.modelId !== job.modelId) changes.push('换了 provider')
+    if (prev.promptText !== job.promptText) changes.push('强化了 prompt')
+    if (prev.seed !== job.seed) changes.push('换了 seed')
+    if (prev.negativeText !== job.negativeText) changes.push('改了负向词')
+  }
+
+  return (
+    <article
+      className="mb-2 rounded-md"
+      style={{
+        background: 'var(--bg-raised)',
+        border: '1px solid var(--border)',
+        borderLeft: `3px solid ${st.color}`,
+      }}
+    >
+      <div className="flex items-center gap-2 px-3 pt-2">
+        <span className="tnum font-medium">尝试 {job.attempt}</span>
+        <span style={{ color: st.color }}>{st.label}</span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={() => void copy()}
+          className="rounded-sm px-2 py-0.5 text-[11px]"
+          style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+        >
+          复制 prompt
+        </button>
+        <span
+          aria-live="polite"
+          className="text-[11px]"
+          style={{ color: copied === 'fail' ? 'var(--status-error)' : 'var(--status-success)' }}
+        >
+          {copied === 'ok' ? '已复制' : copied === 'fail' ? '复制失败' : ''}
+        </span>
+      </div>
+
+      <div
+        className="tnum flex flex-wrap gap-x-3 px-3 pt-1 text-[11px]"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <span>
+          {job.providerId} / {job.modelId}
+        </span>
+        <span>{usd(job.costMicroUsd)}</span>
+        <span>{job.latencyMs === null ? '—' : `${(job.latencyMs / 1000).toFixed(1)}s`}</span>
+        <span>seed {job.seed ?? '—'}</span>
+        <span>{new Date(job.createdAt).toLocaleString('zh-CN', { hour12: false })}</span>
+      </div>
+
+      {changes.length > 0 && (
+        <div className="px-3 pt-1.5">
+          <span
+            className="rounded-sm px-1.5 py-0.5 text-[11px]"
+            style={{ background: 'var(--accent-subtle)', color: 'var(--accent-text)' }}
+          >
+            本次{changes.join(' · ')}
+          </span>
+        </div>
+      )}
+
+      {/* details 是原生的可折叠，自带展开态与键盘可达，不需要自己搭 */}
+      <details open={open} className="px-3 pt-2">
+        <summary className="cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+          Prompt<span className="tnum"> · {job.promptText.length} 字</span>
+        </summary>
+        <pre
+          className="mt-1.5 max-h-80 overflow-auto rounded-sm p-2 text-[12px] leading-[18px] whitespace-pre-wrap"
+          style={{ background: 'var(--bg-inset)', fontFamily: 'var(--font-mono)' }}
+        >
+          {job.promptText}
+        </pre>
+      </details>
+
+      {job.negativeText && (
+        <details className="px-3 pt-1.5">
+          <summary className="cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+            负向词<span className="tnum"> · {job.negativeText.length} 字</span>
+          </summary>
+          <pre
+            className="mt-1.5 max-h-40 overflow-auto rounded-sm p-2 text-[12px] leading-[18px] whitespace-pre-wrap"
+            style={{ background: 'var(--bg-inset)', fontFamily: 'var(--font-mono)' }}
+          >
+            {job.negativeText}
+          </pre>
+        </details>
+      )}
+
+      {job.failureCode && (
+        <div
+          className="m-3 mt-2 rounded-sm p-2"
+          style={{ background: 'var(--bg-inset)', border: '1px solid var(--status-error)' }}
+        >
+          <div className="flex items-center gap-2">
+            <span style={{ color: 'var(--status-error)', fontFamily: 'var(--font-mono)' }}>
+              ✕ {job.failureCode}
+            </span>
+            <span
+              className="rounded-sm px-1.5 py-0.5 text-[11px]"
+              style={{
+                color: fail?.retryable === false ? 'var(--status-error)' : 'var(--status-review)',
+                border: `1px solid ${fail?.retryable === false ? 'var(--status-error)' : 'var(--status-review)'}`,
+              }}
+            >
+              {fail === undefined ? '重试性未知' : fail.retryable ? '可重试' : '不可重试'}
+            </span>
+          </div>
+          <div className="mt-1" style={{ color: 'var(--text-secondary)' }}>
+            {fail?.why ?? '未收录的失败码，按 provider 返回的详情判断。'}
+          </div>
+          <div className="mt-1" style={{ color: 'var(--text-secondary)' }}>
+            下一步：{fail?.next ?? '先看下面的详情，再决定重试还是改 Intent。'}
+          </div>
+          {job.failureDetail && (
+            <pre
+              className="mt-1.5 max-h-32 overflow-auto text-[11px] whitespace-pre-wrap"
+              style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}
+            >
+              {job.failureDetail}
+            </pre>
+          )}
+        </div>
+      )}
+      {!job.failureCode && <div className="h-3" />}
+    </article>
+  )
+}
+
+function TakeCard({ row }: { row: TakeRow }): React.ReactElement {
+  const st = TAKE_STATUS[row.take.status] ?? { label: row.take.status, color: 'var(--status-idle)' }
+  return (
+    <figure className="overflow-hidden rounded-md" style={{ border: '1px solid var(--border)' }}>
+      <video
+        src={assetUrl(row.asset.id)}
+        controls
+        muted
+        playsInline
+        preload="metadata"
+        className="aspect-[9/16] w-full"
+        style={{ background: 'var(--bg-inset)', maxHeight: 200 }}
+      />
+      <figcaption className="p-2">
+        <div className="flex items-center justify-between">
+          <span style={{ color: st.color }}>● {st.label}</span>
+          <span className="tnum" style={{ color: 'var(--text-secondary)' }}>
+            {usd(row.job.costMicroUsd)}
+          </span>
+        </div>
+        <div className="tnum mt-0.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          {row.job.providerId} · 尝试 {row.job.attempt} · seed {row.job.seed ?? '—'}
+        </div>
+        {row.asset.durationSec !== null && (
+          <div className="tnum text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {Number(row.asset.durationSec).toFixed(1)}s
+          </div>
+        )}
+      </figcaption>
+    </figure>
+  )
+}
+
+function Section({
+  title,
+  hint,
+  children,
+}: {
+  title: string
+  hint?: string
+  children: React.ReactNode
+}): React.ReactElement {
+  return (
+    <section className="px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+      <h3 className="mb-2 flex items-baseline gap-2">
+        <span style={{ color: 'var(--text-secondary)' }}>{title}</span>
+        {hint && (
+          <span className="tnum text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {hint}
+          </span>
+        )}
+      </h3>
+      {children}
+    </section>
+  )
+}
+
+/** 空白等于「坏了」。骨架 + 明确文案，让人知道是在等而不是在卡 */
+function Skeleton({ lines, label }: { lines: number; label: string }): React.ReactElement {
+  return (
+    <div aria-live="polite">
+      {Array.from({ length: lines }, (_, i) => (
+        <div
+          key={i}
+          className="pulse mb-2 h-12 rounded-md"
+          style={{ background: 'var(--bg-raised)', border: '1px solid var(--border)' }}
+        />
+      ))}
+      <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+        {label}
+      </span>
+    </div>
+  )
+}
+
+/** 空态必须给下一步动作，不能只写「暂无数据」 */
+function Empty({ text, next }: { text: string; next: string }): React.ReactElement {
+  return (
+    <div
+      className="rounded-md p-3"
+      style={{ background: 'var(--bg-inset)', border: '1px dashed var(--border-strong)' }}
+    >
+      <div style={{ color: 'var(--text-secondary)' }}>{text}</div>
+      <div className="mt-1" style={{ color: 'var(--text-muted)' }}>
+        {next}
+      </div>
+    </div>
+  )
+}

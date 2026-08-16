@@ -53,6 +53,8 @@ export interface Shot {
   id: string
   index: number
   shotType: string
+  cameraMove: string | null
+  emotion: string | null
   action: string
   dialogue: string | null
   durationSec: string
@@ -85,4 +87,111 @@ export interface TakeRow {
   take: { id: string; status: string; createdAt: string }
   asset: { id: string; durationSec: string | null }
   job: { providerId: string; seed: number | null; costMicroUsd: number | null; attempt: number }
+}
+
+// ── 管理面板的聚合类型（对应 apps/control/src/routes/stats.ts）──
+
+export interface Overview {
+  totals: { projects: number; shots: number; costMicroUsd: number; usdPerAcceptedMicro: number | null }
+  attention: { failedShots: number; pendingReview: number }
+  queue: { running: number; queued: number }
+  budget: { spentTodayMicroUsd: number; dailyLimitMicroUsd: number }
+  /** M4 接投放回传时填充，届时前端卡片位置与类型都不用改 */
+  distribution: null | { spendMicroUsd: number; impressions: number; installs: number }
+  revenue: null | { grossMicroUsd: number; roi: number }
+}
+
+export type RangeKey = '30d' | '3m' | '6m' | '1y' | 'all'
+
+export const RANGE_LABEL: Record<RangeKey, string> = {
+  '30d': '30 天',
+  '3m': '3 个月',
+  '6m': '6 个月',
+  '1y': '1 年',
+  all: '全部',
+}
+
+export interface TimeseriesPoint {
+  at: string
+  costMicroUsd: number
+  attempts: number
+  accepted: number
+  firstPass: number
+}
+
+export interface Timeseries {
+  range: RangeKey
+  granularity: 'day' | 'week' | 'month'
+  points: TimeseriesPoint[]
+}
+
+export interface ProjectSummary {
+  id: string
+  title: string
+  synopsis: string | null
+  status: string
+  episodes: number
+  shots: number
+  locked: number
+  costMicroUsd: number
+}
+
+export interface EpisodeSummary {
+  id: string
+  index: number
+  title: string | null
+  logline: string | null
+  status: string
+  targetDurationSec: number
+  shots: number
+  locked: number
+  review: number
+  costMicroUsd: number
+}
+
+export interface AttentionItem {
+  shotId: string
+  shotIndex: number
+  status: string
+  action: string
+  episodeId: string
+  episodeIndex: number
+  episodeTitle: string | null
+  projectId: string
+  projectTitle: string
+}
+
+export interface ProjectAssets {
+  characters: {
+    id: string
+    name: string
+    description: string
+    voiceId: string | null
+    version: number
+    lockedAt: string | null
+    faceSet: unknown
+    bodyRef: unknown
+    wardrobe: unknown[]
+    anchorTokens: string[]
+    prohibitedChanges: string[]
+  }[]
+  locations: { id: string; name: string; description: string; interior: boolean; lockedAt: string | null }[]
+  styles: { id: string; name: string; description: string; negativePrompt: string | null }[]
+}
+
+export interface JobRow {
+  id: string
+  attempt: number
+  providerId: string
+  modelId: string
+  status: string
+  promptText: string
+  negativeText: string | null
+  seed: number | null
+  costMicroUsd: number | null
+  latencyMs: number | null
+  accepted: boolean | null
+  failureCode: string | null
+  failureDetail: string | null
+  createdAt: string
 }

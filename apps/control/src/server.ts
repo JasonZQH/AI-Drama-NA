@@ -6,6 +6,7 @@ import { buildProviderPool } from './providers/registry.js'
 import { registerApi, type ApiDeps } from './routes/api.js'
 import { registerErrorHandler } from './routes/errors.js'
 import { registerSse } from './routes/sse.js'
+import { registerStats } from './routes/stats.js'
 import { createConnection, createQueues } from './queue/queues.js'
 import { reconcileOnBoot } from './queue/orchestrator.js'
 import { httpMediaWorker } from './pipeline/render.js'
@@ -36,6 +37,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   })
 
   registerApi(app, deps)
+  registerStats(app, deps)
   registerSse(app, { redisUrl: '', makeSubscriber: deps.makeSubscriber })
 
   return app
