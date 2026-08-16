@@ -43,13 +43,26 @@ export function registerSse(
   deps: { redisUrl: string; makeSubscriber: () => IORedis },
 ): void {
   app.get('/api/projects/:id/events', async (req, reply) => {
+    /**
+     * CORS 头必须在这里手写。
+     *
+     * 直接 writeHead 到 reply.raw 会绕过 Fastify 的 reply 对象，于是
+     * @fastify/cors 的 onSend 钩子根本没机会加 Access-Control-Allow-Origin。
+     * curl 不校验 CORS，所以这个 bug 只有真用浏览器打开才会暴露。
+     */
+    const origin = req.headers.origin
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
       // 关掉 nginx 类中间层的缓冲，否则事件会被攒着不发
       'X-Accel-Buffering': 'no',
+      ...(origin ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {}),
     })
+    // writeHead 只设置响应头，Node 要等到有实际写入才发送——不 flush 的话
+    // 客户端的 onopen 永远不触发，连接看起来像挂死。这是 SSE 的经典坑。
+    reply.raw.flushHeaders()
+    reply.raw.write(': connected\n\n')
 
     // 每个连接一个订阅者：ioredis 的连接进入 subscribe 模式后不能再跑普通命令
     const sub = deps.makeSubscriber()

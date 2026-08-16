@@ -38,3 +38,6 @@ __pycache__/
 docs/_to_delete/
 .fuse_hidden*
 .staging/
+
+# Playwright MCP 的截图与快照
+.playwright-mcp/

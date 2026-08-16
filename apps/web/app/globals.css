@@ -1,0 +1,106 @@
+@import 'tailwindcss';
+
+/**
+ * 设计令牌，逐字取自 07-design-system.md §3–§5。
+ *
+ * 暗色是默认而非可选：用户长时间盯着视频缩略图，浅色背景会干扰对画面
+ * 明暗的判断。视频工具没有浅色的传统是有原因的。
+ */
+:root {
+  --bg-base: #0c0c0e;
+  --bg-surface: #151518;
+  --bg-raised: #1d1d21;
+  --bg-inset: #09090b;
+  --border: #2a2a30;
+  --border-strong: #3a3a42;
+  --text-primary: #f2f2f0;
+  --text-secondary: #a1a1aa;
+  --text-muted: #6b6b75;
+
+  --accent: #3987e5;
+  --accent-hover: #4d95ea;
+  --accent-subtle: #16233a;
+  --accent-text: #7db3f0;
+
+  /* 状态色只表达状态，永远不要拿来当装饰色或图表系列色 */
+  --status-idle: #6b6b75;
+  --status-running: #3987e5;
+  --status-review: #c98500;
+  --status-success: #0ca30c;
+  --status-error: #e66767;
+  --status-cancelled: #4a4a52;
+
+  /* 不引入 Web Font：工具类应用，加载速度优先于字体个性 */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  --shadow-raised: 0 2px 8px rgb(0 0 0 / 0.4);
+  --shadow-overlay: 0 8px 32px rgb(0 0 0 / 0.6);
+}
+
+@theme inline {
+  --color-base: var(--bg-base);
+  --color-surface: var(--bg-surface);
+  --color-raised: var(--bg-raised);
+  --color-inset: var(--bg-inset);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-fg: var(--text-primary);
+  --color-fg-dim: var(--text-secondary);
+  --color-fg-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+html,
+body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  /* 界面默认字号 13/20（§4）——一屏要看到 24 个镜头，不是 6 张大卡片 */
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/**
+ * 所有数字用等宽数字：成本、时长、进度百分比在列表里跳动时不能左右抖动。
+ */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 焦点环不许 outline:none（§8 可访问性底线） */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* generating 态的脉冲。尊重 prefers-reduced-motion */
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.pulse {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}

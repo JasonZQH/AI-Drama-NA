@@ -23,8 +23,6 @@ export interface ServerDeps extends ApiDeps {
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const app = Fastify({
     logger: { level: process.env['LOG_LEVEL'] ?? 'info' },
-    // SSE 的响应不能被压缩或缓冲
-    disableRequestLogging: false,
   })
 
   void app.register(cors, { origin: true })
