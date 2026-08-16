@@ -38,13 +38,39 @@ M6 优化          自动评测 + 智能路由     数据驱动
 | 7 | 分镜页、选片页两个核心界面可用 |
 | 8 | FFmpeg 规范化 + 拼接，产出可播 MP4 |
 
-**验收**
+**验收**（2026-08-16 在 `51460bc` 上从 GitHub 全新 clone 实测，逐条记录方法与保留）
 
-- [ ] 全新 clone 后 5 分钟内跑起来，无需任何外部凭证
-- [ ] 「生成整集」→ 12 镜全部完成，含至少 1 次自动重试
-- [ ] 选片 → 渲染 → 播放器能看完整一集
-- [ ] 杀掉控制面进程再重启，在途任务能恢复（reconcile 生效）
-- [ ] 状态机单测覆盖全部合法迁移与非法迁移
+- [x] **全新 clone 后 5 分钟内跑起来，无需任何外部凭证**
+      各步骤实测：clone 1s → `pnpm install` 10s（独立 store，真下载）→ 三个容器 5s →
+      `minio-init` 3s → media-worker 9s → `pnpm build` 9s → migrate+seed 2s，合计约 **39s**。
+      全程只 `cp .env.example .env`，无任何凭证。
+      **两点保留**：① media-worker 那 9s 是 Docker 层缓存命中的结果（只删了 tag 未清 build
+      cache），真正的冷构建要装 ffmpeg 与 uv sync，会显著更久；② 本机 5432 被占，
+      走了 README §「Port 5432 already taken?」的端口覆盖——该文档解法实测有效。
+- [x] **「生成整集」→ 12 镜全部完成，含至少 1 次自动重试**
+      dryRun 先报 12 镜 / $0.85 / 未超预算，确认后入队；65s 内 12 镜全部到 `review`。
+      Ledger：**14 次尝试 / 12 次采纳 / 2 次失败**——镜头 6 `provider_error`、镜头 11
+      `timeout`，均在第 2 次尝试成功。重试是 MockProvider 默认 15% 失败率触发的，
+      不是注入的，所以每次跑的具体镜号会变。
+- [x] **选片 → 渲染 → 播放器能看完整一集**
+      12/12 选片后全部 `locked`；渲染出 36.02s 母版。**真解码验证**（非只看文件存在）：
+      `ffmpeg -v error -i master.mp4 -f null -` 退出码 0、stderr 为空；
+      ffprobe 报 1080×1920 · h264+aac · 24fps · 36.020996s。
+- [x] **杀掉控制面进程再重启，在途任务能恢复（reconcile 生效）**
+      4 个 job 处于 `running` 时对 control 与 worker 同时 `kill -9`，并 `redis-cli flushall`
+      清空全部队列状态——只留 Postgres。重启后 `reconcile: {requeued: 0, resumed: 4}`，
+      4 镜全部跑完。
+      **必须说明的机制细节**：恢复后的轮询实际都返回了 `provider_error`，因为
+      MockProvider 的任务表是进程内 Map，重启后不认识旧 handle。该错误被正确判为可重试，
+      状态机开出 attempt 2 并成功。所以这条验证的是**控制面能从 Postgres 重建在途任务**，
+      而「provider 侧继续原来那次生成」要等 M1 接入有服务端任务状态的真 provider 才能验。
+- [x] **状态机单测覆盖全部合法迁移与非法迁移**
+      88 个用例。矩阵由 `ShotStatus.options × ALL_EVENTS` 动态生成并断言为 7×10=70 组，
+      合法组合对照真值表断言 `next`，非法组合断言 `ok === false`。
+      另有反向校验：把实际可通过的组合收集成集合与真值表键比对，防止真值表自己写漏。
+
+全新 clone 上同时跑过：127 单测 / 27 集成测试 / lint / typecheck 全部通过。集成测试能连上库，
+靠的是 `vitest.config.ts` 读 `.env`（本次 Postgres 在 5433，硬编码兜底是 5432）。
 
 ---
 
