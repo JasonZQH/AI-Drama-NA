@@ -1,4 +1,4 @@
-import { eq, gte, inArray } from 'drizzle-orm'
+import { and, eq, gte, inArray, lt } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
 import * as s from '../db/schema.js'
@@ -40,6 +40,7 @@ let projectId: string
 
 /** 本套测试占用的 attempt 号段。真实生产的 attempt 只会是 1..4 */
 const TEST_ATTEMPT_BASE = 900
+const TEST_ATTEMPT_MAX = 1000
 
 beforeAll(async () => {
   // 复用 seed 出来的 demo 项目，不自己造数据——夹具漂移了测试要能发现
@@ -60,7 +61,9 @@ async function cleanupTestRows(): Promise<void> {
   const stale = await db
     .select({ id: s.generationJobs.id })
     .from(s.generationJobs)
-    .where(gte(s.generationJobs.attempt, TEST_ATTEMPT_BASE))
+    .where(
+      and(gte(s.generationJobs.attempt, TEST_ATTEMPT_BASE), lt(s.generationJobs.attempt, TEST_ATTEMPT_MAX)),
+    )
   if (stale.length === 0) return
   const ids = stale.map((r) => r.id)
   await db.delete(s.takes).where(inArray(s.takes.jobId, ids))
