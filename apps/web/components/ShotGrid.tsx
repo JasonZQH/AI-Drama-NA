@@ -1,9 +1,10 @@
 'use client'
 
-import { usd, type EpisodeTree } from '@/lib/api'
+import type { EpisodeTree } from '@/lib/api'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Progress, StatusPill, statusColor } from './StatusPill'
+import { Cost } from './Mock'
 
 /**
  * 虚拟化的镜头网格（07-design-system.md §6.2）。
@@ -158,7 +159,7 @@ function ShotCard({
   onSelect: (shotId: string) => void
   progress?: { pct: number; etaMs?: number }
 }): React.ReactElement {
-  const { shot, takeCount, costMicroUsd } = entry
+  const { shot, takeCount, costMicroUsd, mockCostMicroUsd } = entry
   return (
     // button 而非 div：焦点环、Enter/Space 触发都是原生的，不用自己补 a11y
     <button
@@ -208,7 +209,7 @@ function ShotCard({
           style={{ color: 'var(--text-muted)' }}
         >
           <span>{shot.attemptCount > 0 ? `尝试 ${shot.attemptCount}` : ''}</span>
-          <span>{costMicroUsd > 0 ? usd(costMicroUsd) : ''}</span>
+          {costMicroUsd > 0 && <Cost microUsd={costMicroUsd} mockMicroUsd={mockCostMicroUsd} />}
         </div>
       </div>
     </button>

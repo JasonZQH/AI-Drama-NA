@@ -6,7 +6,9 @@ import { ShotGrid, type SceneGroup, type ShotEntry } from '@/components/ShotGrid
 import { statusColor } from '@/components/StatusPill'
 import { api, type DryRunPlan, type EpisodeTree } from '@/lib/api'
 import { useStudioEvent } from '@/lib/events'
-import { tabId, useTabs } from '@/lib/tabs'
+import { ProjectShell } from '@/components/ProjectShell'
+import { PageHeader, Shell } from '@/components/Shell'
+import { useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 /**
@@ -26,18 +28,17 @@ const FILTERS = [
 
 type FilterKey = (typeof FILTERS)[number]['key']
 
-export default function EpisodeView({
-  episodeId,
-  projectId,
-  onTitle,
-  focus,
-}: {
-  episodeId: string
-  projectId: string
-  onTitle?: (title: string) => void
-  /** 从工作台的待办点过来时的落点：筛到哪一档、直接打开哪一镜的抽屉 */
-  focus?: { filter?: string; shotId?: string; at: number }
-}): React.ReactElement {
+/**
+ * 分集页。
+ *
+ * 落点（筛选 + 目标镜头）走 URL query 而不是内部状态：工作台的待办在新浏览器
+ * 标签里打开这一页，`?filter=failed&shot=<id>` 是唯一能跨标签传过来的东西，
+ * 顺带让这个落点可收藏、可分享、后退也还在——规格 §4「点击直达对应筛选态」。
+ */
+export default function EpisodeView({ episodeId }: { episodeId: string }): React.ReactElement {
+  const params = useSearchParams()
+  const focusFilter = params.get('filter')
+  const focusShot = params.get('shot')
   const [tree, setTree] = useState<EpisodeTree | null>(null)
   const [filter, setFilter] = useState<FilterKey>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -46,14 +47,10 @@ export default function EpisodeView({
   const [err, setErr] = useState<string | null>(null)
   const [progress, setProgress] = useState<Record<string, { pct: number; etaMs?: number }>>({})
 
-  // 面包屑只在父项目标签已经开着时给——不主动 open，否则会用占位标题
-  // 覆盖掉那个标签已有的真实标题
-  const { tabs, activate } = useTabs()
-  const parent = tabs.find((t) => t.id === tabId.project(projectId))
-
   const load = useCallback(async () => {
     try {
       setTree(await api<EpisodeTree>(`/api/episodes/${episodeId}`))
+      setErr(null)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
@@ -63,24 +60,16 @@ export default function EpisodeView({
     void load()
   }, [load])
 
-  /*
-   * 规格 §4：待办要「直达对应筛选态，不是跳到列表让人自己找」。
-   * 依赖是 focus?.at 而非 focus 对象本身——对象每次渲染都是新引用，
-   * 挂上去会在用户手动改了筛选之后又被强行拽回来。
-   */
+  // 只在 URL 变化时套用落点。用户随后手动改筛选不该被拽回来
   useEffect(() => {
-    if (!focus) return
-    if (focus.filter && FILTERS.some((f) => f.key === focus.filter)) {
-      setFilter(focus.filter as FilterKey)
-    }
-    if (focus.shotId) setSelectedId(focus.shotId)
-  }, [focus?.at])
+    if (focusFilter && FILTERS.some((f) => f.key === focusFilter)) setFilter(focusFilter as FilterKey)
+    if (focusShot) setSelectedId(focusShot)
+  }, [focusFilter, focusShot])
 
-  const titleCb = useRef(onTitle)
-  titleCb.current = onTitle
   useEffect(() => {
-    if (tree)
-      titleCb.current?.(`第 ${tree.episode.index} 集${tree.episode.title ? ` · ${tree.episode.title}` : ''}`)
+    if (tree) {
+      document.title = `第 ${tree.episode.index} 集${tree.episode.title ? ` · ${tree.episode.title}` : ''} · ai-drama-studio`
+    }
   }, [tree])
 
   /**
@@ -174,46 +163,30 @@ export default function EpisodeView({
 
   if (!tree) {
     return (
-      <div className="p-6" style={{ color: 'var(--text-secondary)' }}>
-        {err ?? '载入中…'}
-      </div>
+      <Shell>
+        <div className="p-6 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          {err ?? '载入中…'}
+        </div>
+      </Shell>
     )
   }
 
   const totalSec = tree.shots.reduce((a, x) => a + Number(x.shot.durationSec), 0)
+  const projectId = tree.episode.projectId
 
   return (
-    <section className="flex h-full min-h-0 flex-col">
-      <header
-        className="flex flex-wrap items-center gap-3 px-4 py-2"
-        style={{ borderBottom: '1px solid var(--border)' }}
+    <ProjectShell projectId={projectId} active={`episode:${episodeId}`}>
+      <PageHeader
+        title={`第 ${tree.episode.index} 集`}
+        subtitle={`${tree.episode.title ?? '未命名'} · ${tree.shots.length} 镜 · ${totalSec.toFixed(1)}s / 目标 ${tree.episode.targetDurationSec}s`}
       >
-        {parent && (
-          <button
-            type="button"
-            onClick={() => activate(parent.id)}
-            className="rounded-sm px-1"
-            style={{ color: 'var(--text-muted)' }}
-          >
-            ← {parent.title}
-          </button>
-        )}
-        <h2 className="tnum font-medium">第 {tree.episode.index} 集</h2>
-        <span style={{ color: 'var(--text-secondary)' }}>{tree.episode.title ?? '未命名'}</span>
-        <span className="tnum" style={{ color: 'var(--text-muted)' }}>
-          {tree.shots.length} 镜 · {totalSec.toFixed(1)}s / 目标 {tree.episode.targetDurationSec}s
-        </span>
-        <span className="flex-1" />
         {(counts['review'] ?? 0) > 0 && (
-          /*
-            选片是全屏比片的活，开新浏览器标签而不是站内跳转——站内跳转会
-            卸载整个 workspace，把开着的标签栈全丢掉，代价远大于省下的一次切换。
-          */
+          // 选片是全屏比片的活，开新浏览器标签，别把这一页顶掉
           <a
             href={`/projects/${projectId}/review`}
             target="_blank"
             rel="noopener"
-            className="tnum rounded-md px-2 py-1"
+            className="tnum rounded-md px-2 py-1 text-[12px]"
             style={{ background: 'var(--accent-subtle)', color: 'var(--accent-text)' }}
           >
             选片 {counts['review']} ↗
@@ -222,7 +195,7 @@ export default function EpisodeView({
         <button
           type="button"
           onClick={() => void load()}
-          className="rounded-md px-2 py-1"
+          className="rounded-md px-2 py-1 text-[12px]"
           style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
         >
           刷新
@@ -230,14 +203,14 @@ export default function EpisodeView({
         <button
           type="button"
           onClick={() => void openConfirm()}
-          className="rounded-md px-3 py-1.5 font-medium"
+          className="rounded-md px-3 py-1 text-[12px] font-medium"
           style={{ background: 'var(--accent)', color: '#fff' }}
         >
           生成整集
         </button>
-      </header>
+      </PageHeader>
 
-      <div className="flex flex-wrap items-center gap-1.5 px-4 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-1.5 px-3 py-1.5">
         {FILTERS.map((f) => {
           const n = f.key === 'all' ? tree.shots.length : (counts[f.key] ?? 0)
           const on = filter === f.key
@@ -247,7 +220,7 @@ export default function EpisodeView({
               type="button"
               onClick={() => setFilter(f.key)}
               aria-pressed={on}
-              className="flex items-center gap-1.5 rounded-sm px-2 py-0.5"
+              className="flex items-center gap-1.5 rounded-sm px-2 py-0.5 text-[12px]"
               style={{
                 background: on ? 'var(--accent-subtle)' : 'transparent',
                 border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
@@ -273,28 +246,26 @@ export default function EpisodeView({
       {err && (
         /* R3：失败要说明是什么、以及下一步 */
         <div
-          className="mx-4 mb-2 rounded-md p-3"
+          className="mx-3 mb-2 shrink-0 rounded-md p-2 text-[12px]"
           style={{ background: 'var(--bg-surface)', border: '1px solid var(--status-error)' }}
         >
-          <div style={{ color: 'var(--status-error)' }}>✕ {err}</div>
-          <div className="mt-2 flex gap-2">
-            <button
-              type="button"
-              className="rounded-sm px-2 py-1"
-              style={{ border: '1px solid var(--border-strong)' }}
-              onClick={() => void load()}
-            >
-              重新载入
-            </button>
-            <button
-              type="button"
-              className="rounded-sm px-2 py-1"
-              style={{ border: '1px solid var(--border-strong)' }}
-              onClick={() => setErr(null)}
-            >
-              知道了
-            </button>
-          </div>
+          <span style={{ color: 'var(--status-error)' }}>✕ {err}</span>
+          <button
+            type="button"
+            className="ml-2 rounded-sm px-2 py-0.5"
+            style={{ border: '1px solid var(--border-strong)' }}
+            onClick={() => void load()}
+          >
+            重新载入
+          </button>
+          <button
+            type="button"
+            className="ml-2 rounded-sm px-2 py-0.5"
+            style={{ border: '1px solid var(--border-strong)' }}
+            onClick={() => setErr(null)}
+          >
+            知道了
+          </button>
         </div>
       )}
 
@@ -321,7 +292,7 @@ export default function EpisodeView({
           onConfirm={() => void confirm()}
         />
       )}
-    </section>
+    </ProjectShell>
   )
 }
 

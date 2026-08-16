@@ -1,5 +1,6 @@
 'use client'
 
+import { MockChip } from '@/components/Mock'
 import { StatusPill, statusColor } from '@/components/StatusPill'
 import { api, assetUrl, usd, type JobRow, type TakeRow } from '@/lib/api'
 import { useEffect, useRef, useState } from 'react'
@@ -413,6 +414,12 @@ function JobCard({
       >
         <span>
           {job.providerId} / {job.modelId}
+          {job.providerId === 'mock' && (
+            <>
+              {' '}
+              <MockChip />
+            </>
+          )}
         </span>
         <span>{usd(job.costMicroUsd)}</span>
         <span>{job.latencyMs === null ? '—' : `${(job.latencyMs / 1000).toFixed(1)}s`}</span>
@@ -520,6 +527,12 @@ function TakeCard({ row }: { row: TakeRow }): React.ReactElement {
         </div>
         <div className="tnum mt-0.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
           {row.job.providerId} · 尝试 {row.job.attempt} · seed {row.job.seed ?? '—'}
+          {row.job.providerId === 'mock' && (
+            <>
+              {' '}
+              <MockChip />
+            </>
+          )}
         </div>
         {row.asset.durationSec !== null && (
           <div className="tnum text-[11px]" style={{ color: 'var(--text-muted)' }}>

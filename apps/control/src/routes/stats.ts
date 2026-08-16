@@ -29,11 +29,27 @@ const RangeQuery = z.object({
   range: z.enum(['30d', '3m', '6m', '1y', 'all']).default('30d'),
 })
 
+/**
+ * mock provider 产生的成本不是真实计费。
+ *
+ * 面板上一个 `$0.65` 和真实账单上的 `$0.65` 长得一模一样，不标出来就是在
+ * 撒谎——尤其是「每可用镜头成本」这种会被拿去做决策的数字。所以每个成本
+ * 聚合都同时给出其中的 mock 部分，由界面决定怎么标。
+ *
+ * 判据是 `provider_id = 'mock'`（见 providers/mock.ts）。M1 接入真实
+ * provider 后这个分子自然变小，不需要改这里。
+ */
+const MOCK_PROVIDER_ID = 'mock'
+
+const mockCostSql = sql<string>`coalesce(sum(${s.generationJobs.costMicroUsd}) filter (where ${s.generationJobs.providerId} = ${MOCK_PROVIDER_ID}), 0)`
+
 export interface OverviewResponse {
   totals: {
     projects: number
     shots: number
     costMicroUsd: number
+    /** 其中由 mock provider 产生的部分。等于 costMicroUsd 时说明全是演示数据 */
+    mockCostMicroUsd: number
     /** 每可用镜头成本——比「每秒多少钱」有意义得多，它把重试率算了进去 */
     usdPerAcceptedMicro: number | null
   }
@@ -67,6 +83,7 @@ export function registerStats(app: FastifyInstance, deps: { db: Db }): void {
     const [cost] = await db
       .select({
         total: sql<string>`coalesce(sum(${s.generationJobs.costMicroUsd}), 0)`,
+        mock: mockCostSql,
         accepted: sql<number>`count(*) filter (where ${s.generationJobs.accepted})::int`,
       })
       .from(s.generationJobs)
@@ -89,6 +106,7 @@ export function registerStats(app: FastifyInstance, deps: { db: Db }): void {
         projects: counts?.projects ?? 0,
         shots: counts?.shots ?? 0,
         costMicroUsd: totalMicroUsd,
+        mockCostMicroUsd: Number(cost?.mock ?? 0),
         usdPerAcceptedMicro: accepted > 0 ? Math.round(totalMicroUsd / accepted) : null,
       },
       attention: {
@@ -117,6 +135,7 @@ export function registerStats(app: FastifyInstance, deps: { db: Db }): void {
       .select({
         at: sql<string>`to_char(${bucket}, 'YYYY-MM-DD')`,
         costMicroUsd: sql<string>`coalesce(sum(cost_micro_usd), 0)`,
+        mockCostMicroUsd: sql<string>`coalesce(sum(cost_micro_usd) filter (where provider_id = ${MOCK_PROVIDER_ID}), 0)`,
         attempts: sql<number>`count(*)::int`,
         // 一次通过率的分子：首次尝试即被采用
         accepted: sql<number>`count(*) filter (where accepted)::int`,
@@ -133,6 +152,7 @@ export function registerStats(app: FastifyInstance, deps: { db: Db }): void {
       points: rows.map((r) => ({
         at: r.at,
         costMicroUsd: Number(r.costMicroUsd),
+        mockCostMicroUsd: Number(r.mockCostMicroUsd),
         attempts: r.attempts,
         accepted: r.accepted,
         firstPass: r.firstPass,
@@ -158,6 +178,7 @@ export function registerStats(app: FastifyInstance, deps: { db: Db }): void {
         shots: sql<number>`count(distinct ${s.shots.id})::int`,
         locked: sql<number>`count(distinct ${s.shots.id}) filter (where ${s.shots.status} = 'locked')::int`,
         costMicroUsd: sql<string>`coalesce(sum(${s.generationJobs.costMicroUsd}), 0)`,
+        mockCostMicroUsd: mockCostSql,
       })
       .from(s.projects)
       .leftJoin(s.episodes, eq(s.episodes.projectId, s.projects.id))
@@ -174,6 +195,7 @@ export function registerStats(app: FastifyInstance, deps: { db: Db }): void {
         shots: r.shots,
         locked: r.locked,
         costMicroUsd: Number(r.costMicroUsd),
+        mockCostMicroUsd: Number(r.mockCostMicroUsd),
       })),
     }
   })
@@ -188,6 +210,7 @@ export function registerStats(app: FastifyInstance, deps: { db: Db }): void {
         locked: sql<number>`count(distinct ${s.shots.id}) filter (where ${s.shots.status} = 'locked')::int`,
         review: sql<number>`count(distinct ${s.shots.id}) filter (where ${s.shots.status} = 'review')::int`,
         costMicroUsd: sql<string>`coalesce(sum(${s.generationJobs.costMicroUsd}), 0)`,
+        mockCostMicroUsd: mockCostSql,
       })
       .from(s.episodes)
       .leftJoin(s.scenes, eq(s.scenes.episodeId, s.episodes.id))
@@ -204,6 +227,7 @@ export function registerStats(app: FastifyInstance, deps: { db: Db }): void {
         locked: r.locked,
         review: r.review,
         costMicroUsd: Number(r.costMicroUsd),
+        mockCostMicroUsd: Number(r.mockCostMicroUsd),
       })),
     }
   })

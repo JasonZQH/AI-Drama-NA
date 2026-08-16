@@ -3,7 +3,7 @@
 import { RANGE_LABEL, usd, type RangeKey, type Timeseries, type TimeseriesPoint } from '@/lib/api'
 import { useGSAP } from '@gsap/react'
 import gsap from 'gsap'
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 gsap.registerPlugin(useGSAP)
 
@@ -26,10 +26,17 @@ const GRANULARITY: Record<Timeseries['granularity'], string> = {
   month: '按月',
 }
 
-// 绘图区，单位是 viewBox 用户坐标。等比缩放（不动 preserveAspectRatio），
-// 这样 getTotalLength() 与 strokeDasharray 用的是同一套单位
-const VB = { w: 620, h: 180 }
-const PLOT = { l: 46, r: 574, t: 16, b: 148 }
+/**
+ * 绘图区，单位是 viewBox 用户坐标。
+ *
+ * **宽度实测、不等比缩放。** 早先 `viewBox="0 0 620 180" class="w-full"` 会让
+ * 图随页宽等比放大——1400px 宽的窗口下高度变成 400px，一屏就装不下了。改为
+ * 把容器实测宽度直接当 viewBox 宽度（1:1），高度钉死；这样既不失真，
+ * getTotalLength() 与 strokeDasharray 也仍在同一套单位里。
+ */
+const VB_H = 132
+const PAD = { l: 46, r: 46, t: 14, b: 24 }
+const MIN_W = 320
 
 /** 月粒度时 x 轴只到「年-月」——日号在按月聚合下是噪音 */
 function tickLabel(at: string, g: Timeseries['granularity']): string {
@@ -61,10 +68,26 @@ export function TrendChart({
   onSettled,
 }: TrendChartProps): React.ReactElement {
   const root = useRef<HTMLDivElement>(null)
+  const svgBox = useRef<HTMLDivElement>(null)
+  const [vbW, setVbW] = useState(760)
   const costRef = useRef<SVGPathElement>(null)
   const dotRef = useRef<SVGCircleElement>(null)
   // 编排只属于「载入」这一刻；之后切区间是查询行为，静态呈现即可
   const played = useRef(false)
+
+  useEffect(() => {
+    const el = svgBox.current
+    if (!el) return
+    const ro = new ResizeObserver(([entry]) => {
+      const w = entry?.contentRect.width ?? 0
+      // 宽度 0 说明容器被隐藏了，别拿它去重排
+      if (w > 0) setVbW(Math.max(MIN_W, Math.round(w)))
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const PLOT = { l: PAD.l, r: vbW - PAD.r, t: PAD.t, b: VB_H - PAD.b }
 
   const pts = data?.points ?? []
   const n = pts.length
@@ -84,7 +107,12 @@ export function TrendChart({
   useGSAP(
     () => {
       const path = costRef.current
-      if (played.current) return
+      // 已经播过就把这一格交还给 React。少了这一句，resize 触发的重跑会
+      // 直接 return，数字永远停在被打断的那一帧上
+      if (played.current) {
+        onSettled?.()
+        return
+      }
       /*
        * 编排跑不成时要交还这一格，否则「总花费」会永远停在空白上。
        * 触发条件是没有曲线可画（无数据）或总额还没到——后者只是还没轮到，
@@ -131,6 +159,9 @@ export function TrendChart({
                 // 数完把这一格交还给 React，之后 SSE 刷新才写得进去
                 onComplete: () => {
                   write()
+                  // 清掉内联 dash：路径会随窗口宽度重算，旧的 dasharray
+                  // 一旦短于新路径就会把实线画成虚线
+                  gsap.set(path, { clearProps: 'strokeDasharray,strokeDashoffset' })
                   onSettled?.()
                 },
               },
@@ -146,18 +177,24 @@ export function TrendChart({
 
       return () => mm.revert()
     },
-    // 曲线形状或总额变化都要重新求值：两者谁先到达都不能错过编排的时机
-    { scope: root, dependencies: [dCost, totalMicroUsd], revertOnUpdate: true },
+    /*
+     * 依赖只挂「数据到没到」，不挂曲线形状。
+     *
+     * dCost 会随窗口宽度重算（viewBox 宽度是实测的），挂上去就等于每次 resize
+     * 都重跑一次编排；配 revertOnUpdate 更会把跑到一半的补间直接杀掉，数字
+     * 就永远停在中途——实测就是这么停在 $0.00 的。
+     */
+    { scope: root, dependencies: [totalMicroUsd, n > 0] },
   )
 
   return (
     <section
       ref={root}
-      className="rounded-[10px] p-4"
+      className="rounded-[10px] px-3 py-2"
       style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
     >
-      <div className="mb-3 flex flex-wrap items-center gap-3">
-        <h2 className="text-[18px] leading-[26px] font-medium">趋势</h2>
+      <div className="mb-1.5 flex flex-wrap items-center gap-3">
+        <h2 className="text-[13px] font-medium">趋势</h2>
         {data && (
           <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
             {GRANULARITY[data.granularity]} · <span className="tnum">{n}</span> 个点
@@ -185,7 +222,7 @@ export function TrendChart({
       </div>
 
       {/* 两条曲线共用纵向空间但量纲不同，所以左右各标一次刻度 */}
-      <div className="mb-2 flex flex-wrap items-center gap-4 text-[11px]">
+      <div className="mb-1 flex flex-wrap items-center gap-4 text-[11px]">
         <span className="flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
           <svg width="14" height="8" aria-hidden>
             <line x1="0" y1="4" x2="14" y2="4" stroke="var(--chart-1)" strokeWidth="2" />
@@ -213,93 +250,103 @@ export function TrendChart({
         )}
       </div>
 
-      {n === 0 ? (
-        /* 空态给下一步动作，不能只说「暂无数据」（验收 §10） */
-        <div
-          className="rounded-md p-6 text-center"
-          style={{ background: 'var(--bg-inset)', color: 'var(--text-secondary)' }}
-        >
-          <p>这个区间内还没有生成记录。</p>
-          <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            到下方任一项目里生成一集，曲线与成本就会出现在这里；或把区间切到「全部」看历史。
-          </p>
-        </div>
-      ) : (
-        <svg
-          viewBox={`0 0 ${VB.w} ${VB.h}`}
-          className="w-full"
-          role="img"
-          aria-label={`每日花费与一次通过率趋势，${RANGE_LABEL[range]}，共 ${n} 个数据点`}
-        >
-          <line x1={PLOT.l} y1={PLOT.t} x2={PLOT.r} y2={PLOT.t} stroke="var(--border)" strokeWidth="1" />
-          <line
-            x1={PLOT.l}
-            y1={PLOT.b}
-            x2={PLOT.r}
-            y2={PLOT.b}
-            stroke="var(--border-strong)"
-            strokeWidth="1"
-          />
-
-          <text
-            className="tnum"
-            x={PLOT.l - 6}
-            y={PLOT.t + 4}
-            textAnchor="end"
-            fontSize="10"
-            fill="var(--text-muted)"
+      <div ref={svgBox} className="w-full">
+        {n === 0 ? (
+          /* 空态给下一步动作，不能只说「暂无数据」（验收 §10） */
+          <div
+            className="rounded-md p-4 text-center text-[12px]"
+            style={{ background: 'var(--bg-inset)', color: 'var(--text-secondary)', height: VB_H }}
           >
-            {usd(maxCost)}
-          </text>
-          <text
-            className="tnum"
-            x={PLOT.l - 6}
-            y={PLOT.b + 4}
-            textAnchor="end"
-            fontSize="10"
-            fill="var(--text-muted)"
+            <p>这个区间内还没有生成记录。</p>
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              到下方任一项目里生成一集，曲线与成本就会出现在这里；或把区间切到「全部」看历史。
+            </p>
+          </div>
+        ) : (
+          <svg
+            viewBox={`0 0 ${vbW} ${VB_H}`}
+            width={vbW}
+            height={VB_H}
+            className="block"
+            role="img"
+            aria-label={`每日花费与一次通过率趋势，${RANGE_LABEL[range]}，共 ${n} 个数据点`}
           >
-            $0
-          </text>
-          <text className="tnum" x={PLOT.r + 6} y={PLOT.t + 4} fontSize="10" fill="var(--text-muted)">
-            100%
-          </text>
-          <text className="tnum" x={PLOT.r + 6} y={PLOT.b + 4} fontSize="10" fill="var(--text-muted)">
-            0%
-          </text>
+            <line x1={PLOT.l} y1={PLOT.t} x2={PLOT.r} y2={PLOT.t} stroke="var(--border)" strokeWidth="1" />
+            <line
+              x1={PLOT.l}
+              y1={PLOT.b}
+              x2={PLOT.r}
+              y2={PLOT.b}
+              stroke="var(--border-strong)"
+              strokeWidth="1"
+            />
 
-          <path d={dRate} fill="none" stroke="var(--chart-2)" strokeWidth="1.5" strokeDasharray="4 3" />
-          <path
-            ref={costRef}
-            d={dCost}
-            fill="none"
-            stroke="var(--chart-1)"
-            strokeWidth="2"
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-          {last && (
-            <circle ref={dotRef} cx={x(n - 1)} cy={yCost(last.costMicroUsd)} r="3.5" fill="var(--chart-1)" />
-          )}
+            <text
+              className="tnum"
+              x={PLOT.l - 6}
+              y={PLOT.t + 4}
+              textAnchor="end"
+              fontSize="10"
+              fill="var(--text-muted)"
+            >
+              {usd(maxCost)}
+            </text>
+            <text
+              className="tnum"
+              x={PLOT.l - 6}
+              y={PLOT.b + 4}
+              textAnchor="end"
+              fontSize="10"
+              fill="var(--text-muted)"
+            >
+              $0
+            </text>
+            <text className="tnum" x={PLOT.r + 6} y={PLOT.t + 4} fontSize="10" fill="var(--text-muted)">
+              100%
+            </text>
+            <text className="tnum" x={PLOT.r + 6} y={PLOT.b + 4} fontSize="10" fill="var(--text-muted)">
+              0%
+            </text>
 
-          {tickIndexes(n).map((i) => {
-            const p = pts[i]
-            if (!p) return null
-            return (
-              <text
-                key={p.at}
-                x={x(i)}
-                y={VB.h - 6}
-                fontSize="10"
-                fill="var(--text-muted)"
-                textAnchor={i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'}
-              >
-                {tickLabel(p.at, data?.granularity ?? 'day')}
-              </text>
-            )
-          })}
-        </svg>
-      )}
+            <path d={dRate} fill="none" stroke="var(--chart-2)" strokeWidth="1.5" strokeDasharray="4 3" />
+            <path
+              ref={costRef}
+              d={dCost}
+              fill="none"
+              stroke="var(--chart-1)"
+              strokeWidth="2"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+            {last && (
+              <circle
+                ref={dotRef}
+                cx={x(n - 1)}
+                cy={yCost(last.costMicroUsd)}
+                r="3.5"
+                fill="var(--chart-1)"
+              />
+            )}
+
+            {tickIndexes(n).map((i) => {
+              const p = pts[i]
+              if (!p) return null
+              return (
+                <text
+                  key={p.at}
+                  x={x(i)}
+                  y={VB_H - 6}
+                  fontSize="10"
+                  fill="var(--text-muted)"
+                  textAnchor={i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'}
+                >
+                  {tickLabel(p.at, data?.granularity ?? 'day')}
+                </text>
+              )
+            })}
+          </svg>
+        )}
+      </div>
     </section>
   )
 }

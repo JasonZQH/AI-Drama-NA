@@ -1,11 +1,16 @@
-import Workspace from '@/components/Workspace'
+import Dashboard, { DashboardNav } from '@/components/Dashboard'
+import { Shell } from '@/components/Shell'
 
 /**
- * 管理面板的唯一入口。
+ * 工作台。
  *
- * 标签栈是客户端状态而非路由——走路由会让 Next 卸载并重建整棵树，正好抵消
- * 「全挂载」的意义。深链由 URL hash 承载（见 lib/tabs.tsx）。
+ * 项目与分集走真实路由并在新浏览器标签打开——所以这里不再有应用内标签栈。
+ * 深链、后退、收藏、多显示器摊开，全部回到浏览器自己的能力上。
  */
 export default function Home(): React.ReactElement {
-  return <Workspace />
+  return (
+    <Shell nav={<DashboardNav />}>
+      <Dashboard />
+    </Shell>
+  )
 }

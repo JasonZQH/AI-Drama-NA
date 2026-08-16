@@ -65,9 +65,16 @@ export interface Shot {
 }
 
 export interface EpisodeTree {
-  episode: { id: string; index: number; title: string | null; targetDurationSec: number }
+  episode: {
+    id: string
+    index: number
+    title: string | null
+    targetDurationSec: number
+    /** 端点一直在返回整行，页面要靠它渲染项目侧边栏 */
+    projectId: string
+  }
   scenes: { id: string; index: number; summary: string | null; timeOfDay: string | null }[]
-  shots: { shot: Shot; takeCount: number; costMicroUsd: number }[]
+  shots: { shot: Shot; takeCount: number; costMicroUsd: number; mockCostMicroUsd: number }[]
 }
 
 export interface DryRunPlan {
@@ -92,7 +99,14 @@ export interface TakeRow {
 // ── 管理面板的聚合类型（对应 apps/control/src/routes/stats.ts）──
 
 export interface Overview {
-  totals: { projects: number; shots: number; costMicroUsd: number; usdPerAcceptedMicro: number | null }
+  totals: {
+    projects: number
+    shots: number
+    costMicroUsd: number
+    /** 其中由 mock provider 产生的部分。等于 costMicroUsd 时全是演示数据 */
+    mockCostMicroUsd: number
+    usdPerAcceptedMicro: number | null
+  }
   attention: { failedShots: number; pendingReview: number }
   queue: { running: number; queued: number }
   budget: { spentTodayMicroUsd: number; dailyLimitMicroUsd: number }
@@ -114,6 +128,7 @@ export const RANGE_LABEL: Record<RangeKey, string> = {
 export interface TimeseriesPoint {
   at: string
   costMicroUsd: number
+  mockCostMicroUsd: number
   attempts: number
   accepted: number
   firstPass: number
@@ -134,6 +149,7 @@ export interface ProjectSummary {
   shots: number
   locked: number
   costMicroUsd: number
+  mockCostMicroUsd: number
 }
 
 export interface EpisodeSummary {
@@ -147,6 +163,7 @@ export interface EpisodeSummary {
   locked: number
   review: number
   costMicroUsd: number
+  mockCostMicroUsd: number
 }
 
 export interface AttentionItem {
