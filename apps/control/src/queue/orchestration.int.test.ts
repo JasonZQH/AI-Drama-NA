@@ -1133,6 +1133,38 @@ describe('崩溃恢复（§8）', () => {
   })
 })
 
+describe('渲染的崩溃恢复', () => {
+  /**
+   * `renderEpisode` 是同步等 media worker 的，所以进程一死，那行 render_jobs
+   * 就永远停在 running——没人再碰它，而 `GET /api/watch/:id` 只认 succeeded 的
+   * 母版，那一集在面板上永远转圈。
+   *
+   * 与生成不同，这里没有「可能已计费」的两难：重渲染不花钱，母版只增不改，
+   * 所以直接判失败让人重来。
+   */
+  it('reconcile 把渲染途中重启留下的 running 判失败并写明原因', async () => {
+    const [tl] = await db
+      .insert(s.timelines)
+      .values({ episodeId: (await db.select({ id: s.episodes.id }).from(s.episodes).limit(1))[0]!.id })
+      .returning({ id: s.timelines.id })
+    const [orphan] = await db
+      .insert(s.renderJobs)
+      .values({ timelineId: tl!.id, status: 'running', startedAt: new Date() })
+      .returning({ id: s.renderJobs.id })
+
+    const r = await reconcileOnBoot(deps)
+    expect(r.staleRenders).toBeGreaterThanOrEqual(1)
+
+    const [after] = await db.select().from(s.renderJobs).where(eq(s.renderJobs.id, orphan!.id))
+    expect(after!.status).toBe('failed')
+    expect(after!.ffmpegLog, '得告诉人这不是渲染本身失败，是重启').toContain('重启')
+    expect(after!.finishedAt).not.toBeNull()
+
+    await db.delete(s.renderJobs).where(eq(s.renderJobs.id, orphan!.id))
+    await db.delete(s.timelines).where(eq(s.timelines.id, tl!.id))
+  })
+})
+
 describe('provider 配额信号量是跨进程的（§3 第 ② 层）', () => {
   it('超过上限拿不到槽位，释放后可再拿', async () => {
     await reset(redis, 'testp')

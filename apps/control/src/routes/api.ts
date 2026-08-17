@@ -197,13 +197,21 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
   /**
    * 渲染本集（06-api-spec.md §5）。
    * 控制面只把 clip 清单交给 media worker，字节流不经过这里。
+   *
+   * **200 而不是 202**：`renderEpisode` 从头到尾 await media worker，返回时母版
+   * 已经落库，响应体里带着 assetId / storageKey——那是完成的形状，不是 Accepted 的。
+   * 此前回 202 是句谎话：调用方以为要去轮询，而根本没有可轮询的端点
+   * （`GET /api/renders/:id` 文档里有、代码里没有）。
+   *
+   * 真做成异步是有代价的：要建 q:render、拆 worker、补轮询端点。M1 不碰渲染，
+   * 真异步现在没有需求方，所以选「让代码别说谎」而不是「把谎话实现出来」。
+   * 一集 12 镜的渲染实测 4 秒级，同步等得住。
    */
-  app.post('/api/episodes/:id/render', async (req, reply) => {
+  app.post('/api/episodes/:id/render', async (req) => {
     const { id } = Uuid.parse(req.params)
     const body = z.object({ quality: z.enum(['preview', 'final']).default('preview') }).parse(req.body ?? {})
     try {
-      const r = await renderEpisode({ db, media: deps.media }, id, { quality: body.quality })
-      return reply.status(202).send(r)
+      return await renderEpisode({ db, media: deps.media }, id, { quality: body.quality })
     } catch (e) {
       throw new ApiError('CONFLICT', e instanceof Error ? e.message : String(e))
     }

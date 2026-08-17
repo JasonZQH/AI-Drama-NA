@@ -167,11 +167,27 @@ POST   /api/episodes/:id/tts              为所有有台词的镜头合成配�
 
 GET    /api/episodes/:id/timeline         当前 timeline（不存在则按 locked shots 自动生成草稿）
 PUT    /api/episodes/:id/timeline         整体保存 clips 顺序与 trim
-POST   /api/episodes/:id/render
-Body: { quality?: 'preview' | 'final', burnSubtitles?: boolean }
-     → 202 { renderJobId }
-GET    /api/renders/:id                   { status, progressPct, outputAssetId?, ffmpegLog? }
+POST   /api/episodes/:id/render           ✅ 已实现
+Body: { quality?: 'preview' | 'final' }   （burnSubtitles 未实现）
+     → 200 { renderJobId, assetId, storageKey, durationSec, normalizedReused }
+GET    /api/renders/:id                   ⛔ 未实现，见下
 ```
+
+**渲染是同步的，回 200 不是 202。** `renderEpisode` 从头到尾 await media worker，
+返回时母版已经落库——响应体里带着 `assetId` / `storageKey`，那是完成的形状。
+
+此前这里写 202 且列了一个轮询端点，两条都不成立：调用方以为要去轮询，而
+`GET /api/renders/:id` 代码里根本不存在。真做成异步要建 `q:render`、拆 worker、
+补轮询端点，而 M1 不碰渲染、真异步没有需求方——所以选「让代码别说谎」，
+而不是「把谎话实现出来」。一集 12 镜的渲染实测 4 秒级，同步等得住。
+
+批量渲染 N 集时的背压问题等真有 N 集再说；`progressPct` 同理（要额外解析
+ffmpeg 的进度管道，而现在没人看这个数）。
+
+> **控制面在渲染途中重启**会留下停在 `running` 的 `render_jobs`，而
+> `GET /api/watch/:id` 只认 `succeeded` 的母版，于是那一集在面板上永远转圈。
+> `reconcileOnBoot` 现在会把这类孤儿判失败并写明原因。与生成不同，这里没有
+> 「可能已计费」的两难——重渲染不花钱，且母版只增不改（约束 C5），直接让人重来即可。
 
 ## 6. 播放与统计
 
