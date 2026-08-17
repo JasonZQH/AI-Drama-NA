@@ -483,9 +483,14 @@ async function fail(
  *
  * 幂等是这套逻辑成立的前提——所以它是 provider 契约测试的第一条。
  */
-export async function reconcileOnBoot(
-  deps: OrchestratorDeps,
-): Promise<{ requeued: number; resumed: number; inFlight: number; inDoubt: number }> {
+export async function reconcileOnBoot(deps: OrchestratorDeps): Promise<{
+  requeued: number
+  resumed: number
+  inFlight: number
+  inDoubt: number
+  /** 控制面在渲染途中重启留下的孤儿 render_jobs，已判失败 */
+  staleRenders: number
+}> {
   const stuck = await deps.db
     .select()
     .from(s.generationJobs)
@@ -539,5 +544,30 @@ export async function reconcileOnBoot(
       console.error(`[reconcile] job ${job.id} 处理失败，跳过：`, e instanceof Error ? e.message : e)
     }
   }
-  return { requeued, resumed, inFlight, inDoubt }
+
+  /*
+   * 渲染任务也要扫。
+   *
+   * `renderEpisode` 是同步等 media worker 的，所以进程一死，那行 render_jobs
+   * 就永远停在 running——没有任何人会再碰它。而 `GET /api/watch/:id` 只认
+   * `status = 'succeeded'` 的母版，于是面板上那一集永远在转圈，人也不知道该重来。
+   *
+   * 与 generation 不同，这里**没有两难**：重渲染不花钱（media worker 是自己的
+   * ffmpeg），而 nextVersion 保证母版只增不改（约束 C5），所以直接判失败让人
+   * 重来即可，不需要 submit_unknown 那套「可能已计费」的谨慎。
+   *
+   * 无条件扫：跑到这里说明控制面刚起来，而渲染只在控制面进程里跑，
+   * 所以此刻任何 running 的渲染都必然是上一条命留下的。
+   */
+  const orphanRenders = await deps.db
+    .update(s.renderJobs)
+    .set({
+      status: 'failed',
+      ffmpegLog: '控制面在渲染途中重启，本次渲染的结果未知。重新发起即可——重渲染不花钱，母版只增不改。',
+      finishedAt: new Date(),
+    })
+    .where(eq(s.renderJobs.status, 'running'))
+    .returning({ id: s.renderJobs.id })
+
+  return { requeued, resumed, inFlight, inDoubt, staleRenders: orphanRenders.length }
 }
