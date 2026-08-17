@@ -215,7 +215,7 @@ def nav_html(docs_by_num: dict[str, Doc], current: str | None) -> str:
     out.append(
         '<div class="extra">'
         '<a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a>'
-        '<a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a>'
+        '<a class="nav-item" href="adr.html"><span class="num">ADR</span><span>架构决策记录</span></a>'
         "</div>"
     )
     return "\n".join(out)
@@ -432,6 +432,45 @@ def main() -> int:
         (OUT_DIR / d.href).write_text(page, encoding="utf-8")
         print(f"  ✓ {d.href}")
 
+    # ADR 索引页
+    #
+    # 此前 nav 与索引卡片都指向裸目录 `adr/`，而那里只有 .md、没有 index，
+    # 于是生成站点唯一的系统性断链就在这里（issue #21）。
+    #
+    # **刻意不把 ADR 也渲染成 HTML。** 那要处理子目录的 CSS 前缀、侧栏分组、
+    # pager——shell() 里那句 `prefix = "" if is_index else ""` 两个分支都是空的，
+    # 正是上次想做子目录留下的半成品。ADR 是短决策记录，一张索引加直链就够了；
+    # 旁边那条 README 链接本来也是直接指向 .md。
+    #
+    # 索引页放在**同级**（docs/adr.html）而不是 docs/adr/index.html，就是为了
+    # 绕开那个前缀问题：同级页面复用现成的 shell() 一个字都不用改。
+    adr_files = sorted((OUT_DIR / "adr").glob("*.md"))
+    adr_cards = []
+    for p in adr_files:
+        first = p.read_text(encoding="utf-8").splitlines()[0].lstrip("# ").strip()
+        num, _, rest = first.partition("·")
+        adr_cards.append(
+            f'<a class="card" href="adr/{p.name}">'
+            f'<div class="num">{html.escape(num.strip().replace("ADR-", ""))}</div>'
+            f'<div class="title">{html.escape(rest.strip() or first)}</div></a>'
+        )
+    adr_main = (
+        '<div class="hero">'
+        '<div class="eyebrow">Architecture Decision Records</div>'
+        "<h1>架构决策记录</h1>"
+        "<p>每条记录一个绕不过去的取舍：当时的背景、考虑过的备选、为什么选它、"
+        "以及接受了什么后果。决策变了就写新的一条，不改旧的——"
+        "决策记录的价值在于保留当时的理由，而不是保持正确。</p>"
+        "</div>"
+        '<div class="card-grid">' + "".join(adr_cards) + "</div>"
+    )
+    (OUT_DIR / "adr.html").write_text(
+        shell(title="架构决策记录", crumb="架构决策记录", nav=nav_html(by_num, None),
+              main=adr_main, toc='<aside class="toc"></aside>', is_index=True),
+        encoding="utf-8",
+    )
+    print(f"  ✓ adr.html（{len(adr_cards)} 条）")
+
     # 索引页
     cards = []
     for label, nums in GROUPS:
@@ -460,7 +499,7 @@ def main() -> int:
         '<div class="card-grid">'
         '<a class="card" href="../README.md"><div class="num">README</div>'
         '<div class="title">项目说明</div><div class="desc">技术选型速览、快速开始、里程碑概览</div></a>'
-        '<a class="card" href="adr/"><div class="num">ADR</div>'
+        '<a class="card" href="adr.html"><div class="num">ADR</div>'
         '<div class="title">架构决策记录</div><div class="desc">十一条关键决策的背景、备选与后果</div></a>'
         "</div>"
     )

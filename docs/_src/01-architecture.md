@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart TD
-    PP["<b>PRESENTATION PLANE</b> · Next.js 15 App Router · TS<br/>Studio UI · Player · 实时进度 SSE · 资产浏览"]
+    PP["<b>PRESENTATION PLANE</b> · Next.js 16 App Router · TS<br/>Studio UI · Player · 实时进度 SSE · 资产浏览"]
     CP["<b>CONTROL PLANE</b> · Fastify · TypeScript<br/>领域模型与业务规则 · 流水线状态机<br/>Provider 路由与适配器 · 队列生产与消费 BullMQ<br/>Generation Ledger 成本与质量记账<br/>—— 唯一拥有 Postgres 写权限的进程 ——"]
     GP["<b>GENERATION PLANE</b> · Python · FastAPI · 远程 GPU<br/>Wan2.2 · Hunyuan · TTS · Eval · FFmpeg worker"]
     ST["<b>STORAGE</b><br/>MinIO S3<br/>媒体与母版"]
@@ -50,10 +50,14 @@ Mac 与远程 GPU 的连通用 **Tailscale**（推荐）或 SSH 反向隧道，�
 
 ## 3. Monorepo 目录结构
 
+> 下面是**目标结构**。未标注的目录当前已存在；`[规划中]` 表示尚未创建、里程碑待定；
+> `[M2]` / `[M6]` 已在 §7 演进路径中排期。**别照着这棵树预建空目录**——空壳只会让人
+> 以为那一层已经支持了（同 `providers/README.md` 那条：不要提前造空适配器类）。
+
 ```
 ai-drama-studio/
 ├─ apps/
-│  ├─ web/                    # Next.js 15 · Studio + Player
+│  ├─ web/                    # Next.js 16 · Studio + Player
 │  │  ├─ app/
 │  │  │  ├─ (studio)/         # 生产界面路由组
 │  │  │  └─ (watch)/          # 播放器路由组
@@ -96,7 +100,7 @@ flowchart LR
     W["apps/web<br/>直接 import 类型"]
     C["apps/control<br/>import + zod 运行时校验"]
     P["workers/*<br/>pydantic 由 JSON Schema 生成"]
-    A -->|"zod-to-json-schema"| B
+    A -->|"z.toJSONSchema()（zod v4 内置）"| B
     A --> W
     A --> C
     B --> P
@@ -175,6 +179,14 @@ flowchart TD
     "message": "厂商 SDK 只能出现在 providers/ 的适配器实现里（ADR-0002）" }
 ]}]
 ```
+
+> ⚠️ **这条规则目前没有给 `providers/` 开豁免。** `eslint.config.js` 里那条厂商 SDK 的
+> `no-restricted-imports` 是全局的，实测在 `providers/` 下 import `@vidu/sdk` 同样报错——
+> 也就是说它会拦住自己声称允许的那个目录。M1 走 OpenRouter 用的是原生 `fetch`、
+> 不引入任何厂商 SDK，所以暂时撞不上；真要引 SDK 时得先给 `providers/**` 加一条豁免。
+>
+> 另外「零 IO」那条今天真正约束的是 `pipeline/shotMachine.ts`（配置里显式列了它），
+> 而 `domain/**` 那半边**匹配零文件**——目录还没建，规则是预留的。
 
 更硬的一层是 **pnpm workspace 包边界**：把 `domain` 做成独立包、只导出该导出的，"导入内部实现"在物理上就不可能。这比任何运行时协议的约束都强，且零运行时代价。
 

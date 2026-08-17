@@ -60,7 +60,7 @@
 <div class="label">生成质量</div>
 <a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
 </div>
-<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr.html"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
   <main class="content"><div class="doc-head"><div class="eyebrow">文档 06</div><h1>控制面 API 规范</h1></div><blockquote>
 <p>Status: Draft v1 · 2026-08-10 · Base URL: <code>http://localhost:4000</code> · 依赖：<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a></p>
 </blockquote>
@@ -83,23 +83,23 @@
 </tr>
 <tr>
 <td>校验</td>
-<td>每个路由用 <code>packages/contracts</code> 的 zod schema 校验入参，校验失败返回 422</td>
+<td>⚠️ 422 与统一错误体 ✅ 成立，但 schema 是<strong>各路由文件里就地写的 <code>z.object</code></strong>，不是来自 <code>packages/contracts</code>（那里根本没有 HTTP 入参 schema）。且并非每个路由都校验——多条只解析 <code>:id</code>，body 与 query 基本不校验</td>
 </tr>
 <tr>
 <td>分页</td>
-<td>游标分页 <code>?cursor=&amp;limit=</code>，响应含 <code>nextCursor</code></td>
+<td>⛔ 未实现。全仓零 <code>cursor</code>；<code>GET /api/projects</code> 全量返回，<code>/api/attention</code> 写死 <code>limit 50</code>。等真有几百个项目再说</td>
 </tr>
 <tr>
 <td>幂等</td>
-<td>所有会产生费用的 POST 支持 <code>Idempotency-Key</code> 头</td>
+<td>⛔ HTTP 层未实现——没有任何路由读 <code>Idempotency-Key</code>。<strong>防重复付费在队列层</strong>：每行 <code>generation_jobs</code> 至多 submit 一次（<code>queue/orchestrator.ts</code> 的 <code>claimForSubmit</code>），结果未知时停下不自动重投（<code>05</code> §5.3）。HTTP 幂等键是目标态</td>
 </tr>
 <tr>
 <td>错误</td>
-<td>统一错误体（见 §8）</td>
+<td>✅ 统一错误体（见 §8）</td>
 </tr>
 <tr>
 <td>认证</td>
-<td><strong>所有非 GET 请求必须带 <code>x-api-key: $CONTROL_API_KEY</code></strong>，否则 401。GET 与 SSE 不校验（见下）</td>
+<td>✅ <strong>所有非 GET 请求必须带 <code>x-api-key: $CONTROL_API_KEY</code></strong>，否则 401。GET、SSE 与 CORS 预检的 <code>OPTIONS</code> 不校验（见下）</td>
 </tr>
 </tbody>
 </table></div>
@@ -119,6 +119,100 @@
 <p>配套两个开关：<code>CONTROL_HOST</code> 默认 <code>127.0.0.1</code>（不上局域网）；
 <code>WEB_ORIGIN</code> 收紧 CORS——它不是钱的闸门，但决定攻击是「盲打」还是
 「先跨域读 GET 枚举出 UUID 再精确制导」。</p>
+</blockquote>
+<h2 id="1.1-承诺与实现的总账">1.1 承诺与实现的总账<a aria-label="链接到此节" class="anchor" href="#1.1-承诺与实现的总账">#</a></h2>
+<blockquote>
+<p><strong>本文承诺 53 条路由，控制面实际注册 22 条，而 53 条里真正被服务的只有 17 条。</strong>
+差额不是「还没写完」那么简单——有 5 条已实现的路由本文一个字没提，另有 10 条
+路径对得上但<strong>签名或语义不符</strong>。核验方式：起真控制面 <code>app.printRoutes()</code> 打路由表，
+再对每条承诺 <code>app.inject()</code> 实测状态码与响应体。</p>
+</blockquote>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>状态</th>
+<th>条数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>✅ 签名相符</td>
+<td>7</td>
+<td>照着文档调就能用</td>
+</tr>
+<tr>
+<td>⚠️ 已实现但不符</td>
+<td>10</td>
+<td>路径对，但 body / query / 响应形状与文档不同——<strong>照着文档调会静默拿到别的东西</strong></td>
+</tr>
+<tr>
+<td>⛔ 未实现</td>
+<td>36</td>
+<td>实测 404</td>
+</tr>
+<tr>
+<td>📋 已实现但本文没写</td>
+<td>5</td>
+<td>见 §6.1</td>
+</tr>
+</tbody>
+</table></div>
+<p>十条「不符」的具体差异（这些最容易踩）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>端点</th>
+<th>差在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/projects/:id</code></td>
+<td>不含统计摘要，实为 <code>{ project, episodes }</code>；统计在 <code>/stats</code></td>
+</tr>
+<tr>
+<td><code>GET /api/episodes/:id</code></td>
+<td>返回三个<strong>平铺数组</strong>不是嵌套树；shots 每项额外带 <code>takeCount</code> / 成本</td>
+</tr>
+<tr>
+<td><code>POST /api/shots/:id/generate</code></td>
+<td><strong>body 完全不解析</strong>（<code>providerHint</code> / <code>overrides</code> / <code>count</code> 静默忽略）；响应是 <code>{ shotId, status }</code> 不是 <code>{ generationJobIds }</code></td>
+</tr>
+<tr>
+<td><code>POST /api/episodes/:id/generate-batch</code></td>
+<td>只解析 <code>dryRun</code>；<code>scope</code> / <code>providerHint</code> 传了不报错也不生效；<code>dryRun:true</code> 回 <strong>200</strong> 且形状不同；<code>batchId</code> 不落库</td>
+</tr>
+<tr>
+<td><code>POST /api/takes/:id/reject</code></td>
+<td>不止改 take——拒掉<strong>最后一个</strong>候选会带动镜头走状态机；响应里的 <code>status</code> 是镜头状态</td>
+</tr>
+<tr>
+<td><code>GET /api/projects/:id/assets</code></td>
+<td><strong>路径被 §3 的一致性资产占用</strong>，返回 <code>{ characters, locations, styles }</code>；<code>?kind=&amp;cursor=&amp;limit=</code> 全不解析。媒体资产列表没有端点</td>
+</tr>
+<tr>
+<td><code>GET /api/watch/:episodeId</code></td>
+<td><code>hlsUrl</code>（M5）与 <code>subtitleUrl</code>（M3）<strong>永远不出现</strong></td>
+</tr>
+<tr>
+<td><code>GET /api/projects/:id/stats</code></td>
+<td>四段形状<strong>全部</strong>与文档不同，且没有 <code>queue</code> 段（跨项目的在 <code>/api/stats/overview</code>）</td>
+</tr>
+<tr>
+<td><code>GET /api/projects/:id/events</code></td>
+<td><strong><code>:id</code> 不做过滤</strong>——这个频道是全量广播，路径里的 id 只是历史形状</td>
+</tr>
+<tr>
+<td><code>POST /api/episodes/:id/render</code></td>
+<td>见 §5：同步，回 200 不是 202</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>为什么不逐条在下面标 ⛔。</strong> 36 条未实现的散落在 §2–§5，逐行加标记会让代码块
+读不下去，而且每次实现一条就要改两处（代码块 + 这张表）。总账集中在这里，
+下面各节保持「目标 API 长什么样」的可读性——需要知道某条能不能用，回来查这张表。</p>
 </blockquote>
 <h2 id="2.-项目与剧本">2. 项目与剧本<a aria-label="链接到此节" class="anchor" href="#2.-项目与剧本">#</a></h2>
 <div class="codeblock"><pre><code>GET    /api/projects                      列表
@@ -254,6 +348,19 @@ GET /api/projects/:id/stats
         queue:  { depth, running }
       }
 </code></pre></div>
+<h3 id="6.1-管理面板端点-已实现此前未写入本文档">6.1 管理面板端点（✅ 已实现，此前未写入本文档）<a aria-label="链接到此节" class="anchor" href="#6.1-管理面板端点-已实现此前未写入本文档">#</a></h3>
+<div class="codeblock"><pre><code>GET /api/stats/overview                   跨项目总览：totals / attention / queue / budget
+                                          （distribution 与 revenue 恒为 null，M4 接投放回传时填充）
+GET /api/stats/timeseries  ?range=30d|3m|6m|1y|all   成本与通过率时间序列，粒度由区间自动推导
+GET /api/projects/summary                 项目列表 + 集数/镜头/locked/成本聚合（避免前端 N+1）
+GET /api/attention                        跨项目待办：failed 与 review 的镜头（写死 limit 50）
+GET /api/events                           SSE 全量广播，管理面板一条连接分发给各标签
+</code></pre></div>
+<blockquote>
+<p>每个成本聚合都同时给出 <code>mockCostMicroUsd</code>——mock provider 的钱不是真花的钱，
+界面必须能把两者分开标。同理 <code>cost_estimated</code>：超时与「提交结果未知」记的是
+按价目表估的数，不是 provider 回报的真实计费（<code>05</code> §6.1）。</p>
+</blockquote>
 <h2 id="7.-sse">7. SSE<a aria-label="链接到此节" class="anchor" href="#7.-sse">#</a></h2>
 <div class="codeblock"><pre><code>GET /api/projects/:id/events        Accept: text/event-stream
 </code></pre></div>
@@ -338,6 +445,7 @@ data: {"episodeId":"...","done":18,"total":24,"failed":1}
 类型是给零调用方建基础设施。前端 14 处手写类型全在同一个文件里，改一次 API 改一处，
 codegen 的净收益为负。等实现比例反过来了再说。</p><nav class="pager"><a href="05-job-orchestration.html"><div class="dir">← 上一篇</div><div class="name">05 · 任务编排：队列、重试、并发与记账</div></a><a class="next" href="07-design-system.html"><div class="dir">下一篇 →</div><div class="name">07 · 前端设计系统</div></a></nav></main>
   <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-约定">1. 约定</a>
+<a class="lvl-2" href="#1.1-承诺与实现的总账">1.1 承诺与实现的总账</a>
 <a class="lvl-2" href="#2.-项目与剧本">2. 项目与剧本</a>
 <a class="lvl-3" href="#llm-辅助端点">LLM 辅助端点</a>
 <a class="lvl-2" href="#3.-一致性资产">3. 一致性资产</a>
@@ -346,6 +454,7 @@ codegen 的净收益为负。等实现比例反过来了再说。</p><nav class=
 <a class="lvl-3" href="#选片">选片</a>
 <a class="lvl-2" href="#5.-资产音频与渲染">5. 资产、音频与渲染</a>
 <a class="lvl-2" href="#6.-播放与统计">6. 播放与统计</a>
+<a class="lvl-3" href="#6.1-管理面板端点-已实现此前未写入本文档">6.1 管理面板端点（✅ 已实现，此前未写入本文档）</a>
 <a class="lvl-2" href="#7.-sse">7. SSE</a>
 <a class="lvl-2" href="#8.-错误规范">8. 错误规范</a>
 <a class="lvl-2" href="#9.-openapi未实现">9. OpenAPI（未实现）</a></aside>
