@@ -329,22 +329,39 @@ export const generationJobs = pgTable(
   ],
 )
 
-export const takes = pgTable('takes', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  shotId: uuid('shot_id')
-    .notNull()
-    .references(() => shots.id, { onDelete: 'cascade' }),
-  jobId: uuid('job_id')
-    .notNull()
-    .references(() => generationJobs.id),
-  assetId: uuid('asset_id')
-    .notNull()
-    .references(() => assets.id),
-  status: text('status').$type<TakeStatus>().notNull().default('candidate'),
-  evalSummary: jsonb('eval_summary').$type<EvalSummary>(),
-  humanNote: text('human_note'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-})
+export const takes = pgTable(
+  'takes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    shotId: uuid('shot_id')
+      .notNull()
+      .references(() => shots.id, { onDelete: 'cascade' }),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => generationJobs.id),
+    assetId: uuid('asset_id')
+      .notNull()
+      .references(() => assets.id),
+    status: text('status').$type<TakeStatus>().notNull().default('candidate'),
+    evalSummary: jsonb('eval_summary').$type<EvalSummary>(),
+    humanNote: text('human_note'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    /**
+     * 一次生成至多一条 take。**与 UNIQUE(shot_id, attempt) 是两层不同的东西**：
+     * 那条保证「同一次尝试不产生第二行 job」，这条保证「同一个 job 不产生第二条候选」。
+     *
+     * 同一个 job 可以有不止一条轮询链（reconcileOnBoot 会为非终态行再加一条，
+     * 而旧链自重排不会消失），两条都会投 ingest；BullMQ 在 handler 抛错时又会
+     * 重放整个 handler。应用层守不住，所以放在数据库层。
+     *
+     * 一笔已付费的生成出两条候选，代价不只是脏数据：usdPerAcceptedMicro 的分母
+     * 会多算，每可用镜头成本被系统性低估——而那是 M1 最重要的指标。
+     */
+    unique('takes_job_uq').on(t.jobId),
+  ],
+)
 
 export const evalResults = pgTable(
   'eval_results',

@@ -266,6 +266,9 @@ ORDER BY usd_per_accepted;
 ## 5. `takes` 与 `assets`
 
 ```ts
+// UNIQUE(job_id)：一次生成至多一条 take。与 UNIQUE(shot_id, attempt) 是两层不同的
+// 保证——那条管「同一次尝试不产生第二行 job」，这条管「同一个 job 不产生第二条候选」。
+// 同一个 job 可以有不止一条轮询链，两条都会投 ingest，应用层守不住（05 §8）。
 export const takes = pgTable('takes', {
   id:      uuid('id').primaryKey().defaultRandom(),
   shotId:  uuid('shot_id').notNull().references(() => shots.id, { onDelete: 'cascade' }),

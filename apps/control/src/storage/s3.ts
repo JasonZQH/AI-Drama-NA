@@ -50,6 +50,22 @@ function client(cfg: StorageConfig, endpoint: string): S3Client {
   })
 }
 
+/**
+ * 只算哈希，不上传。
+ *
+ * 存在的理由是内容去重的**顺序**：先算 sha 查库，命中已有 asset 就根本不用传。
+ * 反过来（先传后查）会在命中时留下一个没人引用、也没人清理的孤儿对象——
+ * 而系统永不自动销毁字节（03 §7），所以那个对象会一直躺在那里。
+ *
+ * 流式读，不把整个文件读进内存。
+ */
+export async function hashFile(filePath: string): Promise<{ sha256: string; bytes: number }> {
+  const { size } = await stat(filePath)
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk as Buffer)
+  return { sha256: hash.digest('hex'), bytes: size }
+}
+
 export class Storage {
   private readonly internal: S3Client
   private readonly external: S3Client
@@ -62,13 +78,12 @@ export class Storage {
   /**
    * 上传并返回内容哈希。sha256 边传边算，不把整个文件读进内存——
    * 单条 take 只有几 MB，但母版是几十 MB，习惯要从一开始就对。
+   *
+   * 想先查重再决定传不传的，用模块级的 `hashFile`：它只算哈希不上传，
+   * 于是命中已有 asset 时连这一次网络往返都省掉，也不会留下孤儿对象。
    */
   async putFile(key: string, filePath: string, mime: string): Promise<{ sha256: string; bytes: number }> {
-    const { size } = await stat(filePath)
-
-    const hash = createHash('sha256')
-    for await (const chunk of createReadStream(filePath)) hash.update(chunk as Buffer)
-    const sha256 = hash.digest('hex')
+    const { sha256, bytes } = await hashFile(filePath)
 
     await this.internal.send(
       new PutObjectCommand({
@@ -76,10 +91,10 @@ export class Storage {
         Key: key,
         Body: createReadStream(filePath),
         ContentType: mime,
-        ContentLength: size,
+        ContentLength: bytes,
       }),
     )
-    return { sha256, bytes: size }
+    return { sha256, bytes }
   }
 
   async exists(key: string): Promise<boolean> {

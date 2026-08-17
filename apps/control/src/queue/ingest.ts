@@ -3,7 +3,7 @@ import { and, eq, notInArray } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import type { Db, DbOrTx } from '../db/client.js'
 import * as s from '../db/schema.js'
-import { s3Key, type Storage } from '../storage/s3.js'
+import { hashFile, s3Key, type Storage } from '../storage/s3.js'
 
 /**
  * q:ingest：把 provider 的产物变成 asset + take 行。
@@ -46,17 +46,34 @@ export interface IngestResult {
 export async function handleIngest(deps: IngestDeps, input: IngestInput): Promise<IngestResult> {
   const key = input.storageKey ?? s3Key.take(input.projectId, input.shotId, input.generationJobId)
 
-  // 自部署直写时产物已在存储里，不重复搬运
+  /*
+   * **先算哈希查重，再决定要不要上传。**
+   *
+   * 原来是反的：先 putFile 到一个唯一 key，再按 sha256 查已有 asset。命中时那个
+   * 刚传上去的对象就成了孤儿——没人引用，也没人清理，而系统永不自动销毁字节
+   * （03 §7），于是它会一直躺在存储里。mock 每次都返回同一条 fixture，所以这条
+   * 路径每跑一次就多一个孤儿。
+   *
+   * 换成先查后传，比「传完再删」省：零删除路径、不销毁已付费字节，还顺手省掉
+   * 命中时那一次完整上传。
+   *
+   * 自部署直写时产物已经在存储里（provider 只回 storageKey），本来就不搬运。
+   */
   const { sha256, bytes } = input.storageKey
     ? await hashExisting(deps, input.storageKey)
-    : await deps.storage.putFile(key, localPathOf(input.sourceUrl), 'video/mp4')
+    : await hashFile(localPathOf(input.sourceUrl))
 
-  // 内容去重：同 hash 复用已有 asset
   const [existing] = await deps.db.select().from(s.assets).where(eq(s.assets.sha256, sha256)).limit(1)
 
-  const assetId =
-    existing?.id ??
-    (
+  let assetId: string
+  if (existing) {
+    assetId = existing.id
+  } else {
+    // 内容是新的才真的上传。storageKey 分支的字节早就在存储里，不用再传一遍
+    if (!input.storageKey) {
+      await deps.storage.putFile(key, localPathOf(input.sourceUrl), 'video/mp4')
+    }
+    assetId = (
       await deps.db
         .insert(s.assets)
         .values({
@@ -70,8 +87,21 @@ export async function handleIngest(deps: IngestDeps, input: IngestInput): Promis
         })
         .returning({ id: s.assets.id })
     )[0]!.id
+  }
 
-  const [take] = await deps.db
+  /*
+   * 一个 job 至多一条 take —— 由 `UNIQUE(job_id)` 在数据库层保证。
+   *
+   * 应用层的守卫不够：同一个 job 可以有不止一条轮询链（reconcileOnBoot 会为
+   * 非终态行再加一条，旧链是自重排的不会自己消失），两条都能走到这里；而且
+   * onTakeAccepted 抛错会让 BullMQ 重放**整个** handler，重放时前面的插入已经
+   * 提交了。约束是最后一道，`onConflictDoNothing` 让它优雅而不是抛。
+   *
+   * 后果不只是多一行：一笔已付费的生成产出两条候选，选片池被污染，而
+   * usdPerAcceptedMicro 的分母（accepted 计数）会跟着多算——每可用镜头成本被
+   * 系统性低估，而那正是 M1 最重要的那个指标。
+   */
+  const inserted = await deps.db
     .insert(s.takes)
     .values({
       shotId: input.shotId,
@@ -79,7 +109,18 @@ export async function handleIngest(deps: IngestDeps, input: IngestInput): Promis
       assetId,
       status: 'candidate',
     })
+    .onConflictDoNothing({ target: s.takes.jobId })
     .returning({ id: s.takes.id })
+
+  const take =
+    inserted[0] ??
+    (
+      await deps.db
+        .select({ id: s.takes.id })
+        .from(s.takes)
+        .where(eq(s.takes.jobId, input.generationJobId))
+        .limit(1)
+    )[0]
 
   /*
    * 终态守卫，与 handlePoll 开头那道同源。

@@ -1,0 +1,1 @@
+ALTER TABLE "takes" ADD CONSTRAINT "takes_job_uq" UNIQUE("job_id");
