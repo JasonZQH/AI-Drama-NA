@@ -41,6 +41,12 @@ REDIS_URL=redis://localhost:6379
 CONTROL_PORT=4000
 NEXT_PUBLIC_API_BASE=http://localhost:4000
 
+# 写路径闸门：所有非 GET 请求要带 `x-api-key: <此值>`（06-api-spec.md §1）。
+# **不设它控制面起不来**——一个忘了配就自动失效的安全开关，防的只是记得配的人。
+CONTROL_API_KEY=devlocal
+# CONTROL_HOST=0.0.0.0                # 默认只听 127.0.0.1，要从别的设备访问才打开
+# WEB_ORIGIN=http://localhost:3000    # 收紧 CORS，不设则反射任意来源
+
 # ── 存储（见 09-python-worker.md §5.1 的双 endpoint 说明）──
 S3_BUCKET=drama
 S3_ACCESS_KEY=adminlocal

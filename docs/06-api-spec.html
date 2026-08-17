@@ -99,10 +99,27 @@
 </tr>
 <tr>
 <td>认证</td>
-<td>MVP 无认证（本地）。预留 <code>Authorization: Bearer</code>，中间件已挂载但默认放行</td>
+<td><strong>所有非 GET 请求必须带 <code>x-api-key: $CONTROL_API_KEY</code></strong>，否则 401。GET 与 SSE 不校验（见下）</td>
 </tr>
 </tbody>
 </table></div>
+<blockquote>
+<p><strong>为什么是自定义头而不是 <code>Authorization: Bearer</code>，为什么只挡写路径。</strong></p>
+<p>这道闸门防的是一条实测走通过的路径：任意网页发一个<strong>无 body、无 Content-Type</strong> 的
+<code>POST /api/episodes/:id/generate-batch</code> 就能规划整集并真的花钱。那是 CORS
+<strong>简单请求</strong>——浏览器直接发，<code>no-cors</code> 下响应虽读不到，但服务端已经执行完。
+所以收紧 CORS origin 拦不住它；<code>/generate</code> 压根不读 body，<code>generate-batch</code> 的
+<code>req.body ?? {}</code> 又让 <code>dryRun</code> 取默认值 <code>false</code>，于是无头请求直接花钱。</p>
+<p>唯一同时堵住的是<strong>要求一个自定义头</strong>：自定义头强制浏览器先发预检，
+恶意来源的预检过不了，真实请求根本发不出去。用 <code>x-api-key</code> 而非
+<code>Authorization</code> 只是为了不与将来真正的用户认证抢语义。</p>
+<p><strong>GET 刻意放行</strong>：SSE 走 <code>EventSource</code>，浏览器 API 不支持自定义头，
+护 GET 会直接打断实时进度流。钱的边界全在非 GET 上。要连读也堵，
+得把 token 挪进 query param，那是另一件事。</p>
+<p>配套两个开关：<code>CONTROL_HOST</code> 默认 <code>127.0.0.1</code>（不上局域网）；
+<code>WEB_ORIGIN</code> 收紧 CORS——它不是钱的闸门，但决定攻击是「盲打」还是
+「先跨域读 GET 枚举出 UUID 再精确制导」。</p>
+</blockquote>
 <h2 id="2.-项目与剧本">2. 项目与剧本<a aria-label="链接到此节" class="anchor" href="#2.-项目与剧本">#</a></h2>
 <div class="codeblock"><pre><code>GET    /api/projects                      列表
 POST   /api/projects                      创建 { title, synopsis?, aspectRatio?, language? }
