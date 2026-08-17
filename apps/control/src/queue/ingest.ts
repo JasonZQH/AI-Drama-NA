@@ -29,8 +29,25 @@ import { hashFile, s3Key, type Storage } from '../storage/s3.js'
  */
 const MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 
-/** 覆盖连接、响应头与整个 body 的总时长。fetch 默认无超时 */
-const DOWNLOAD_TIMEOUT_MS = 120_000
+/**
+ * **停滞**上限：连续这么久一个字节都没来，就判这条连接死了。
+ *
+ * 这才是我们要杀的东西。用总时长做上限会误杀「大但健康」的下载——一个 50MB
+ * 的母版在 500KB/s 的链路上要 100 秒，明明在正常传输却被掐死，然后判
+ * download_failed 去重试，**而那次生成的钱已经花了**。
+ *
+ * 注意本函数跑在 `poll()` 返回 succeeded 之后：生成耗时归 orchestrator 的
+ * `PROVIDER_TIMEOUT_MS`（15 分钟）管，到这里产物已经在对端存好了。
+ */
+const DOWNLOAD_STALL_MS = 60_000
+
+/**
+ * 总时长兜底，防「每 20 秒挤一个字节」这种停滞检测抓不到的涓流。
+ *
+ * 取值与体积上限自洽：512MB 在一个我们仍愿意称为健康的速率（约 300KB/s）下
+ * 大约要半小时。所以只要不停滞、不超体积，就让它传完。
+ */
+const DOWNLOAD_TOTAL_MS = 30 * 60_000
 
 export interface IngestDeps {
   readonly db: Db
@@ -40,8 +57,12 @@ export interface IngestDeps {
    * 生成完成了、成本记了、take 也建了，但没人告诉镜头「有候选了」。
    */
   readonly onTakeAccepted?: (shotId: string, takeId: string) => Promise<unknown>
-  /** 不传用上面的常量。测试要在不下载 512MB 的前提下验上限时传它 */
-  readonly limits?: { readonly maxBytes?: number; readonly timeoutMs?: number }
+  /** 不传用上面的常量。测试要在不下载 512MB、不等半小时的前提下验守卫时传它 */
+  readonly limits?: {
+    readonly maxBytes?: number
+    readonly stallMs?: number
+    readonly totalMs?: number
+  }
 }
 
 export interface IngestInput {
@@ -212,18 +233,37 @@ async function materialize(sourceUrl: string, deps: IngestDeps): Promise<LocalCo
   }
 
   const maxBytes = deps.limits?.maxBytes ?? MAX_DOWNLOAD_BYTES
-  const timeoutMs = deps.limits?.timeoutMs ?? DOWNLOAD_TIMEOUT_MS
+  const stallMs = deps.limits?.stallMs ?? DOWNLOAD_STALL_MS
+  const totalMs = deps.limits?.totalMs ?? DOWNLOAD_TOTAL_MS
 
   const dir = await mkdtemp(join(tmpdir(), 'drama-ingest-'))
   const path = join(dir, 'take.mp4')
   const wipe = (): Promise<void> => rm(dir, { recursive: true, force: true })
 
+  /*
+   * 两把闸，管的是两件不同的事：
+   *
+   * - **停滞**：每收到一块就把计时器推后。连接死了会在 stallMs 内被抓到，
+   *   而一个大但健康的下载想传多久传多久。
+   * - **总时长**：兜住「每 20 秒挤一个字节」这种停滞检测抓不到的涓流。
+   *
+   * 只用总时长的话会误杀大文件；只用停滞的话涓流能永久占住一个 worker 槽位。
+   */
+  const stalled = new AbortController()
+  let stallTimer: ReturnType<typeof setTimeout> | undefined
+  const bump = (): void => {
+    clearTimeout(stallTimer)
+    stallTimer = setTimeout(
+      () => stalled.abort(new Error(`下载停滞超过 ${stallMs}ms：${sourceUrl}`)),
+      stallMs,
+    )
+  }
+
   try {
-    /*
-     * 一个 signal 同时管住连接、响应头和整个 body——`AbortSignal.timeout` 从
-     * 创建那刻起计时，中途断流会在这里超时报错而不是永久挂着。fetch 默认无超时。
-     */
-    const res = await fetch(sourceUrl, { signal: AbortSignal.timeout(timeoutMs) })
+    bump() // 连接与响应头阶段也受停滞闸管
+    const res = await fetch(sourceUrl, {
+      signal: AbortSignal.any([AbortSignal.timeout(totalMs), stalled.signal]),
+    })
     if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}：${sourceUrl}`)
     if (!res.body) throw new Error(`下载响应没有 body：${sourceUrl}`)
 
@@ -236,6 +276,7 @@ async function materialize(sourceUrl: string, deps: IngestDeps): Promise<LocalCo
     let written = 0
     const cap = new Transform({
       transform(chunk: Buffer, _enc, cb) {
+        bump() // 有字节进来 = 没停滞
         written += chunk.byteLength
         if (written > maxBytes) {
           cb(new Error(`产物超过 ${maxBytes} 字节上限，已中断：${sourceUrl}`))
@@ -250,6 +291,9 @@ async function materialize(sourceUrl: string, deps: IngestDeps): Promise<LocalCo
   } catch (e) {
     await wipe() // 失败路径也要清，否则每次失败留一个半截文件
     throw e
+  } finally {
+    // 计时器不清的话，进程会被这条已经没人等的定时器拖住不退出
+    clearTimeout(stallTimer)
   }
 
   return { path, cleanup: wipe }

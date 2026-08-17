@@ -1611,7 +1611,11 @@ describe('远程产物转存', () => {
   const tempDirs = async (): Promise<number> =>
     (await readdir(tmpdir())).filter((n) => n.startsWith('drama-ingest-')).length
 
-  const ingest = (jobId: string, path: string, limits?: { maxBytes?: number; timeoutMs?: number }) =>
+  const ingest = (
+    jobId: string,
+    path: string,
+    limits?: { maxBytes?: number; stallMs?: number; totalMs?: number },
+  ) =>
     handleIngest(
       { db, storage, ...(limits ? { limits } : {}) },
       { generationJobId: jobId, shotId, projectId, sourceUrl: `${base}${path}` },
@@ -1666,14 +1670,57 @@ describe('远程产物转存', () => {
     expect(await tempDirs(), '失败路径留下了半截文件').toBe(before)
   })
 
-  it('对端挂住不发完：超时中断，不留临时文件', async () => {
+  it('对端挂住不发完：停滞闸中断，不留临时文件', async () => {
     handler = (_req, res) => {
       res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': String(mp4.byteLength) })
       res.write(mp4.subarray(0, 16)) // 开个头就不动了
     }
     const before = await tempDirs()
-    await expect(ingest(await newJob(), '/hang.mp4', { timeoutMs: 300 })).rejects.toThrow()
-    expect(await tempDirs(), '超时路径留下了半截文件').toBe(before)
+    await expect(ingest(await newJob(), '/hang.mp4', { stallMs: 300 })).rejects.toThrow()
+    expect(await tempDirs(), '停滞路径留下了半截文件').toBe(before)
+  })
+
+  /**
+   * **慢但健康的下载不该被掐死。**
+   *
+   * 这条守的是「用总时长当上限」那个错误做法：一个 50MB 的母版在 500KB/s 的
+   * 链路上要 100 秒，明明在正常传输却会被总时长杀掉，然后判 download_failed
+   * 去重试——**而那次生成的钱已经花了**。
+   *
+   * 这里让整段传输（约 1 秒）远长于停滞闸（300ms），但每块间隔（100ms）短于它。
+   * 只有「每收到一块就把计时器推后」才能过。
+   */
+  it('慢但持续的下载不被停滞闸误杀', async () => {
+    const CHUNKS = 10
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4' })
+      const size = Math.ceil(mp4.byteLength / CHUNKS)
+      let i = 0
+      const tick = (): void => {
+        if (i >= CHUNKS) return void res.end()
+        res.write(mp4.subarray(i * size, (i + 1) * size))
+        i++
+        setTimeout(tick, 100)
+      }
+      tick()
+    }
+    const out = await ingest(await newJob(), '/slow.mp4', { stallMs: 300, totalMs: 30_000 })
+    const [asset] = await db.select().from(s.assets).where(eq(s.assets.id, out.assetId))
+    expect(asset!.bytes, '分 10 块慢传，字节数仍要完整').toBe(mp4.byteLength)
+  })
+
+  it('涓流：停滞闸抓不到，但总时长兜住', async () => {
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4' })
+      const tick = (): void => {
+        res.write(Buffer.alloc(1))
+        setTimeout(tick, 50) // 永远不结束，但一直有字节
+      }
+      tick()
+    }
+    const before = await tempDirs()
+    await expect(ingest(await newJob(), '/trickle.mp4', { stallMs: 5_000, totalMs: 600 })).rejects.toThrow()
+    expect(await tempDirs()).toBe(before)
   })
 
   it('中途断流：报错而不是把半截文件当成产物', async () => {
