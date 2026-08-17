@@ -198,16 +198,23 @@
 
 ## 9. 技术选型
 
-| 项 | 选择 | 理由 |
-|---|---|---|
-| 样式 | Tailwind CSS v4 + CSS 变量令牌 | 令牌集中，类名就地，暗浅色一处切换 |
-| 组件基座 | Radix UI Primitives | 无样式、可访问性到位，不背设计包袱 |
-| 图标 | Lucide | 覆盖全、线性风格统一 |
-| 表格/虚拟化 | TanStack Table + Virtual | 资产与 Ledger 列表需要 |
-| 图表 | Recharts | 成本与质量趋势，配 §3.4 色板 |
-| 状态 | TanStack Query（服务端态）+ Zustand（UI 态） | 严格区分两类状态，不混用 |
-| 播放器 | 原生 `<video>` + hls.js | 不引入重播放器，母版是标准 MP4/HLS |
-| 表单 | React Hook Form + zod resolver | 与 contracts 的 schema 直接复用 |
+| 项 | 选择 | 理由 | 现状 |
+|---|---|---|---|
+| 样式 | Tailwind CSS v4 + CSS 变量令牌 | 令牌集中，类名就地，暗浅色一处切换 | ✅ 已在用 |
+| 组件基座 | Radix UI Primitives | 无样式、可访问性到位，不背设计包袱 | ⛔ 未装 · 当前是手写组件 |
+| 图标 | Lucide | 覆盖全、线性风格统一 | ⛔ 未装 · 当前用 Unicode 字形 |
+| 表格/虚拟化 | TanStack Table + Virtual | 资产与 Ledger 列表需要 | ⚠️ 只装了 Virtual，Table 未装 |
+| 图表 | Recharts | 成本与质量趋势，配 §3.4 色板 | ⛔ 未装 · 当前是 `TrendChart.tsx` 的内联 SVG |
+| 状态 | TanStack Query（服务端态）+ Zustand（UI 态） | 严格区分两类状态，不混用 | ⛔ 两个都未装 · 当前是 `useState` + SSE Context |
+| 播放器 | 原生 `<video>` + hls.js | 不引入重播放器，母版是标准 MP4/HLS | ⚠️ 原生 `<video>` ✅；hls.js 未装（HLS 属 M5）|
+| 表单 | React Hook Form + zod resolver | 与 contracts 的 schema 直接复用 | ⛔ 未装 · 目前没有需要校验的表单 |
+| **动画** | **GSAP + @gsap/react** | 面板的描线与过渡 | ✅ **已在用，但此前本表没写** |
+
+
+> **「现状」列是 2026-08 实测的。** 标 ⛔ 的六项当前一个都没装，能力由手写实现顶着——
+> 这不是欠债，是有意为之：面板只有五个页面，为它引六个库不划算。选型表保留下来
+> 是因为它记录的是「真要引的时候引哪个、为什么」，而不是「已经引了」。
+> 反过来 GSAP 是唯一一个**在用却没被文档记录**的运行时依赖，这次补上。
 
 ## 10. 目录约定
 

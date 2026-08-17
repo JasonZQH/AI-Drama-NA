@@ -60,14 +60,14 @@
 <div class="label">生成质量</div>
 <a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
 </div>
-<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr.html"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
   <main class="content"><div class="doc-head"><div class="eyebrow">文档 01</div><h1>系统架构</h1></div><blockquote>
 <p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="00-overview.html" title="项目总览与范围定义"><code>00-overview.md</code></a></p>
 </blockquote>
 <h2 id="1.-三平面架构">1. 三平面架构<a aria-label="链接到此节" class="anchor" href="#1.-三平面架构">#</a></h2>
 <p>系统按<strong>职责边界</strong>而非技术栈切分为三个平面。跨平面只走 HTTP，绝不共享数据库连接或内存状态。</p>
 <figure class="diagram"><div class="mermaid">flowchart TD
-    PP["&lt;b&gt;PRESENTATION PLANE&lt;/b&gt; · Next.js 15 App Router · TS&lt;br/&gt;Studio UI · Player · 实时进度 SSE · 资产浏览"]
+    PP["&lt;b&gt;PRESENTATION PLANE&lt;/b&gt; · Next.js 16 App Router · TS&lt;br/&gt;Studio UI · Player · 实时进度 SSE · 资产浏览"]
     CP["&lt;b&gt;CONTROL PLANE&lt;/b&gt; · Fastify · TypeScript&lt;br/&gt;领域模型与业务规则 · 流水线状态机&lt;br/&gt;Provider 路由与适配器 · 队列生产与消费 BullMQ&lt;br/&gt;Generation Ledger 成本与质量记账&lt;br/&gt;—— 唯一拥有 Postgres 写权限的进程 ——"]
     GP["&lt;b&gt;GENERATION PLANE&lt;/b&gt; · Python · FastAPI · 远程 GPU&lt;br/&gt;Wan2.2 · Hunyuan · TTS · Eval · FFmpeg worker"]
     ST["&lt;b&gt;STORAGE&lt;/b&gt;&lt;br/&gt;MinIO S3&lt;br/&gt;媒体与母版"]
@@ -156,9 +156,14 @@
 <p>这条规则很重要：如果生成的视频要先传回 Mac 再上传存储，Mac 的上行带宽会成为整个流水线的瓶颈。Worker 直写存储，控制面只搬运元数据。</p>
 </blockquote>
 <h2 id="3.-monorepo-目录结构">3. Monorepo 目录结构<a aria-label="链接到此节" class="anchor" href="#3.-monorepo-目录结构">#</a></h2>
+<blockquote>
+<p>下面是<strong>目标结构</strong>。未标注的目录当前已存在；<code>[规划中]</code> 表示尚未创建、里程碑待定；
+<code>[M2]</code> / <code>[M6]</code> 已在 §7 演进路径中排期。<strong>别照着这棵树预建空目录</strong>——空壳只会让人
+以为那一层已经支持了（同 <code>providers/README.md</code> 那条：不要提前造空适配器类）。</p>
+</blockquote>
 <div class="codeblock is-diagram"><pre><code>ai-drama-studio/
 ├─ apps/
-│  ├─ web/                    # Next.js 15 · Studio + Player
+│  ├─ web/                    # Next.js 16 · Studio + Player
 │  │  ├─ app/
 │  │  │  ├─ (studio)/         # 生产界面路由组
 │  │  │  └─ (watch)/          # 播放器路由组
@@ -197,7 +202,7 @@
     W["apps/web&lt;br/&gt;直接 import 类型"]
     C["apps/control&lt;br/&gt;import + zod 运行时校验"]
     P["workers/*&lt;br/&gt;pydantic 由 JSON Schema 生成"]
-    A --&gt;|"zod-to-json-schema"| B
+    A --&gt;|"z.toJSONSchema()（zod v4 内置）"| B
     A --&gt; W
     A --&gt; C
     B --&gt; P
@@ -283,6 +288,14 @@
     "message": "厂商 SDK 只能出现在 providers/ 的适配器实现里（ADR-0002）" }
 ]}]
 </code></pre></div>
+<blockquote>
+<p>⚠️ <strong>这条规则目前没有给 <code>providers/</code> 开豁免。</strong> <code>eslint.config.js</code> 里那条厂商 SDK 的
+<code>no-restricted-imports</code> 是全局的，实测在 <code>providers/</code> 下 import <code>@vidu/sdk</code> 同样报错——
+也就是说它会拦住自己声称允许的那个目录。M1 走 OpenRouter 用的是原生 <code>fetch</code>、
+不引入任何厂商 SDK，所以暂时撞不上；真要引 SDK 时得先给 <code>providers/**</code> 加一条豁免。</p>
+<p>另外「零 IO」那条今天真正约束的是 <code>pipeline/shotMachine.ts</code>（配置里显式列了它），
+而 <code>domain/**</code> 那半边<strong>匹配零文件</strong>——目录还没建，规则是预留的。</p>
+</blockquote>
 <p>更硬的一层是 <strong>pnpm workspace 包边界</strong>：把 <code>domain</code> 做成独立包、只导出该导出的，"导入内部实现"在物理上就不可能。这比任何运行时协议的约束都强，且零运行时代价。</p>
 <p>再配 <code>dependency-cruiser</code> 校验依赖方向，把 §5.1 那张图变成 CI 里的断言。</p>
 <h3 id="5.3-让边界对-ai-coding-agent-可读">5.3 让边界对 AI coding agent 可读<a aria-label="链接到此节" class="anchor" href="#5.3-让边界对-ai-coding-agent-可读">#</a></h3>

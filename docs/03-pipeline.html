@@ -60,7 +60,7 @@
 <div class="label">生成质量</div>
 <a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
 </div>
-<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr.html"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
   <main class="content"><div class="doc-head"><div class="eyebrow">文档 03</div><h1>生产流水线与状态机</h1></div><blockquote>
 <p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="02-data-model.html" title="数据模型"><code>02-data-model.md</code></a></p>
 </blockquote>
@@ -108,7 +108,7 @@ CHEN MO: 我等你三个小时了。
 <h3 id="s3-shotlist">S3 · SHOTLIST<a aria-label="链接到此节" class="anchor" href="#s3-shotlist">#</a></h3>
 <p><strong>输入</strong>：分场剧本。
 <strong>动作</strong>：LLM 把每场拆成 Shot Intent 序列。这是<strong>结构化输出</strong>，不是自由文本——用 zod schema 约束 LLM 输出。</p>
-<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">const ShotIntentSchema = z.object({
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export const ShotIntent = z.object({  // packages/contracts/src/shot.ts
   shotType:    ShotType,
   cameraMove:  CameraMove.optional(),
   action:      z.string().min(4),
@@ -123,7 +123,10 @@ CHEN MO: 我等你三个小时了。
 <li><strong>剧情信息与尺度画面永不同镜。</strong> 承载对白、关键动作、道具揭示的镜头，不得同时包含需要降级的画面。违反这条，L1 版本会剧情断裂，只能重新生成——成本翻倍。</li>
 <li><strong>每个「热点 beat」规划三个覆盖镜头</strong>：<code>L2</code> 完整 → <code>L1</code> 同机位但遮蔽/换装/更早切出 → <code>L0</code> 反应镜头或特写脸部。AI 生成的边际成本优势正在于此：<strong>多生成两个镜头远比重剪一场戏便宜</strong>，增量成本约为 L2 的 10–20%；而"分开生成两版"是 80–100%。</li>
 </ol>
-<p><strong>完成判据</strong>：
+<p><strong>完成判据</strong>（⏳ <strong>三条都还没有校验器</strong>——目前是写给人看的验收口径，不是系统闸门；
+唯一落地的是单镜时长，两层：zod <code>ShotIntent.durationSec</code> 的软边界与数据库
+<code>shots_duration_ck</code> 的硬约束。S1–S4 是 LLM 驱动的创作链路，仓里目前一行 LLM 代码都没有，
+M0 的分镜数据来自 <code>db/seed.ts</code> 的 12 镜夹具）：
 - 每场的镜头时长总和 ≈ 场次目标时长（±15%）。
 - 单集镜头数在 10–25 之间（60–90 秒 / 2–8 秒每镜，典型 18 镜 × 4 秒）。
 - 景别有变化：连续三个同景别会被校验器标黄。</p>
@@ -157,22 +160,37 @@ CHEN MO: 我等你三个小时了。
     draft["draft&lt;br/&gt;intent 未填全"]
     ready["ready&lt;br/&gt;intent 完整，可生成"]
     generating["generating&lt;br/&gt;至少一个 job 在跑"]
-    evaluating["evaluating"]
     review["review&lt;br/&gt;有 candidate 待选"]
     locked["locked&lt;br/&gt;已选定 selectedTakeId"]
-    failed["failed&lt;br/&gt;重试耗尽"]
-    retry{"attempt &amp;lt; maxAttempts ?"}
+    failed["failed&lt;br/&gt;失败码不可重试，或重试耗尽"]
+    skipped["skipped&lt;br/&gt;人工跳过"]
+    retry{"码可重试 且 attempt &amp;lt; maxAttempts ?"}
     draft --&gt;|"intent 校验通过"| ready
     ready --&gt;|"用户点生成 / 批量入队"| generating
-    generating --&gt;|"job 完成"| evaluating
-    evaluating --&gt;|"Eval 通过"| review
-    evaluating --&gt;|"Eval 拒绝"| retry
-    retry --&gt;|"是 · 换 seed / 参数 / provider"| ready
+    generating --&gt;|"take 过闸（take.accepted）"| review
+    generating --&gt;|"attempt.failed"| retry
+    review --&gt;|"人工全部拒绝，等价一次质量重试"| retry
+    retry --&gt;|"是 · 开下一次 attempt"| ready
     retry --&gt;|"否"| failed
     review --&gt;|"人工选定"| locked
     locked -.-&gt;|"人工「重做」"| ready
-    failed -.-&gt;|"人工介入"| ready
+    failed -.-&gt;|"manual.reset / intent.edited"| ready
+    ready -.-&gt;|"人工跳过"| skipped
+    skipped -.-&gt;|"manual.reset"| ready
 </div></figure>
+<blockquote>
+<p>这张图与代码对齐过三处（issue #30）：</p>
+<ul>
+<li><strong>删掉了 <code>evaluating</code> 节点</strong>。<code>ShotStatus</code> 枚举里从来没有它——自动评测发生在
+  <strong>job</strong> 侧而不是镜头侧（<code>JobStatus</code> 里确有 <code>evaluating</code>），镜头是 <code>generating → review</code>
+  直接过去的。留着它会让人以为镜头有一个查不到的中间态。</li>
+<li><strong>补上了 <code>skipped</code></strong>。枚举里有，图上原先没有任何边。</li>
+<li><strong>重试判定加了「码可重试」这一半</strong>。不是所有失败都会重试：<code>content_filtered</code> /
+  <code>quota_exceeded</code> / <code>invalid_output</code> / <code>submit_unknown</code> 直接判死（<code>05</code> §5.3）。</li>
+</ul>
+<p>⏳ 另注意「开下一次 attempt」目前<strong>用的是完全相同的参数</strong>——<code>05</code> §5.2 描述的
+「换 seed → 强化 prompt → 换 provider」还没有实现，随 provider 路由器一并落地。</p>
+</blockquote>
 <p>状态迁移规则以纯函数实现在 <code>apps/control/src/pipeline/shotMachine.ts</code>，<strong>不含任何 IO</strong>，便于单测：</p>
 <div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export function transition(
   shot: Shot,
@@ -275,6 +293,15 @@ function planBatch(shots: Shot[]): { runnable: Shot[]; blocked: Shot[] } {
 }
 </code></pre></div>
 <p>批次完成后重新解析一轮，把新解锁的镜头推进去，直到没有 runnable 为止。</p>
+<blockquote>
+<p>⚠️ <strong>自动解锁尚未实现。</strong> 依赖解析<strong>只在「生成整集」那一次请求里跑一次</strong>，
+此后没有任何调用方会重跑它——镜头 locked 走的是 <code>POST /api/takes/:id/select</code>，
+那条路径根本不碰 <code>batch.ts</code>。所以被 <code>blocked</code> 的镜头在前序锁定后会<strong>一直停在
+<code>ready</code></strong>，要人再点一次「生成整集」才进得去。</p>
+<p>真做还有个前置：即便放行了，后续镜头也拿不到前序的末帧——<code>buildRequest</code> 的
+<code>refImages</code> 恒为空、<code>mode</code> 恒为 <code>t2v</code>。所以「末帧接首帧」和「自动解锁」是一件事的两半，
+一起等 prompt-kit（M1 P2）。</p>
+</blockquote>
 <h2 id="7.-回退与版本">7. 回退与版本<a aria-label="链接到此节" class="anchor" href="#7.-回退与版本">#</a></h2>
 <div class="table-wrap"><table>
 <thead>
