@@ -263,11 +263,14 @@ event: shot.status
 data: {"shotId":"...","status":"review","ts":"2026-08-10T00:31:02Z"}
 
 event: job.progress
-data: {"jobId":"...","shotId":"...","pct":62,"etaMs":48000}
+data: {"jobId":"...","shotId":"...","pct":62,"etaMs":48000,"stage":"denoising"}
 
-event: batch.progress
-data: {"episodeId":"...","done":18,"total":24,"failed":1}
+event: error
+data: {"shotId":"...","code":"content_filtered","message":"..."}
 ```
+
+> ⚠️ 路径里的 `:id` **不参与过滤**——`GET /api/events` 与 `GET /api/projects/:id/events`
+> 共用同一个 handler，频道从来就是全量广播（`routes/sse.ts`）。按项目筛选目前在客户端做。
 
 事件负载类型即 `05-job-orchestration.md` §7 的 `StudioEvent`。客户端用 `EventSource`，断线自带重连；服务端每 20s 发一次 `: keepalive` 注释帧防中间层超时断连。
 

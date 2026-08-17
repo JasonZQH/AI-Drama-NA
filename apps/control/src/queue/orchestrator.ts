@@ -85,23 +85,21 @@ export async function claimForSubmit(db: Db, jobId: string): Promise<boolean> {
 async function publishProgress(
   deps: OrchestratorDeps,
   generationJobId: string,
+  shotId: string,
   res: ProviderProgress,
 ): Promise<void> {
-  const [row] = await deps.db
-    .select({ shotId: s.generationJobs.shotId })
-    .from(s.generationJobs)
-    .where(eq(s.generationJobs.id, generationJobId))
-  if (!row) return
-
+  // shotId 由调用方传入。此前这里为它单独发一条 SELECT，而 handlePoll 开头
+  // 读的就是整行（那句注释自己写着「后面取 shotId 都要用，反而少一次查询」）
+  // ——每个在途 job 每次轮询都白查一次
   const event: StudioEvent = {
     type: 'job.progress',
     jobId: generationJobId,
-    shotId: row.shotId,
+    shotId,
     pct: res.progressPct ?? 0,
     ...(res.etaMs === undefined ? {} : { etaMs: res.etaMs }),
     ...(res.stage === undefined ? {} : { stage: res.stage }),
   }
-  await deps.queues.notify.add('notify', { projectId: '', payload: event })
+  await deps.queues.notify.add('notify', { payload: event })
 }
 
 function providerOf(deps: OrchestratorDeps, id: string): VideoProvider {
@@ -310,7 +308,7 @@ export async function handlePoll(
      * 节流、前端进度条在等它，整条路径却是死的。mock 跑得太快所以没人发现，
      * 但接上真 provider 后一次生成要几十秒到几分钟，进度条不动等于 R1 失效。
      */
-    await publishProgress(deps, data.generationJobId, res)
+    await publishProgress(deps, data.generationJobId, current.shotId, res)
 
     await deps.queues.poll.add(
       'poll',

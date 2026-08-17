@@ -105,8 +105,14 @@ describe('ShotIntent（03-pipeline.md §S3）', () => {
 
 describe('StudioEvent 判别联合（05-job-orchestration.md §7）', () => {
   it('按 type 判别，负载形状各自校验', () => {
-    const e = StudioEvent.parse({ type: 'batch.progress', episodeId: UUID, done: 18, total: 24, failed: 1 })
-    expect(e.type).toBe('batch.progress')
+    const e = StudioEvent.parse({
+      type: 'job.progress',
+      jobId: UUID,
+      shotId: UUID,
+      pct: 42,
+      stage: 'denoising',
+    })
+    expect(e.type).toBe('job.progress')
   })
 
   it('拒绝形状不匹配的事件', () => {

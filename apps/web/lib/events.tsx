@@ -20,19 +20,10 @@ export type StudioEvent =
       /** contracts 的 GenStage：queued | loading_model | denoising | decoding | uploading */
       stage?: string
     }
-  | { type: 'take.created'; shotId: string; takeId: string; thumbUrl: string }
-  | { type: 'batch.progress'; episodeId: string; done: number; total: number; failed: number }
-  | { type: 'cost.updated'; projectId: string; spentMicroUsd: number }
   | { type: 'error'; shotId?: string; code: string; message: string }
 
-const TYPES: StudioEvent['type'][] = [
-  'shot.status',
-  'job.progress',
-  'take.created',
-  'batch.progress',
-  'cost.updated',
-  'error',
-]
+// SSE 是具名事件，addEventListener 按这个数组注册——漏掉一种就是静默收不到
+const TYPES: StudioEvent['type'][] = ['shot.status', 'job.progress', 'error']
 
 type Listener = (e: StudioEvent) => void
 
@@ -107,36 +98,11 @@ export function useStudioEvent(onEvent: Listener): void {
   }, [bus])
 }
 
-export function useStudioEvents(projectId: string | null, onEvent: (e: StudioEvent) => void): boolean {
-  const [connected, setConnected] = useState(false)
-  // 用 ref 存回调，避免每次父组件重渲染都重建连接
-  const cb = useRef(onEvent)
-  cb.current = onEvent
-
-  useEffect(() => {
-    if (!projectId) return
-    const es = new EventSource(`${API}/api/projects/${projectId}/events`)
-
-    es.onopen = () => setConnected(true)
-    es.onerror = () => setConnected(false) // EventSource 会自行重连
-
-    const handlers = TYPES.map((t) => {
-      const h = (ev: MessageEvent<string>): void => {
-        try {
-          cb.current(JSON.parse(ev.data) as StudioEvent)
-        } catch {
-          // 单条坏消息不该拖垮订阅
-        }
-      }
-      es.addEventListener(t, h as EventListener)
-      return [t, h] as const
-    })
-
-    return () => {
-      for (const [t, h] of handlers) es.removeEventListener(t, h as EventListener)
-      es.close()
-    }
-  }, [projectId])
-
-  return connected
-}
+/*
+ * 这里曾有一个 `useStudioEvents(projectId, onEvent)`，自己再开一条
+ * `EventSource(/api/projects/:id/events)`。删掉的理由有两条：全仓零调用点；
+ * 而且那个路由压根不按 :id 过滤（sse.ts 里两条路由共用同一个 handler，
+ * 频道从来就是全量广播），所以它连「按项目订阅」这件事都没做到。
+ * 需要按项目过滤时，在 useStudioEvent 的回调里比对 shotId 就够了——
+ * EpisodeView 就是这么做的。
+ */

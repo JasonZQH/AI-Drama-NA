@@ -273,7 +273,7 @@ export async function applyShotTransition(
             .where(and(eq(s.takes.shotId, e.shotId), eq(s.takes.status, 'candidate')))
           break
         case 'publish':
-          pending.push(() => deps.queues.notify.add('notify', { projectId: '', payload: e.event }))
+          pending.push(() => deps.queues.notify.add('notify', { payload: e.event }))
           break
       }
     }
