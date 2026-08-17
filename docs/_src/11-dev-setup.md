@@ -21,12 +21,18 @@ Apple Silicon 注意：Docker 镜像统一用 `linux/arm64`，MinIO 与 Postgres
 git clone <repo> ai-drama-studio && cd ai-drama-studio
 pnpm install
 cp .env.example .env                    # 默认即 mock provider，无需任何 key
-docker compose -f infra/docker-compose.yml up -d
+docker compose --env-file .env -f infra/docker-compose.yml up -d
+pnpm build                              # ← 必须在 migrate 之前
 pnpm db:migrate
 pnpm db:seed                            # demo project：1 集 / 12 镜 / 2 角色
-pnpm build                              # control 跑 dist，dev 前先构建一次
-pnpm dev                                # 并行起 web:3000 + control:4000 + 队列 worker
+pnpm dev                                # 起依赖 + web:3000 + control:4000 + 队列 worker，退出时停容器
 ```
+
+三处容易踩的地方，都是实测过的：
+
+- **`pnpm build` 必须排在 `db:migrate` 之前。** `db:migrate` 跑的是 `dist/db/migrate.js`，而 `dist/` 不进版本库——全新 clone 直接跑迁移会得到 `MODULE_NOT_FOUND`。这份文档此前的顺序是反的。
+- **`docker compose` 要带 `--env-file .env`。** compose 默认读的是**它自己目录**（`infra/`）下的 `.env`，那里没有，于是 `${POSTGRES_PORT:-5432}` 一律取默认值；而根 `.env` 里的 `DATABASE_URL` 可能写着别的端口，容器与应用就对不上。`pnpm dev` 内部已经带了这个参数。
+- **`.env` 里必须有 `CONTROL_API_KEY`**，否则控制面起不来（`06-api-spec.md` §1 的写路径闸门）。`cp .env.example .env` 已经带上了。
 
 打开 `http://localhost:3000`，进入 demo 项目 → 分镜页 → 「生成整集」→ 十几秒后就能看到 mock 视频填充进卡片，走完 review → timeline → 渲染 → 播放的全链路。
 
@@ -135,21 +141,25 @@ MinIO 控制台 `http://localhost:9001`（adminlocal / adminlocal123）可以直
 
 ## 5. 常用脚本
 
-```jsonc
-{
-  "dev":          "turbo run dev --parallel",
-  "build":        "turbo run build",
-  "typecheck":    "turbo run typecheck",
-  "test":         "vitest run",
-  "contracts:build": "tsx scripts/build-contracts.ts",   // zod → JSON Schema → pydantic
-  "db:migrate":   "drizzle-kit migrate",
-  "db:studio":    "drizzle-kit studio",
-  "db:seed":      "tsx apps/control/src/db/seed.ts",
-  "db:reset":     "tsx scripts/db-reset.ts",
-  "api:types":    "openapi-typescript http://localhost:4000/docs/json -o apps/web/lib/api-types.ts",
-  "worker:video:mock": "docker run --rm -p 8001:8001 -e ENGINE=mock ai-drama/video-worker:cpu"
-}
-```
+> **以根 `package.json` 为准。** 下表是照抄，不是设计意图——此前这里列过
+> `api:types`、`db:studio`、`worker:video:mock` 三条**不存在**的命令，以及
+> `contracts:build` / `db:*` / `dev` 五条与实际实现不符的写法。照着跑必然报
+> `Command not found`。改脚本时记得同步这里。
+
+| 命令 | 做什么 |
+|---|---|
+| `pnpm dev` | 起依赖容器 + web + control + worker，**Ctrl+C 时停容器**（`scripts/dev.sh`） |
+| `pnpm dev:app` | 只起应用，不碰容器。两个终端并行时用它 |
+| `pnpm build` | 全量构建。`control` 跑 `dist`，所以 migrate/seed/dev 之前都要先构建 |
+| `pnpm typecheck` / `pnpm lint` / `pnpm format` | CI 门禁的前三道 |
+| `pnpm test` | 单测，排除 `*.int.test.ts` |
+| `pnpm test:int` | 集成测试，打真实 Postgres / Redis / MinIO |
+| `pnpm contracts:build` | zod → JSON Schema → 给 Python 的生成物。**改了 contracts 必须重跑并提交**，CI 有同步门禁 |
+| `pnpm db:generate` | 改了 `schema.ts` 之后生成迁移文件 |
+| `pnpm db:migrate` / `pnpm db:seed` / `pnpm db:reset` | 迁移 / 灌 demo 数据 / 清库重来 |
+
+文档站另有一条不在 `package.json` 里：`python3 scripts/build-docs.py`
+把 `docs/_src/*.md` 渲染成 HTML。**改了 `_src` 必须重跑并提交生成物**，CI 同样有门禁。
 
 `contracts:build` 必须在 `dev` 之前跑一次，也应挂在 CI 的第一步——它是三语言类型一致的保证（`01-architecture.md` §3）。
 

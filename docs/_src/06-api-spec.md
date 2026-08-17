@@ -232,11 +232,17 @@ data: {"episodeId":"...","done":18,"total":24,"failed":1}
 
 `requestId` 贯穿日志，报错时截图给出即可定位全链路。
 
-## 9. OpenAPI
+## 9. OpenAPI（**未实现**）
 
-Fastify 挂 `@fastify/swagger`，schema 直接由 zod 转换（`fastify-type-provider-zod`）。
+> ⚠️ 本节整节是目标态。实测：`GET /docs`、`/openapi.json`、`/documentation/json`
+> 全部 404；`pnpm api:types` 不存在（`Command not found`）；`@fastify/swagger`
+> 不在依赖里；`fastify-type-provider-zod` **装了但全仓零 import**，是笔挂账。
+> 前端类型是手写的（`apps/web/lib/api.ts` 共 14 处）。
 
-- 开发环境 `GET /docs` 提供 Swagger UI。
-- `pnpm api:types` 从 OpenAPI 生成前端 fetch 客户端，**前端不手写请求类型**。
+设想是：Fastify 挂 `@fastify/swagger`，schema 由 zod 转换（`fastify-type-provider-zod`），
+开发环境 `GET /docs` 给 Swagger UI，`pnpm api:types` 生成前端客户端——
+让 API 定义只有一处真相源。
 
-这样 API 定义只有一处真相源（zod schema），文档、校验、前端类型三者自动同步。
+**目前刻意不做。** 本文档承诺的路由有 53 条，实现了 22 条；给不存在的 API 生成
+类型是给零调用方建基础设施。前端 14 处手写类型全在同一个文件里，改一次 API 改一处，
+codegen 的净收益为负。等实现比例反过来了再说。

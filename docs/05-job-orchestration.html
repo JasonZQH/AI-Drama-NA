@@ -139,7 +139,16 @@ async function pollHandler(job: Job&lt;PollJobData&gt;) {
 <p>由 BullMQ 自动处理，<strong>不增加</strong> <code>shots.attemptCount</code>，也不写新的 <code>generation_jobs</code> 行——它在语义上还是同一次生成尝试。</p>
 <h3 id="5.2-生成质量重试换参数重生成">5.2 生成质量重试（换参数重生成）<a aria-label="链接到此节" class="anchor" href="#5.2-生成质量重试换参数重生成">#</a></h3>
 <p>评测未通过、画面崩坏、角色跑偏。<strong>同样的参数重试毫无意义</strong>，必须改变输入。</p>
-<p>由状态机驱动，每次产生<strong>新的 <code>generation_jobs</code> 行</strong>，<code>attempt</code> 递增。变更策略按顺序升级：</p>
+<p>由状态机驱动，每次产生<strong>新的 <code>generation_jobs</code> 行</strong>，<code>attempt</code> 递增。</p>
+<blockquote>
+<p>⚠️ <strong>升级策略尚未实现。</strong> 下面这张表与 <code>nextAttemptPlan()</code> 是目标态。
+当前 <code>applyTransition.ts</code> 每次重试都用<strong>完全相同的 seed、prompt 与 provider</strong>
+重投，即本节开头那句「同样的参数重试毫无意义」正是现在的实际行为——
+一个镜头会以同一组参数连撞 4 次，然后判死。</p>
+<p>换 seed 与强化 prompt 随 provider 路由器一并落地（M1 的 PR-E，那段对象字面量
+本来就要重写）；换 provider 要等池子里真有第二个可选项。<code>shots.provider_hint</code>
+的钩子已经存在但零读取。</p>
+</blockquote>
 <div class="table-wrap"><table>
 <thead>
 <tr>

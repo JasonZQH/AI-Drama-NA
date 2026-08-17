@@ -310,13 +310,19 @@ data: {"episodeId":"...","done":18,"total":24,"failed":1}
 </tbody>
 </table></div>
 <p><code>requestId</code> 贯穿日志，报错时截图给出即可定位全链路。</p>
-<h2 id="9.-openapi">9. OpenAPI<a aria-label="链接到此节" class="anchor" href="#9.-openapi">#</a></h2>
-<p>Fastify 挂 <code>@fastify/swagger</code>，schema 直接由 zod 转换（<code>fastify-type-provider-zod</code>）。</p>
-<ul>
-<li>开发环境 <code>GET /docs</code> 提供 Swagger UI。</li>
-<li><code>pnpm api:types</code> 从 OpenAPI 生成前端 fetch 客户端，<strong>前端不手写请求类型</strong>。</li>
-</ul>
-<p>这样 API 定义只有一处真相源（zod schema），文档、校验、前端类型三者自动同步。</p><nav class="pager"><a href="05-job-orchestration.html"><div class="dir">← 上一篇</div><div class="name">05 · 任务编排：队列、重试、并发与记账</div></a><a class="next" href="07-design-system.html"><div class="dir">下一篇 →</div><div class="name">07 · 前端设计系统</div></a></nav></main>
+<h2 id="9.-openapi未实现">9. OpenAPI（<strong>未实现</strong>）<a aria-label="链接到此节" class="anchor" href="#9.-openapi未实现">#</a></h2>
+<blockquote>
+<p>⚠️ 本节整节是目标态。实测：<code>GET /docs</code>、<code>/openapi.json</code>、<code>/documentation/json</code>
+全部 404；<code>pnpm api:types</code> 不存在（<code>Command not found</code>）；<code>@fastify/swagger</code>
+不在依赖里；<code>fastify-type-provider-zod</code> <strong>装了但全仓零 import</strong>，是笔挂账。
+前端类型是手写的（<code>apps/web/lib/api.ts</code> 共 14 处）。</p>
+</blockquote>
+<p>设想是：Fastify 挂 <code>@fastify/swagger</code>，schema 由 zod 转换（<code>fastify-type-provider-zod</code>），
+开发环境 <code>GET /docs</code> 给 Swagger UI，<code>pnpm api:types</code> 生成前端客户端——
+让 API 定义只有一处真相源。</p>
+<p><strong>目前刻意不做。</strong> 本文档承诺的路由有 53 条，实现了 22 条；给不存在的 API 生成
+类型是给零调用方建基础设施。前端 14 处手写类型全在同一个文件里，改一次 API 改一处，
+codegen 的净收益为负。等实现比例反过来了再说。</p><nav class="pager"><a href="05-job-orchestration.html"><div class="dir">← 上一篇</div><div class="name">05 · 任务编排：队列、重试、并发与记账</div></a><a class="next" href="07-design-system.html"><div class="dir">下一篇 →</div><div class="name">07 · 前端设计系统</div></a></nav></main>
   <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#1.-约定">1. 约定</a>
 <a class="lvl-2" href="#2.-项目与剧本">2. 项目与剧本</a>
 <a class="lvl-3" href="#llm-辅助端点">LLM 辅助端点</a>
@@ -328,7 +334,7 @@ data: {"episodeId":"...","done":18,"total":24,"failed":1}
 <a class="lvl-2" href="#6.-播放与统计">6. 播放与统计</a>
 <a class="lvl-2" href="#7.-sse">7. SSE</a>
 <a class="lvl-2" href="#8.-错误规范">8. 错误规范</a>
-<a class="lvl-2" href="#9.-openapi">9. OpenAPI</a></aside>
+<a class="lvl-2" href="#9.-openapi未实现">9. OpenAPI（未实现）</a></aside>
 </div>
 
 <script>
