@@ -105,7 +105,16 @@ async function pollHandler(job: Job<PollJobData>) {
 
 评测未通过、画面崩坏、角色跑偏。**同样的参数重试毫无意义**，必须改变输入。
 
-由状态机驱动，每次产生**新的 `generation_jobs` 行**，`attempt` 递增。变更策略按顺序升级：
+由状态机驱动，每次产生**新的 `generation_jobs` 行**，`attempt` 递增。
+
+> ⚠️ **升级策略尚未实现。** 下面这张表与 `nextAttemptPlan()` 是目标态。
+> 当前 `applyTransition.ts` 每次重试都用**完全相同的 seed、prompt 与 provider**
+> 重投，即本节开头那句「同样的参数重试毫无意义」正是现在的实际行为——
+> 一个镜头会以同一组参数连撞 4 次，然后判死。
+>
+> 换 seed 与强化 prompt 随 provider 路由器一并落地（M1 的 PR-E，那段对象字面量
+> 本来就要重写）；换 provider 要等池子里真有第二个可选项。`shots.provider_hint`
+> 的钩子已经存在但零读取。
 
 | attempt | 策略 |
 |---|---|

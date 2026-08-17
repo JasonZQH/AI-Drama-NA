@@ -24,7 +24,13 @@ A verified run of the full acceptance path:
 | Render | **36.02 s master, 1080×1920, 24 fps** |
 | Re-render after a change | 12 normalised clips reused, **4 s → 0 s** |
 
-Test suites: **127 unit**, **26 integration** (real Postgres + Redis + MinIO), **10 media** (real FFmpeg, real files).
+Three test layers, all run in CI as separate jobs: **unit** (pure functions and the state machine —
+the transition matrix is generated exhaustively, not sampled), **integration** (real Postgres +
+Redis + MinIO, because idempotency and recovery bugs are invisible against mocks), and **media**
+(real FFmpeg on real files — whether the command line is right is only knowable by running it).
+
+<sub>Counts deliberately omitted: they went stale three times in as many PRs. The CI run on any
+commit is the answer.</sub>
 
 Next milestone is M1 — a real cloud provider behind the same adapter, with cost per usable shot measured against the mock baseline.
 

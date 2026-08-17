@@ -111,12 +111,18 @@
 <div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash">git clone &lt;repo&gt; ai-drama-studio &amp;&amp; cd ai-drama-studio
 pnpm install
 cp .env.example .env                    # 默认即 mock provider，无需任何 key
-docker compose -f infra/docker-compose.yml up -d
+docker compose --env-file .env -f infra/docker-compose.yml up -d
+pnpm build                              # ← 必须在 migrate 之前
 pnpm db:migrate
 pnpm db:seed                            # demo project：1 集 / 12 镜 / 2 角色
-pnpm build                              # control 跑 dist，dev 前先构建一次
-pnpm dev                                # 并行起 web:3000 + control:4000 + 队列 worker
+pnpm dev                                # 起依赖 + web:3000 + control:4000 + 队列 worker，退出时停容器
 </code></pre></div>
+<p>三处容易踩的地方，都是实测过的：</p>
+<ul>
+<li><strong><code>pnpm build</code> 必须排在 <code>db:migrate</code> 之前。</strong> <code>db:migrate</code> 跑的是 <code>dist/db/migrate.js</code>，而 <code>dist/</code> 不进版本库——全新 clone 直接跑迁移会得到 <code>MODULE_NOT_FOUND</code>。这份文档此前的顺序是反的。</li>
+<li><strong><code>docker compose</code> 要带 <code>--env-file .env</code>。</strong> compose 默认读的是<strong>它自己目录</strong>（<code>infra/</code>）下的 <code>.env</code>，那里没有，于是 <code>${POSTGRES_PORT:-5432}</code> 一律取默认值；而根 <code>.env</code> 里的 <code>DATABASE_URL</code> 可能写着别的端口，容器与应用就对不上。<code>pnpm dev</code> 内部已经带了这个参数。</li>
+<li><strong><code>.env</code> 里必须有 <code>CONTROL_API_KEY</code></strong>，否则控制面起不来（<a href="06-api-spec.html" title="控制面 API 规范"><code>06-api-spec.md</code></a> §1 的写路径闸门）。<code>cp .env.example .env</code> 已经带上了。</li>
+</ul>
 <p>打开 <code>http://localhost:3000</code>，进入 demo 项目 → 分镜页 → 「生成整集」→ 十几秒后就能看到 mock 视频填充进卡片，走完 review → timeline → 渲染 → 播放的全链路。</p>
 <p><strong>这一步跑通是 M0 的验收标准。</strong> 它证明状态机、队列、SSE、存储、渲染这条主干是通的，而这一切都不需要 GPU 或云账号。</p>
 <h2 id="3.-环境变量">3. 环境变量<a aria-label="链接到此节" class="anchor" href="#3.-环境变量">#</a></h2>
@@ -215,20 +221,60 @@ MAX_GLOBAL_CONCURRENT=32
 </code></pre></div>
 <p>MinIO 控制台 <code>http://localhost:9001</code>（adminlocal / adminlocal123）可以直接浏览生成的文件，调试媒体问题时非常有用。</p>
 <h2 id="5.-常用脚本">5. 常用脚本<a aria-label="链接到此节" class="anchor" href="#5.-常用脚本">#</a></h2>
-<div class="codeblock"><span class="lang">jsonc</span><pre><code class="language-jsonc">{
-  "dev":          "turbo run dev --parallel",
-  "build":        "turbo run build",
-  "typecheck":    "turbo run typecheck",
-  "test":         "vitest run",
-  "contracts:build": "tsx scripts/build-contracts.ts",   // zod → JSON Schema → pydantic
-  "db:migrate":   "drizzle-kit migrate",
-  "db:studio":    "drizzle-kit studio",
-  "db:seed":      "tsx apps/control/src/db/seed.ts",
-  "db:reset":     "tsx scripts/db-reset.ts",
-  "api:types":    "openapi-typescript http://localhost:4000/docs/json -o apps/web/lib/api-types.ts",
-  "worker:video:mock": "docker run --rm -p 8001:8001 -e ENGINE=mock ai-drama/video-worker:cpu"
-}
-</code></pre></div>
+<blockquote>
+<p><strong>以根 <code>package.json</code> 为准。</strong> 下表是照抄，不是设计意图——此前这里列过
+<code>api:types</code>、<code>db:studio</code>、<code>worker:video:mock</code> 三条<strong>不存在</strong>的命令，以及
+<code>contracts:build</code> / <code>db:*</code> / <code>dev</code> 五条与实际实现不符的写法。照着跑必然报
+<code>Command not found</code>。改脚本时记得同步这里。</p>
+</blockquote>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>命令</th>
+<th>做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pnpm dev</code></td>
+<td>起依赖容器 + web + control + worker，<strong>Ctrl+C 时停容器</strong>（<code>scripts/dev.sh</code>）</td>
+</tr>
+<tr>
+<td><code>pnpm dev:app</code></td>
+<td>只起应用，不碰容器。两个终端并行时用它</td>
+</tr>
+<tr>
+<td><code>pnpm build</code></td>
+<td>全量构建。<code>control</code> 跑 <code>dist</code>，所以 migrate/seed/dev 之前都要先构建</td>
+</tr>
+<tr>
+<td><code>pnpm typecheck</code> / <code>pnpm lint</code> / <code>pnpm format</code></td>
+<td>CI 门禁的前三道</td>
+</tr>
+<tr>
+<td><code>pnpm test</code></td>
+<td>单测，排除 <code>*.int.test.ts</code></td>
+</tr>
+<tr>
+<td><code>pnpm test:int</code></td>
+<td>集成测试，打真实 Postgres / Redis / MinIO</td>
+</tr>
+<tr>
+<td><code>pnpm contracts:build</code></td>
+<td>zod → JSON Schema → 给 Python 的生成物。<strong>改了 contracts 必须重跑并提交</strong>，CI 有同步门禁</td>
+</tr>
+<tr>
+<td><code>pnpm db:generate</code></td>
+<td>改了 <code>schema.ts</code> 之后生成迁移文件</td>
+</tr>
+<tr>
+<td><code>pnpm db:migrate</code> / <code>pnpm db:seed</code> / <code>pnpm db:reset</code></td>
+<td>迁移 / 灌 demo 数据 / 清库重来</td>
+</tr>
+</tbody>
+</table></div>
+<p>文档站另有一条不在 <code>package.json</code> 里：<code>python3 scripts/build-docs.py</code>
+把 <code>docs/_src/*.md</code> 渲染成 HTML。<strong>改了 <code>_src</code> 必须重跑并提交生成物</strong>，CI 同样有门禁。</p>
 <p><code>contracts:build</code> 必须在 <code>dev</code> 之前跑一次，也应挂在 CI 的第一步——它是三语言类型一致的保证（<a href="01-architecture.html" title="系统架构"><code>01-architecture.md</code></a> §3）。</p>
 <h2 id="6.-接入真实云-providerm1">6. 接入真实云 Provider（M1）<a aria-label="链接到此节" class="anchor" href="#6.-接入真实云-providerm1">#</a></h2>
 <div class="codeblock"><span class="lang">bash</span><pre><code class="language-bash">VIDU_API_KEY=vd_xxx
