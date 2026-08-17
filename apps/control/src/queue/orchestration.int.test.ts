@@ -376,13 +376,32 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
     await armShot(TEST_ATTEMPT_BASE + 60)
     // 造两个候选 take，模拟两次点击选不同的片
     const jobId = await newJob()
-    const [asset] = await db.select({ id: s.assets.id }).from(s.assets).limit(1)
-    if (!asset) throw new Error('库里没有 asset，先跑一次 ingest 用例')
+    /*
+     * 自己建 asset，**不要借用库里现成的**。
+     *
+     * 上一版写的是 `select().from(s.assets).limit(1)`，本地能过是因为库里有前几轮
+     * ingest 用例的残留；CI 每次起新库，而建 asset 的那组用例排在本 describe
+     * 之后——于是这条用例在 CI 上必挂。隐藏的跨 describe 顺序依赖，正是这个
+     * 文件其他地方一直在避免的东西。
+     */
+    const [asset] = await db
+      .insert(s.assets)
+      .values({
+        projectId,
+        kind: 'video',
+        storageKey: `test/transition-atomic/${jobId}.mp4`,
+        mime: 'video/mp4',
+        bytes: 1,
+        sha256: 'f'.repeat(64),
+        producedBy: 'generation',
+      })
+      .returning({ id: s.assets.id })
+
     const takes = await db
       .insert(s.takes)
       .values([
-        { shotId, jobId, assetId: asset.id, status: 'candidate' },
-        { shotId, jobId, assetId: asset.id, status: 'candidate' },
+        { shotId, jobId, assetId: asset!.id, status: 'candidate' },
+        { shotId, jobId, assetId: asset!.id, status: 'candidate' },
       ])
       .returning({ id: s.takes.id })
     await db.update(s.shots).set({ status: 'review' }).where(eq(s.shots.id, shotId))
@@ -404,6 +423,7 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
         takes.map((t) => t.id),
       ),
     )
+    await db.delete(s.assets).where(eq(s.assets.id, asset!.id))
   })
 
   /**
