@@ -1375,10 +1375,7 @@ describe('accepted = 被选中，不是出了片子（usdPerAccepted 的分母�
       submittedAt: Date.now() - 10,
     })
     if (res.status !== 'succeeded') throw new Error('mock 应当成功')
-    await handleIngest(
-      { db, storage },
-      { generationJobId: id, shotId, projectId, sourceUrl: res.outputUrl },
-    )
+    await handleIngest({ db, storage }, { generationJobId: id, shotId, projectId, sourceUrl: res.outputUrl })
     return id
   }
 
@@ -1405,10 +1402,7 @@ describe('accepted = 被选中，不是出了片子（usdPerAccepted 的分母�
       'ingest 不该写 accepted——它不知道人会选哪一条',
     ).toHaveLength(0)
 
-    await db
-      .update(s.shots)
-      .set({ status: 'review', selectedTakeId: null })
-      .where(eq(s.shots.id, shotId))
+    await db.update(s.shots).set({ status: 'review', selectedTakeId: null }).where(eq(s.shots.id, shotId))
     const r = await applyShotTransition(tdeps(), shotId, {
       type: 'take.selected',
       takeId: await takeOf(ids[1]!),
@@ -1425,10 +1419,7 @@ describe('accepted = 被选中，不是出了片子（usdPerAccepted 的分母�
 
   it('redo 撤销选择后 accepted 跟着灭', async () => {
     const id = await generatedTake()
-    await db
-      .update(s.shots)
-      .set({ status: 'review', selectedTakeId: null })
-      .where(eq(s.shots.id, shotId))
+    await db.update(s.shots).set({ status: 'review', selectedTakeId: null }).where(eq(s.shots.id, shotId))
     await applyShotTransition(tdeps(), shotId, { type: 'take.selected', takeId: await takeOf(id) })
     expect((await acceptedOf([id]))[0]!.accepted).toBe(true)
 
