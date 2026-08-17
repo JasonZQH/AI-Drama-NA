@@ -1,0 +1,18 @@
+{
+  // 只为**类型检查**存在，不产出任何东西。
+  //
+  // tsconfig.json 把 *.test.ts / *.spec.ts / *.int.test.ts 排除在外，理由是正确的
+  // （否则它们会进 dist，vitest 就把 src 与编译产物各跑一遍，用例数悄悄翻倍）。
+  // 但那个 exclude 同时也让 `pnpm typecheck` 从来没看过测试代码——测试里改坏一个
+  // 依赖签名，要等真跑起来才发现。这份配置把它们加回类型检查，且不进构建。
+  //
+  // 实际踩到过：applyShotTransition 的 deps 从 providerId 改成 provider 之后，
+  // 集成测试里的 helper 没跟着改，typecheck 全绿，跑起来才 TypeError。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}

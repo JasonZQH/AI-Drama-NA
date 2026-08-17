@@ -53,6 +53,15 @@ beforeAll(async () => {
     storage,
     providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })],
     maxAttempts: 4,
+    /*
+     * 会抛的桩。本文件目前**没有任何渲染用例**——此前它干脆没传 media，
+     * 类型上就是错的（`pnpm typecheck` 看不到测试文件，所以一直没人发现）。
+     * 传个显式会抛的，一旦将来有人加渲染用例，报错会直说「该给个真桩了」，
+     * 而不是丢一个 undefined 的属性访问。
+     */
+    media: {
+      render: () => Promise.reject(new Error('api.int.test.ts 未配置 media worker 桩')),
+    },
     healthProbe: () => client`SELECT 1`,
     makeSubscriber: () => createConnection(REDIS_URL),
     apiKey: TEST_API_KEY,
@@ -308,6 +317,35 @@ describe('状态迁移必须走状态机', () => {
 
     const queued = await queues.generate.getJobs(['waiting', 'prioritized', 'delayed'])
     expect(queued.length).toBeGreaterThan(0)
+  })
+
+  /**
+   * 单镜路径此前**完全不过预算闸门**——它只挂在 `/generate-batch` 上。
+   * 闸门下沉到 `applyShotTransition` 之后这条路由自动被覆盖，这里验的是
+   * 402 那层映射：预算拒绝不能和状态机拒绝混成同一个 400，两者要人做的事不一样。
+   */
+  it('超预算时单镜 generate 回 402 而不是 202', async () => {
+    const prev = process.env['BUDGET_DAILY_MICRO_USD']
+    process.env['BUDGET_DAILY_MICRO_USD'] = '1' // 1 微美元，必然超
+
+    await db.update(s.shots).set({ status: 'ready' }).where(eq(s.shots.id, shotId))
+    const before = await db.select({ id: s.generationJobs.id }).from(s.generationJobs)
+
+    const r = await app.inject({
+      method: 'POST',
+      headers: WRITE_HEADERS,
+      url: `/api/shots/${shotId}/generate`,
+    })
+
+    expect(r.statusCode).toBe(402)
+    expect(r.json().error.code).toBe('BUDGET_EXCEEDED')
+    expect(r.json().error.details.dailyLimitMicroUsd).toBe(1)
+
+    const after = await db.select({ id: s.generationJobs.id }).from(s.generationJobs)
+    expect(after.length, '402 之后不该留下任何生成任务').toBe(before.length)
+
+    if (prev === undefined) delete process.env['BUDGET_DAILY_MICRO_USD']
+    else process.env['BUDGET_DAILY_MICRO_USD'] = prev
   })
 })
 

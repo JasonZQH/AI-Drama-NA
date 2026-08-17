@@ -14,7 +14,7 @@ import {
   reconcileOnBoot,
 } from './orchestrator.js'
 import { createConnection, createQueues, pollDelayMs } from './queues.js'
-import { spentToday } from '../pipeline/batch.js'
+import { spentToday, spentTodayForShot } from '../pipeline/batch.js'
 import { applyShotTransition, type TransitionQueues } from '../pipeline/applyTransition.js'
 import { inFlight, release, reset, tryAcquire } from './semaphore.js'
 
@@ -52,7 +52,9 @@ const storage = new Storage(
   }),
 )
 
-const deps = { db, redis, queues, providers: [provider], maxAttempts: 4 }
+// providers 显式标成 VideoProvider[]：不标的话会被推断成 MockProvider[]，
+// 于是 countingDeps() 那个包装器（返回的是 VideoProvider）赋不进去
+const deps = { db, redis, queues, providers: [provider] as VideoProvider[], maxAttempts: 4 }
 
 let shotId: string
 let projectId: string
@@ -282,7 +284,7 @@ describe('每行至多 submit 一次（花钱的不变量）', () => {
 })
 
 describe('状态迁移是原子的（同一镜头不会被并发付两次钱）', () => {
-  const tdeps = (d: typeof db) => ({ db: d, queues, providerId: 'mock', maxAttempts: 4 })
+  const tdeps = (d: typeof db) => ({ db: d, queues, provider, maxAttempts: 4 })
 
   const countJobs = async (): Promise<number> =>
     (
@@ -486,6 +488,92 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
     expect((await countJobs()) - before, '入队失败不该把已经提交的 job 行也回滚掉').toBe(1)
     const [shot] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
     expect(shot!.status).toBe('generating')
+  })
+
+  afterAll(async () => {
+    await db
+      .update(s.shots)
+      .set({ status: 'ready', attemptCount: 0, selectedTakeId: null })
+      .where(eq(s.shots.id, shotId))
+  })
+})
+
+describe('预算闸门下沉到唯一花钱入口', () => {
+  const tdeps = (over: Partial<Parameters<typeof applyShotTransition>[0]> = {}) => ({
+    db,
+    queues,
+    provider,
+    maxAttempts: 4,
+    ...over,
+  })
+
+  async function armShot(attemptCount: number): Promise<void> {
+    await db
+      .update(s.shots)
+      .set({ status: 'ready', attemptCount, selectedTakeId: null })
+      .where(eq(s.shots.id, shotId))
+  }
+
+  const lastJob = async () =>
+    (
+      await db
+        .select()
+        .from(s.generationJobs)
+        .where(eq(s.generationJobs.shotId, shotId))
+        .orderBy(desc(s.generationJobs.createdAt))
+        .limit(1)
+    )[0]
+
+  /**
+   * 在途预留。**没有它闸门等于没有**：`spentTodayForShot` 求和的是
+   * `cost_micro_usd`，而排队中的任务此前这一列是 NULL——一次批量把 12 个镜头
+   * 全排进去时账面仍是 0，闸门看到的永远是「还没花钱」。
+   */
+  it('排队中的任务立刻占额度，且标成估算', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 85)
+    const before = await spentTodayForShot(db, shotId)
+
+    expect((await applyShotTransition(tdeps(), shotId, { type: 'generate.requested' }))?.ok).toBe(true)
+
+    expect(await spentTodayForShot(db, shotId), '还没提交就该开始占额度').toBeGreaterThan(before)
+    const job = await lastJob()
+    expect(job!.status).toBe('queued') // 确实还没提交
+    expect(job!.costMicroUsd).toBeGreaterThan(0)
+    expect(job!.costEstimated).toBe(true)
+    await queues.generate.drain(true)
+  })
+
+  /**
+   * 单镜路径此前**完全裸奔**——闸门只挂在 `/generate-batch` 一条路由上。
+   * 下沉之后它和批量、和 fail() 的自动重试走同一道闸。
+   */
+  it('单镜生成也过闸门：超限时拒绝，且一行 job 都不建', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 86)
+    const before = (await db.select({ id: s.generationJobs.id }).from(s.generationJobs)).length
+
+    const r = await applyShotTransition(
+      tdeps({ budget: { dailyLimitMicroUsd: 1, onExceed: 'block' } }),
+      shotId,
+      { type: 'generate.requested' },
+    )
+
+    expect(r).toMatchObject({ ok: false, code: 'BUDGET_EXCEEDED' })
+    expect((await db.select({ id: s.generationJobs.id }).from(s.generationJobs)).length).toBe(before)
+    // 被拦下时镜头留在原地，加了额度就能再发起
+    const [shot] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
+    expect(shot!.status).toBe('ready')
+  })
+
+  /** 08 §2：warn 是警告不是家长控制，决定权在用户 */
+  it('warn 模式下超限也放行', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 87)
+    const r = await applyShotTransition(
+      tdeps({ budget: { dailyLimitMicroUsd: 1, onExceed: 'warn' } }),
+      shotId,
+      { type: 'generate.requested' },
+    )
+    expect(r?.ok).toBe(true)
+    await queues.generate.drain(true)
   })
 
   afterAll(async () => {

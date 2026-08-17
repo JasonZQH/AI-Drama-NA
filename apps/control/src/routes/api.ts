@@ -25,15 +25,24 @@ export interface ApiDeps {
 
 const Uuid = z.object({ id: z.string().uuid() })
 
-/** 非法迁移回 400；真正的执行在 pipeline/applyTransition，路由与队列共用 */
+/**
+ * 非法迁移回 400、超预算回 402；真正的执行在 pipeline/applyTransition，
+ * 路由与队列共用同一个执行点。
+ *
+ * 两种拒绝必须分开：状态机拒绝是「你点错了」，预算拒绝是「你没点错，是钱不够」。
+ * 混成一种的话 UI 说不清该让人做什么——前者要改状态，后者要加额度。
+ */
 async function applyTransition(deps: ApiDeps, shotId: string, event: ShotEvent): Promise<{ next: string }> {
   const r = await applyShotTransition(
-    { db: deps.db, queues: deps.queues, providerId: deps.providers[0]!.id, maxAttempts: deps.maxAttempts },
+    { db: deps.db, queues: deps.queues, provider: deps.providers[0]!, maxAttempts: deps.maxAttempts },
     shotId,
     event,
   )
   if (r === null) throw new ApiError('NOT_FOUND', `shot ${shotId} 不存在`)
-  if (!r.ok) throw new ApiError('INVALID_STATE_TRANSITION', r.reason, { from: r.from, event: event.type })
+  if (!r.ok) {
+    if (r.code === 'BUDGET_EXCEEDED') throw new ApiError('BUDGET_EXCEEDED', r.reason, { ...r.budget })
+    throw new ApiError('INVALID_STATE_TRANSITION', r.reason, { from: r.from, event: event.type })
+  }
   return { next: r.next }
 }
 
