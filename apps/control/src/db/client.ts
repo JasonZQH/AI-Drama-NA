@@ -16,3 +16,12 @@ export function createDb(url: string, max = 10) {
 }
 
 export type Db = ReturnType<typeof createDb>['db']
+
+/**
+ * 事务内外通用的句柄。
+ *
+ * drizzle 的 `tx` 与 `db` 结构兼容但类型不同，所以「既能在事务里跑、也能独立跑」
+ * 的函数要收这个类型。**不要用 `as` 硬转**——那正是 ADR-0011 里记的那次事故
+ * （`as never` 让 where 条件被静默忽略，DELETE 变成不删）。
+ */
+export type DbOrTx = Db | Parameters<Parameters<Db['transaction']>[0]>[0]
