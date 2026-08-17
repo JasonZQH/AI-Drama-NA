@@ -1,4 +1,9 @@
 import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { readFile, readdir } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
 import * as s from '../db/schema.js'
@@ -1566,5 +1571,173 @@ describe('prompt-kit：Shot Intent + 三路资产 → prompt', () => {
     } finally {
       await db.update(s.shots).set({ promptOverride: null }).where(eq(s.shots.id, promptShotId))
     }
+  })
+})
+
+/**
+ * 远程产物转存（M1 P3）。
+ *
+ * mock provider 回的是本地 fixture 路径，云 provider 回 http(s) URL——此前
+ * `localPathOf` 对后者直接抛「M1 接入云 provider 时实现」。接 OpenRouter 之前
+ * 必须先能把字节搬进 MinIO 并校验 sha256。
+ *
+ * 用本地 `node:http` 起服务器验，不需要云账号。注意这也顺带验证了 PR-1 的出网
+ * 拦截没有误伤 loopback。
+ */
+describe('远程产物转存', () => {
+  // 与 mock.ts 同一个 fixtures 目录：从 src/queue/ 上两级
+  const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'fixtures', 'ms.mp4')
+  let mp4: Buffer
+  let server: Server
+  let base: string
+
+  /** 每个用例挂一个 handler，避免互相干扰 */
+  let handler: (req: IncomingMessage, res: ServerResponse) => void
+
+  beforeAll(async () => {
+    mp4 = await readFile(FIXTURE)
+    server = createServer((req, res) => handler(req, res))
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const addr = server.address()
+    if (addr === null || typeof addr === 'string') throw new Error('拿不到端口')
+    base = `http://127.0.0.1:${addr.port}`
+  })
+
+  afterAll(async () => {
+    await new Promise<void>((r) => server.close(() => r()))
+  })
+
+  /** 临时目录留没留下来——四条路径都要验，失败路径尤其 */
+  const tempDirs = async (): Promise<number> =>
+    (await readdir(tmpdir())).filter((n) => n.startsWith('drama-ingest-')).length
+
+  const ingest = (
+    jobId: string,
+    path: string,
+    limits?: { maxBytes?: number; stallMs?: number; totalMs?: number },
+  ) =>
+    handleIngest(
+      { db, storage, ...(limits ? { limits } : {}) },
+      { generationJobId: jobId, shotId, projectId, sourceUrl: `${base}${path}` },
+    )
+
+  it('http URL：下载 → sha256 → 进 MinIO → 落 asset', async () => {
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': String(mp4.byteLength) })
+      res.end(mp4)
+    }
+    const before = await tempDirs()
+    const id = await newJob()
+    const out = await ingest(id, '/take.mp4')
+
+    const [asset] = await db.select().from(s.assets).where(eq(s.assets.id, out.assetId))
+    expect(asset!.bytes, '字节数要和源文件一致').toBe(mp4.byteLength)
+    expect(asset!.sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(await storage.exists(asset!.storageKey), '产物没真的进 MinIO').toBe(true)
+    expect(await tempDirs(), '成功路径也要清临时目录').toBe(before)
+  })
+
+  it('同一份字节第二次走去重，不重复上传', async () => {
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4' })
+      res.end(mp4)
+    }
+    const first = await ingest(await newJob(), '/take.mp4')
+    const second = await ingest(await newJob(), '/take.mp4')
+    expect(second.deduped, '内容相同该命中已有 asset').toBe(true)
+    expect(second.assetId).toBe(first.assetId)
+  })
+
+  /**
+   * **上限必须在流中途判，不能读 `Content-Length`。**
+   *
+   * 所以这个 handler 故意不发那个头——按头做预检查的实现会直接放行，
+   * 一路把磁盘写满。
+   */
+  it('超过体积上限：中途中断，不留临时文件', async () => {
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4' }) // 刻意不发 content-length
+      let n = 0
+      const tick = (): void => {
+        if (n++ > 200) return void res.end()
+        if (!res.write(Buffer.alloc(64 * 1024))) return void res.once('drain', tick)
+        setImmediate(tick)
+      }
+      tick()
+    }
+    const before = await tempDirs()
+    await expect(ingest(await newJob(), '/huge.mp4', { maxBytes: 128 * 1024 })).rejects.toThrow(/上限/)
+    expect(await tempDirs(), '失败路径留下了半截文件').toBe(before)
+  })
+
+  it('对端挂住不发完：停滞闸中断，不留临时文件', async () => {
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': String(mp4.byteLength) })
+      res.write(mp4.subarray(0, 16)) // 开个头就不动了
+    }
+    const before = await tempDirs()
+    await expect(ingest(await newJob(), '/hang.mp4', { stallMs: 300 })).rejects.toThrow()
+    expect(await tempDirs(), '停滞路径留下了半截文件').toBe(before)
+  })
+
+  /**
+   * **慢但健康的下载不该被掐死。**
+   *
+   * 这条守的是「用总时长当上限」那个错误做法：一个 50MB 的母版在 500KB/s 的
+   * 链路上要 100 秒，明明在正常传输却会被总时长杀掉，然后判 download_failed
+   * 去重试——**而那次生成的钱已经花了**。
+   *
+   * 这里让整段传输（约 1 秒）远长于停滞闸（300ms），但每块间隔（100ms）短于它。
+   * 只有「每收到一块就把计时器推后」才能过。
+   */
+  it('慢但持续的下载不被停滞闸误杀', async () => {
+    const CHUNKS = 10
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4' })
+      const size = Math.ceil(mp4.byteLength / CHUNKS)
+      let i = 0
+      const tick = (): void => {
+        if (i >= CHUNKS) return void res.end()
+        res.write(mp4.subarray(i * size, (i + 1) * size))
+        i++
+        setTimeout(tick, 100)
+      }
+      tick()
+    }
+    const out = await ingest(await newJob(), '/slow.mp4', { stallMs: 300, totalMs: 30_000 })
+    const [asset] = await db.select().from(s.assets).where(eq(s.assets.id, out.assetId))
+    expect(asset!.bytes, '分 10 块慢传，字节数仍要完整').toBe(mp4.byteLength)
+  })
+
+  it('涓流：停滞闸抓不到，但总时长兜住', async () => {
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4' })
+      const tick = (): void => {
+        res.write(Buffer.alloc(1))
+        setTimeout(tick, 50) // 永远不结束，但一直有字节
+      }
+      tick()
+    }
+    const before = await tempDirs()
+    await expect(ingest(await newJob(), '/trickle.mp4', { stallMs: 5_000, totalMs: 600 })).rejects.toThrow()
+    expect(await tempDirs()).toBe(before)
+  })
+
+  it('中途断流：报错而不是把半截文件当成产物', async () => {
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': String(mp4.byteLength) })
+      res.write(mp4.subarray(0, 32))
+      res.destroy() // 连接直接断
+    }
+    const before = await tempDirs()
+    await expect(ingest(await newJob(), '/cut.mp4')).rejects.toThrow()
+    expect(await tempDirs()).toBe(before)
+  })
+
+  it('HTTP 错误码不当成产物', async () => {
+    handler = (_req, res) => {
+      res.writeHead(404).end('nope')
+    }
+    await expect(ingest(await newJob(), '/gone.mp4')).rejects.toThrow(/404/)
   })
 })

@@ -1,6 +1,13 @@
 import { TERMINAL_JOB_STATUSES } from '@ai-drama/contracts'
 import { and, eq, notInArray } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
+import { createWriteStream } from 'node:fs'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import type { Db, DbOrTx } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { hashFile, s3Key, type Storage } from '../storage/s3.js'
@@ -15,6 +22,33 @@ import { hashFile, s3Key, type Storage } from '../storage/s3.js'
  * （10-media-storage.md §1.3）。
  */
 
+/**
+ * 单次下载的字节上限。真 provider 的一条 4 秒 720p take 是几 MB 到几十 MB，
+ * 512MB 留了两个数量级的余量——它挡的不是正常产物，是「URL 指向了别的东西」
+ * 和「对端流不停」这两种把磁盘写满的情形。
+ */
+const MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+
+/**
+ * **停滞**上限：连续这么久一个字节都没来，就判这条连接死了。
+ *
+ * 这才是我们要杀的东西。用总时长做上限会误杀「大但健康」的下载——一个 50MB
+ * 的母版在 500KB/s 的链路上要 100 秒，明明在正常传输却被掐死，然后判
+ * download_failed 去重试，**而那次生成的钱已经花了**。
+ *
+ * 注意本函数跑在 `poll()` 返回 succeeded 之后：生成耗时归 orchestrator 的
+ * `PROVIDER_TIMEOUT_MS`（15 分钟）管，到这里产物已经在对端存好了。
+ */
+const DOWNLOAD_STALL_MS = 60_000
+
+/**
+ * 总时长兜底，防「每 20 秒挤一个字节」这种停滞检测抓不到的涓流。
+ *
+ * 取值与体积上限自洽：512MB 在一个我们仍愿意称为健康的速率（约 300KB/s）下
+ * 大约要半小时。所以只要不停滞、不超体积，就让它传完。
+ */
+const DOWNLOAD_TOTAL_MS = 30 * 60_000
+
 export interface IngestDeps {
   readonly db: Db
   readonly storage: Storage
@@ -23,6 +57,12 @@ export interface IngestDeps {
    * 生成完成了、成本记了、take 也建了，但没人告诉镜头「有候选了」。
    */
   readonly onTakeAccepted?: (shotId: string, takeId: string) => Promise<unknown>
+  /** 不传用上面的常量。测试要在不下载 512MB、不等半小时的前提下验守卫时传它 */
+  readonly limits?: {
+    readonly maxBytes?: number
+    readonly stallMs?: number
+    readonly totalMs?: number
+  }
 }
 
 export interface IngestInput {
@@ -46,6 +86,22 @@ export interface IngestResult {
 export async function handleIngest(deps: IngestDeps, input: IngestInput): Promise<IngestResult> {
   const key = input.storageKey ?? s3Key.take(input.projectId, input.shotId, input.generationJobId)
 
+  // 自部署 worker 直写存储（provider 只回 storageKey），字节本来就不搬运
+  const local = input.storageKey ? null : await materialize(input.sourceUrl, deps)
+  try {
+    return await ingestLocal(deps, input, key, local?.path)
+  } finally {
+    // 无论去重命中、上传失败、还是终态守卫拦下，临时文件都要走
+    await local?.cleanup()
+  }
+}
+
+async function ingestLocal(
+  deps: IngestDeps,
+  input: IngestInput,
+  key: string,
+  localPath: string | undefined,
+): Promise<IngestResult> {
   /*
    * **先算哈希查重，再决定要不要上传。**
    *
@@ -59,9 +115,8 @@ export async function handleIngest(deps: IngestDeps, input: IngestInput): Promis
    *
    * 自部署直写时产物已经在存储里（provider 只回 storageKey），本来就不搬运。
    */
-  const { sha256, bytes } = input.storageKey
-    ? await hashExisting(deps, input.storageKey)
-    : await hashFile(localPathOf(input.sourceUrl))
+  const { sha256, bytes } =
+    localPath === undefined ? await hashExisting(deps, input.storageKey!) : await hashFile(localPath)
 
   const [existing] = await deps.db.select().from(s.assets).where(eq(s.assets.sha256, sha256)).limit(1)
 
@@ -70,8 +125,8 @@ export async function handleIngest(deps: IngestDeps, input: IngestInput): Promis
     assetId = existing.id
   } else {
     // 内容是新的才真的上传。storageKey 分支的字节早就在存储里，不用再传一遍
-    if (!input.storageKey) {
-      await deps.storage.putFile(key, localPathOf(input.sourceUrl), 'video/mp4')
+    if (localPath !== undefined) {
+      await deps.storage.putFile(key, localPath, 'video/mp4')
     }
     assetId = (
       await deps.db
@@ -156,12 +211,92 @@ export async function handleIngest(deps: IngestDeps, input: IngestInput): Promis
   return { assetId, takeId: take!.id, deduped: existing !== undefined, settled: settled.length > 0 }
 }
 
-/** mock provider 返回的是本地 fixture 路径；真 provider 返回 http(s) URL */
-function localPathOf(sourceUrl: string): string {
-  if (sourceUrl.startsWith('http://') || sourceUrl.startsWith('https://')) {
-    throw new Error(`远程 URL 的下载在 M1 接入云 provider 时实现：${sourceUrl}`)
+interface LocalCopy {
+  readonly path: string
+  /** 只有真下载过才需要删。本地 fixture 是 no-op */
+  cleanup(): Promise<void>
+}
+
+const NO_CLEANUP = (): Promise<void> => Promise.resolve()
+
+/**
+ * 把产物落到一个本地路径上，**整个 handleIngest 期间只做一次**。
+ *
+ * mock provider 返回本地 fixture 路径，真 provider 返回 http(s) URL。此前这里
+ * 是个同步的 `localPathOf`，被调用两次（算哈希一次、上传一次）——改成下载的话
+ * 那就是下两遍、留两个临时文件，而且 `finally` 要同时管住两个。所以先物化，
+ * 再把路径传给下游。
+ */
+async function materialize(sourceUrl: string, deps: IngestDeps): Promise<LocalCopy> {
+  if (!sourceUrl.startsWith('http://') && !sourceUrl.startsWith('https://')) {
+    return { path: sourceUrl.replace(/^file:\/\//, ''), cleanup: NO_CLEANUP }
   }
-  return sourceUrl.replace(/^file:\/\//, '')
+
+  const maxBytes = deps.limits?.maxBytes ?? MAX_DOWNLOAD_BYTES
+  const stallMs = deps.limits?.stallMs ?? DOWNLOAD_STALL_MS
+  const totalMs = deps.limits?.totalMs ?? DOWNLOAD_TOTAL_MS
+
+  const dir = await mkdtemp(join(tmpdir(), 'drama-ingest-'))
+  const path = join(dir, 'take.mp4')
+  const wipe = (): Promise<void> => rm(dir, { recursive: true, force: true })
+
+  /*
+   * 两把闸，管的是两件不同的事：
+   *
+   * - **停滞**：每收到一块就把计时器推后。连接死了会在 stallMs 内被抓到，
+   *   而一个大但健康的下载想传多久传多久。
+   * - **总时长**：兜住「每 20 秒挤一个字节」这种停滞检测抓不到的涓流。
+   *
+   * 只用总时长的话会误杀大文件；只用停滞的话涓流能永久占住一个 worker 槽位。
+   */
+  const stalled = new AbortController()
+  let stallTimer: ReturnType<typeof setTimeout> | undefined
+  const bump = (): void => {
+    clearTimeout(stallTimer)
+    stallTimer = setTimeout(
+      () => stalled.abort(new Error(`下载停滞超过 ${stallMs}ms：${sourceUrl}`)),
+      stallMs,
+    )
+  }
+
+  try {
+    bump() // 连接与响应头阶段也受停滞闸管
+    const res = await fetch(sourceUrl, {
+      signal: AbortSignal.any([AbortSignal.timeout(totalMs), stalled.signal]),
+    })
+    if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}：${sourceUrl}`)
+    if (!res.body) throw new Error(`下载响应没有 body：${sourceUrl}`)
+
+    /*
+     * **体积上限在流中途判，不读 `Content-Length`。**
+     *
+     * 那个头可以是错的、缺失的、或者故意撒谎的——按它做预检查等于允许对端
+     * 决定我们的磁盘写多满。分块累计才是真的守住了。
+     */
+    let written = 0
+    const cap = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        bump() // 有字节进来 = 没停滞
+        written += chunk.byteLength
+        if (written > maxBytes) {
+          cb(new Error(`产物超过 ${maxBytes} 字节上限，已中断：${sourceUrl}`))
+          return
+        }
+        cb(null, chunk)
+      },
+    })
+
+    // pipeline 负责背压，并在任一环节出错时销毁整条链
+    await pipeline(Readable.fromWeb(res.body as WebReadableStream<Uint8Array>), cap, createWriteStream(path))
+  } catch (e) {
+    await wipe() // 失败路径也要清，否则每次失败留一个半截文件
+    throw e
+  } finally {
+    // 计时器不清的话，进程会被这条已经没人等的定时器拖住不退出
+    clearTimeout(stallTimer)
+  }
+
+  return { path, cleanup: wipe }
 }
 
 async function hashExisting(deps: IngestDeps, key: string): Promise<{ sha256: string; bytes: number }> {

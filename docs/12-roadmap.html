@@ -166,32 +166,39 @@ M6 优化          自动评测 + 智能路由     数据驱动
 <tr>
 <th>#</th>
 <th>交付</th>
+<th>状态</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>1</td>
-<td>一个云 provider 适配器（建议 Vidu：官方定价透明、多主体参考、错峰便宜）</td>
+<td>一个云 provider 适配器——<strong>OpenRouter</strong>（一把 key、一个 host、原生回报 <code>usage.cost</code>；见 <code>adr/0012</code>。原文建议的 Vidu 已否决：直连各厂要每家一套鉴权/错误码/计费口径）</td>
+<td>⏳</td>
 </tr>
 <tr>
 <td>2</td>
 <td>预算闸门 + <code>dryRun</code> 批量预估</td>
+<td>✅ 闸门已下沉到唯一花钱入口并含在途预留</td>
 </tr>
 <tr>
 <td>3</td>
 <td>产物转存与 sha256 校验</td>
+<td>✅ http(s) 流式下载 + 体积上限（流中途判）+ 超时 + 临时文件清理</td>
 </tr>
 <tr>
 <td>4</td>
 <td>洞察页 v1：花费、通过率、每可用镜头成本</td>
+<td>⚠️ 页面在，但 <code>usdPerAccepted</code> 要接真 provider 才有意义</td>
 </tr>
 <tr>
 <td>5</td>
-<td><code>prompt-kit</code>：Shot Intent + 资产 → prompt 模板引擎</td>
+<td>Shot Intent + 三路资产 → prompt</td>
+<td>✅ 一个纯函数（<code>pipeline/prompt.ts</code>），<strong>不是模板引擎</strong>，也没有独立包</td>
 </tr>
 <tr>
 <td>6</td>
 <td>契约测试（录制回放，CI 不烧钱）</td>
+<td>⚠️ 套件已整修、出网拦截已上；录制回放随适配器落地</td>
 </tr>
 </tbody>
 </table></div>
