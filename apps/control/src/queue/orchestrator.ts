@@ -217,7 +217,9 @@ function buildRequest(job: typeof s.generationJobs.$inferSelect): GenerationRequ
     aspectRatio: (params['aspectRatio'] as '9:16') ?? '9:16',
     fps: Number(params['fps'] ?? 24),
     ...(job.seed === null ? {} : { seed: job.seed }),
-    safetyProfile: 'standard',
+    // 此前写死 'standard'，而路由 probe 用的是 shots.safetyProfile——同一次生成，
+    // 路由据以选 provider 的请求和真正发出去的请求在这一项上不是一回事
+    safetyProfile: (params['safetyProfile'] as 'standard') ?? 'standard',
     priority: 'normal',
     providerParams: (params['providerParams'] as Record<string, unknown>) ?? {},
   }

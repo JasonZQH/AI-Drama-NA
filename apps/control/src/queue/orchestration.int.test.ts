@@ -1431,3 +1431,140 @@ describe('accepted = 被选中，不是出了片子（usdPerAccepted 的分母�
     ).not.toBe(true)
   })
 })
+
+/**
+ * prompt-kit 落地：Shot Intent + 三路一致性资产 → prompt_text。
+ *
+ * **这条是整个 PR 的防退化网。** 三张资产表此前的唯一读取点是一个只读统计
+ * 接口，不通向 GenerationRequest；prompt 是 `${action}, ${shotType}` 拼串，
+ * 连角色名都没有，seed 好的视觉锚点零使用。而跨镜头角色一致性正是靠「同一个
+ * 角色每一镜都带着同一串锚点进 prompt」（ADR-0008）。
+ *
+ * 期望值从库里读，不写死字面量——改 seed 的措辞不该让这条变红，
+ * 断开接线才该。
+ */
+describe('prompt-kit：Shot Intent + 三路资产 → prompt', () => {
+  /*
+   * **用自己的镜头，不共用文件级的 shotId。**
+   *
+   * 文件里的 attempt 号是三方共用的：`nextAttempt()` 从 900 往上爬、各 describe
+   * 手写 +50..+97、而失败重试链还会自动多建一个 attempt+1。在这个共用镜头上
+   * 挑任何一个号都会撞 `gj_shot_attempt_uq`，而症状会伪装成「prompt 拼错了」
+   * ——实测踩过两次（931、992/993）。
+   *
+   * 换一个镜头就有了干净的号段。顺便挑倒数第二个（ots，两个角色同框），
+   * 锚点断言比单人镜更强。cleanupTestRows 按 attempt 区间删，不按 shot，
+   * 所以这个镜头的行同样会被清掉。
+   */
+  let promptShotId: string
+  const tdeps = () => ({
+    db,
+    queues,
+    providers: [provider],
+    maxAttempts: 4,
+    // 本 describe 排在文件末尾，此时当天预留已被前面几十条 job 吃掉一大截。
+    // 闸门本身另有专门的 describe 覆盖，这里不该被它误伤
+    budget: { dailyLimitMicroUsd: Number.MAX_SAFE_INTEGER, onExceed: 'block' as const },
+  })
+
+  beforeAll(async () => {
+    const rows = await db
+      .select({ id: s.shots.id, cast: s.shots.characterIds })
+      .from(s.shots)
+      .orderBy(desc(s.shots.index))
+      .limit(3)
+    const withCast = rows.find((r) => r.id !== shotId && r.cast.length > 0)
+    if (!withCast) throw new Error('找不到带出场角色的镜头，先跑 pnpm db:seed')
+    promptShotId = withCast.id
+  })
+
+  afterEach(async () => {
+    await queues.generate.drain(true)
+  })
+
+  const ANCHOR_ATTEMPT = TEST_ATTEMPT_BASE + 1
+  const OVERRIDE_ATTEMPT = TEST_ATTEMPT_BASE + 2
+
+  it('角色锚点 / 地点 / 时间 / 风格进 prompt_text，负向词进 negative_text', async () => {
+    await db
+      .update(s.shots)
+      .set({ status: 'ready', attemptCount: ANCHOR_ATTEMPT - 1, selectedTakeId: null })
+      .where(eq(s.shots.id, promptShotId))
+
+    const r = await applyShotTransition(tdeps(), promptShotId, { type: 'generate.requested' })
+    expect(r).toMatchObject({ ok: true, next: 'generating' })
+
+    // 按精确 attempt 取，不用 desc().limit(1)——迁移若失败，desc 会静默读到
+    // 上一条陈旧的行，报错就会伪装成「prompt 拼错了」
+    const [job] = await db
+      .select()
+      .from(s.generationJobs)
+      .where(and(eq(s.generationJobs.shotId, promptShotId), eq(s.generationJobs.attempt, ANCHOR_ATTEMPT)))
+    expect(job, '迁移没建出 job').toBeDefined()
+    const prompt = job!.promptText
+
+    // 期望值全部来自库，避免和 seed 的措辞耦合
+    const [shot] = await db.select().from(s.shots).where(eq(s.shots.id, promptShotId))
+    const [ctx] = await db
+      .select({
+        loc: s.locations.description,
+        interior: s.locations.interior,
+        style: s.styleProfiles.description,
+        negative: s.styleProfiles.negativePrompt,
+      })
+      .from(s.shots)
+      .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+      .innerJoin(s.episodes, eq(s.scenes.episodeId, s.episodes.id))
+      .innerJoin(s.projects, eq(s.episodes.projectId, s.projects.id))
+      .leftJoin(s.locations, eq(s.scenes.locationId, s.locations.id))
+      .leftJoin(s.styleProfiles, eq(s.projects.styleProfileId, s.styleProfiles.id))
+      .where(eq(s.shots.id, promptShotId))
+
+    expect(shot!.characterIds.length, 'seed 该给这一镜写上出场角色').toBeGreaterThan(0)
+    const cast = await db
+      .select({ name: s.characters.name, anchors: s.characters.anchorTokens })
+      .from(s.characters)
+      .where(inArray(s.characters.id, shot!.characterIds))
+
+    for (const c of cast) {
+      expect(prompt, `角色 ${c.name} 没进 prompt`).toContain(c.name)
+      for (const a of c.anchors) {
+        expect(prompt, `${c.name} 的锚点「${a}」没进 prompt——一致性就是靠它`).toContain(a)
+      }
+    }
+    expect(prompt, '动作没进 prompt').toContain(shot!.action)
+    if (ctx?.loc) expect(prompt, '地点没进 prompt').toContain(ctx.loc)
+    if (ctx?.style) expect(prompt, '风格没进 prompt').toContain(ctx.style)
+
+    // 负向词单独成列，不混进正向 prompt
+    expect(job!.negativeText, 'style_profiles.negative_prompt 没写进 negative_text').toBe(ctx?.negative)
+    if (ctx?.negative) expect(prompt).not.toContain(ctx.negative)
+
+    // 景别显式传给适配器，不再指望它从 prompt 里正则出来
+    const params = job!.params as { providerParams?: { shotType?: string } }
+    expect(params.providerParams?.shotType).toBe(shot!.shotType)
+  })
+
+  it('promptOverride 是旁路：写了就原样用，不再拼装', async () => {
+    await db
+      .update(s.shots)
+      .set({
+        status: 'ready',
+        attemptCount: OVERRIDE_ATTEMPT - 1,
+        selectedTakeId: null,
+        promptOverride: '手写的 prompt，不要动它',
+      })
+      .where(eq(s.shots.id, promptShotId))
+    try {
+      const r = await applyShotTransition(tdeps(), promptShotId, { type: 'generate.requested' })
+      expect(r).toMatchObject({ ok: true, next: 'generating' })
+      const [job] = await db
+        .select()
+        .from(s.generationJobs)
+        .where(and(eq(s.generationJobs.shotId, promptShotId), eq(s.generationJobs.attempt, OVERRIDE_ATTEMPT)))
+      expect(job!.promptText).toBe('手写的 prompt，不要动它')
+    } finally {
+      await db.update(s.shots).set({ promptOverride: null }).where(eq(s.shots.id, promptShotId))
+    }
+  })
+})

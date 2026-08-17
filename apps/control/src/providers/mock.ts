@@ -271,13 +271,23 @@ export class MockProvider implements VideoProvider {
 }
 
 /**
- * 按 shotType 选 fixture。请求里没有 shotType（那是叙事层的概念，
- * provider 契约不该知道），所以从 prompt 里找景别关键词，找不到退回 ms。
+ * 按 shotType 选 fixture。
+ *
+ * 景别由编排层通过 `providerParams` 显式传进来——那是契约里写明的
+ * adapter-only 逃生舱（04 §2），而 `GenerationRequest` 本身不该有 shotType
+ * 字段：那是叙事层的概念，provider 契约不认识它。
+ *
+ * 此前是从 prompt 里正则匹配景别关键词（`\bcu\b` 之类）。它之所以能工作，
+ * 纯粹因为老的 promptText 是 `${action}, ${shotType}` 拼串。prompt-kit 换成
+ * 散文 prompt 之后，所有镜头都会静默退回 ms.mp4——**而且没有任何测试会失败**，
+ * 因为原来的用例都是手工把关键词拼进 prompt 再断言的重言式。
  */
 export function fixturePathFor(req: GenerationRequest): string {
-  const kinds = ['establishing', 'ecu', 'ots', 'pov', 'cu', 'ms', 'ws'] as const
-  const p = req.prompt.toLowerCase()
-  const kind = kinds.find((k) => new RegExp(`\\b${k}\\b`).test(p)) ?? 'ms'
+  const hint = (req.providerParams as { shotType?: unknown }).shotType
+  const kind = typeof hint === 'string' && KNOWN_SHOT_TYPES.has(hint) ? hint : 'ms'
   const path = join(FIXTURES, `${kind}.mp4`)
   return existsSync(path) ? path : join(FIXTURES, 'ms.mp4')
 }
+
+/** 与 fixtures/ 下的文件一一对应；未知取值退回 ms 而不是拼出一个不存在的路径 */
+const KNOWN_SHOT_TYPES = new Set(['establishing', 'ecu', 'ots', 'pov', 'cu', 'ms', 'ws'])

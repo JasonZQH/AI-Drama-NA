@@ -169,7 +169,7 @@ async function pollHandler(job: Job&lt;PollJobData&gt;) {
 </tr>
 <tr>
 <td>强化 prompt</td>
-<td>⏳ 等 <code>prompt-kit</code>——现在的 prompt 只是 <code>action + shotType</code> 拼串，没有可强化的结构</td>
+<td>⚠️ 结构已经有了（<code>pipeline/prompt.ts</code> 把景别/运镜/动作/角色锚点/地点/时间/风格拼成分句的散文 prompt），但<strong>重试时还没有真的去强化它</strong>——第二级要改的是措辞权重，那是 prompt-kit 之上的一层</td>
 </tr>
 <tr>
 <td>换 provider</td>

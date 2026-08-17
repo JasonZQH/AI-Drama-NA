@@ -299,8 +299,11 @@ function planBatch(shots: Shot[]): { runnable: Shot[]; blocked: Shot[] } {
 那条路径根本不碰 <code>batch.ts</code>。所以被 <code>blocked</code> 的镜头在前序锁定后会<strong>一直停在
 <code>ready</code></strong>，要人再点一次「生成整集」才进得去。</p>
 <p>真做还有个前置：即便放行了，后续镜头也拿不到前序的末帧——<code>buildRequest</code> 的
-<code>refImages</code> 恒为空、<code>mode</code> 恒为 <code>t2v</code>。所以「末帧接首帧」和「自动解锁」是一件事的两半，
-一起等 prompt-kit（M1 P2）。</p>
+<code>refImages</code> 恒为空、<code>mode</code> 恒为 <code>t2v</code>。<strong>M1 P2 交付的 prompt-kit 没有解决这一半</strong>：
+它接的是三路资产的<strong>文本</strong>（角色描述与锚点、地点、风格、负向词），而参考图那一半
+的上下游都还不存在——三张资产表的图片列全空、没有上传端点、<code>presignGet</code> 签的是
+<code>S3_PUBLIC_ENDPOINT</code>（本地是 <code>localhost:9000</code>，云端取不到）。所以「末帧接首帧」
+与「自动解锁」一起推到 M2，和自部署 worker 同期。</p>
 </blockquote>
 <h2 id="7.-回退与版本">7. 回退与版本<a aria-label="链接到此节" class="anchor" href="#7.-回退与版本">#</a></h2>
 <div class="table-wrap"><table>

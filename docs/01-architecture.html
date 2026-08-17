@@ -183,7 +183,9 @@
 │  │  ├─ src/*.ts             # TS 类型（唯一真相源）
 │  │  └─ generated/*.json     # 由 TS 导出的 JSON Schema，供 Python 校验
 │  ├─ ui/                     # 共享 React 组件与设计令牌
-│  └─ prompt-kit/             # Shot Intent → prompt 模板引擎
+│  └─ ui/ …                   # ⛔ 没有 prompt-kit/ 包：拼 prompt 是
+│                             #   apps/control/src/pipeline/prompt.ts 里的一个纯函数，
+│                             #   不是模板引擎，也不需要独立包（M1 P2 实测结论）
 ├─ workers/
 │  ├─ video/                  # Python · 视频生成 worker
 │  ├─ media/                  # Python · FFmpeg 拼接/转码/字幕

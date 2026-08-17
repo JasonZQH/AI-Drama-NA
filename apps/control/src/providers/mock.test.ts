@@ -48,16 +48,37 @@ describe('MockProvider 特有行为', () => {
     expect(new MockProvider().capabilities.serverSideContentFilter).toBe(false)
   })
 
-  it('按 prompt 里的景别关键词选 fixture，找不到退回 ms', () => {
-    expect(fixturePathFor(makeRequest({ prompt: 'the rooftop, establishing' }))).toContain('establishing.mp4')
-    expect(fixturePathFor(makeRequest({ prompt: 'her eyes, ecu' }))).toContain('ecu.mp4')
-    expect(fixturePathFor(makeRequest({ prompt: '没有景别关键词' }))).toContain('ms.mp4')
+  const shot = (shotType: string, over: Record<string, unknown> = {}) =>
+    makeRequest({ providerParams: { shotType }, ...over })
+
+  it('按 providerParams.shotType 选 fixture，未知取值退回 ms', () => {
+    expect(fixturePathFor(shot('establishing'))).toContain('establishing.mp4')
+    expect(fixturePathFor(shot('ecu'))).toContain('ecu.mp4')
+    expect(fixturePathFor(shot('两点五维'))).toContain('ms.mp4')
+    expect(fixturePathFor(makeRequest({}))).toContain('ms.mp4') // 完全没传
+  })
+
+  /**
+   * **本条是 prompt-kit 的防退化网。**
+   *
+   * 旧实现从 prompt 里正则匹配景别关键词（`\bcu\b` 之类），能工作纯粹因为老的
+   * promptText 是 `${action}, ${shotType}` 拼串。换成散文 prompt 之后所有镜头都
+   * 会静默退回 ms.mp4——而旧用例是「手工把关键词拼进 prompt 再断言」的重言式，
+   * 一条都不会红。
+   *
+   * 所以这里刻意用一句**不含任何景别关键词**的真实散文 prompt。
+   */
+  it('散文 prompt 不含景别关键词也能选对 fixture', () => {
+    const prose =
+      'extreme close-up. the silver crescent pendant catching light. Lena: woman, 25, beige trench coat. Interior: small urban cafe. Style: cinematic, high contrast.'
+    expect(prose).not.toMatch(/\becu\b/i) // 先证明这句话里真的没有关键词
+    expect(fixturePathFor(shot('ecu', { prompt: prose }))).toContain('ecu.mp4')
   })
 
   it('fixture 文件真实存在——否则「跑通全链路」是假的', async () => {
     const { existsSync } = await import('node:fs')
     for (const k of ['ecu', 'cu', 'ms', 'ws', 'establishing', 'ots', 'pov']) {
-      expect(existsSync(fixturePathFor(makeRequest({ prompt: `x ${k}` }))), `${k}.mp4 缺失`).toBe(true)
+      expect(existsSync(fixturePathFor(shot(k))), `${k}.mp4 缺失`).toBe(true)
     }
   })
 
