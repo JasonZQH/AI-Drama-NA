@@ -15,6 +15,13 @@
       "when": 1786916729646,
       "tag": "0001_salty_swarm",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786943753167,
+      "tag": "0002_third_ghost_rider",
+      "breakpoints": true
     }
   ]
 }

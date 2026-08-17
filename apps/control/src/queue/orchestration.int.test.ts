@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
-import { Storage, storageFromEnv } from '../storage/s3.js'
+import { Storage, s3Key, storageFromEnv } from '../storage/s3.js'
 import type { VideoProvider } from '@ai-drama/contracts'
 import { handleIngest, createGenerationJob } from './ingest.js'
 import {
@@ -376,8 +376,13 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
 
   it('并发 take.selected：只有一个能锁定，另一个从 locked 被拒', async () => {
     await armShot(TEST_ATTEMPT_BASE + 60)
-    // 造两个候选 take，模拟两次点击选不同的片
-    const jobId = await newJob()
+    /*
+     * 两个候选来自**两次不同的生成尝试**——`UNIQUE(takes.job_id)` 之后这不再是
+     * 风格问题而是硬约束：一个 job 至多一条 take。此前这里用同一个 jobId 建两条，
+     * 模拟的是一个现实中不可能存在的状态，加上约束后立刻被数据库拒掉。
+     */
+    const jobA = await newJob()
+    const jobB = await newJob()
     /*
      * 自己建 asset，**不要借用库里现成的**。
      *
@@ -391,7 +396,7 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
       .values({
         projectId,
         kind: 'video',
-        storageKey: `test/transition-atomic/${jobId}.mp4`,
+        storageKey: `test/transition-atomic/${jobA}.mp4`,
         mime: 'video/mp4',
         bytes: 1,
         sha256: 'f'.repeat(64),
@@ -402,8 +407,8 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
     const takes = await db
       .insert(s.takes)
       .values([
-        { shotId, jobId, assetId: asset!.id, status: 'candidate' },
-        { shotId, jobId, assetId: asset!.id, status: 'candidate' },
+        { shotId, jobId: jobA, assetId: asset!.id, status: 'candidate' },
+        { shotId, jobId: jobB, assetId: asset!.id, status: 'candidate' },
       ])
       .returning({ id: s.takes.id })
     await db.update(s.shots).set({ status: 'review' }).where(eq(s.shots.id, shotId))
@@ -990,6 +995,86 @@ describe('ingest：产物落库与内容去重', () => {
 
     const [after] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
     expect(after!.status).toBe('succeeded')
+  })
+
+  /**
+   * 一个 job 至多一条 take。
+   *
+   * 同一个 job 可以有不止一条轮询链（reconcileOnBoot 会为非终态行再加一条，
+   * 旧链自重排不会消失），两条都会投 ingest；BullMQ 在 handler 抛错时又会重放
+   * 整个 handler。所以这条不能只靠应用层，`UNIQUE(takes.job_id)` 是最后一道。
+   *
+   * 代价不只是多一行脏数据：一笔已付费的生成产出两条候选，选片池被污染，
+   * usdPerAcceptedMicro 的分母跟着多算——每可用镜头成本被系统性低估。
+   */
+  it('同一个 job 重复 ingest 只产出一条 take', async () => {
+    const { deps: d } = countingDeps()
+    const id = await newJob()
+    await handleGenerate(d, { generationJobId: id })
+    const [job] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    const res = await provider.poll({
+      providerId: 'mock',
+      externalId: job!.providerJobRef!,
+      submittedAt: Date.now() - 10,
+    })
+    if (res.status !== 'succeeded') throw new Error('mock 应当成功')
+
+    const first = await handleIngest(
+      { db, storage },
+      { generationJobId: id, shotId, projectId, sourceUrl: res.outputUrl },
+    )
+    // 第二条轮询链投来的同一个 ingest
+    const second = await handleIngest(
+      { db, storage },
+      { generationJobId: id, shotId, projectId, sourceUrl: res.outputUrl },
+    )
+
+    expect(second.takeId, '重复 ingest 该回同一条 take，而不是新建一条').toBe(first.takeId)
+    const takes = await db.select().from(s.takes).where(eq(s.takes.jobId, id))
+    expect(takes).toHaveLength(1)
+  })
+
+  /**
+   * 先算哈希查重、命中就不传。
+   *
+   * 原来是反的（先 putFile 到唯一 key 再按 sha 查重），命中时刚上传的那个对象
+   * 就成了孤儿——没人引用也没人清理，而系统永不自动销毁字节。mock 每次返回
+   * 同一条 fixture，所以这条路径每跑一次就多一个孤儿。
+   */
+  it('内容命中已有 asset 时根本不上传，不留孤儿对象', async () => {
+    const { deps: d } = countingDeps()
+
+    // 先跑一次，让这条 fixture 的 sha 已经在库里
+    const a = await newJob()
+    await handleGenerate(d, { generationJobId: a })
+    const [ja] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, a))
+    const ra = await provider.poll({
+      providerId: 'mock',
+      externalId: ja!.providerJobRef!,
+      submittedAt: Date.now() - 10,
+    })
+    if (ra.status !== 'succeeded') throw new Error('mock 应当成功')
+    await handleIngest({ db, storage }, { generationJobId: a, shotId, projectId, sourceUrl: ra.outputUrl })
+
+    // 第二个 job 拿到同样的字节：应当复用 asset，且**它自己的 key 不该存在**
+    const b = await newJob()
+    await handleGenerate(d, { generationJobId: b })
+    const [jb] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, b))
+    const rb = await provider.poll({
+      providerId: 'mock',
+      externalId: jb!.providerJobRef!,
+      submittedAt: Date.now() - 10,
+    })
+    if (rb.status !== 'succeeded') throw new Error('mock 应当成功')
+
+    const out = await handleIngest(
+      { db, storage },
+      { generationJobId: b, shotId, projectId, sourceUrl: rb.outputUrl },
+    )
+
+    expect(out.deduped).toBe(true)
+    const orphanKey = s3Key.take(projectId, shotId, b)
+    expect(await storage.exists(orphanKey), '命中去重却还是传了一份，留下孤儿对象').toBe(false)
   })
 
   it('相同内容复用已有 asset 行，不重复建对象', async () => {

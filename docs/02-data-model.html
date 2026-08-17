@@ -299,7 +299,10 @@ ORDER BY usd_per_accepted;
 </code></pre></div>
 <p><code>usd_per_accepted</code>（每个可用镜头的成本）才是真实单价，比「每秒多少钱」有意义得多——它把重试率算了进去。</p>
 <h2 id="5.-takes-与-assets">5. <code>takes</code> 与 <code>assets</code><a aria-label="链接到此节" class="anchor" href="#5.-takes-与-assets">#</a></h2>
-<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export const takes = pgTable('takes', {
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">// UNIQUE(job_id)：一次生成至多一条 take。与 UNIQUE(shot_id, attempt) 是两层不同的
+// 保证——那条管「同一次尝试不产生第二行 job」，这条管「同一个 job 不产生第二条候选」。
+// 同一个 job 可以有不止一条轮询链，两条都会投 ingest，应用层守不住（05 §8）。
+export const takes = pgTable('takes', {
   id:      uuid('id').primaryKey().defaultRandom(),
   shotId:  uuid('shot_id').notNull().references(() =&gt; shots.id, { onDelete: 'cascade' }),
   jobId:   uuid('job_id').notNull().references(() =&gt; generationJobs.id),
