@@ -1143,9 +1143,30 @@ describe('渲染的崩溃恢复', () => {
    * 所以直接判失败让人重来。
    */
   it('reconcile 把渲染途中重启留下的 running 判失败并写明原因', async () => {
+    const [ep] = await db.select({ id: s.episodes.id }).from(s.episodes).limit(1)
+
+    /*
+     * 占一个保留的 version 号，并且**先删后建**。
+     *
+     * `timelines` 上有 UNIQUE(episode_id, version)，version 默认 1。用默认值的话
+     * 只要本用例失败过一次（cleanup 没跑到），下一轮插入就撞唯一约束——测试从
+     * 「断言失败」退化成「根本跑不起来」。这个文件对 attempt 号已经用了同一套
+     * 号段约定，version 照抄。
+     */
+    const TEST_VERSION = TEST_ATTEMPT_BASE
+    await db
+      .delete(s.renderJobs)
+      .where(
+        inArray(
+          s.renderJobs.timelineId,
+          db.select({ id: s.timelines.id }).from(s.timelines).where(eq(s.timelines.version, TEST_VERSION)),
+        ),
+      )
+    await db.delete(s.timelines).where(eq(s.timelines.version, TEST_VERSION))
+
     const [tl] = await db
       .insert(s.timelines)
-      .values({ episodeId: (await db.select({ id: s.episodes.id }).from(s.episodes).limit(1))[0]!.id })
+      .values({ episodeId: ep!.id, version: TEST_VERSION })
       .returning({ id: s.timelines.id })
     const [orphan] = await db
       .insert(s.renderJobs)
