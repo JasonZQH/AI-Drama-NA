@@ -1,17 +1,24 @@
 import type { VideoProvider } from '@ai-drama/contracts'
 import { MockProvider } from './mock.js'
+import { OpenRouterProvider } from './openrouter.js'
 
 /**
  * Provider 池（04-provider-adapter.md §6）。
  *
- * `.env` 里没配的 provider 自动不进池子。云 provider 走 OpenRouter，在 M1 P5 接入；
- * 自部署在 M2——**现在不建空的适配器类**，没有实现的脚手架只会假装这里已经支持了。
+ * `.env` 里没配的 provider 自动不进池子——没有 `OPENROUTER_API_KEY` 时
+ * `poolFromEnv` 返回空数组，于是「Mac 上无 GPU 无 key 跑通全链路」照旧成立。
+ * 自部署在 M2（`adr/0012`）。
+ *
+ * **池的单位是 `(provider, model)`**：`OPENROUTER_VIDEO_MODELS` 里每个 model
+ * 一个条目，id 形如 `openrouter:google/veo-3.1-lite`。成本归因按 model 切
+ * （`gj_analytics_idx` 就是按 `(provider_id, model_id)` 建的），合成一个条目
+ * 就没法回答「哪个模型的每可用镜头成本更低」——而那是选型的核心问题。
  *
  * 池是**有序的**：路由器在没有 `providerHint`、也没有失败历史可规避时取第一个。
  * `DEFAULT_PROVIDER` 决定谁排第一。
  */
 export function buildProviderPool(env: NodeJS.ProcessEnv = process.env): VideoProvider[] {
-  const pool: VideoProvider[] = [MockProvider.fromEnv(env)]
+  const pool: VideoProvider[] = [MockProvider.fromEnv(env), ...OpenRouterProvider.poolFromEnv(env)]
 
   /*
    * `DEFAULT_PROVIDER` 此前是**死配置**：`.env.example` 与四份文档里都有它，

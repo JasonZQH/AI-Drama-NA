@@ -59,9 +59,16 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    // 构建脚本跑在 Node 上。只声明真正用到的两个全局，不为此引入 globals 包
+    // 构建/探针脚本跑在 Node 上。只声明真正用到的几个全局，不为此引入 globals 包
     files: ['**/*.mjs'],
-    languageOptions: { globals: { console: 'readonly', process: 'readonly' } },
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+      },
+    },
   },
   {
     rules: {

@@ -1,0 +1,121 @@
+import { describe, expect, it } from 'vitest'
+import { makeRequest } from './contractSuite.js'
+import { OpenRouterProvider } from './openrouter.js'
+import { findModel, pricePerSecond, snapDuration } from './openrouterModels.js'
+import { buildProviderPool } from './registry.js'
+
+const VEO_LITE = findModel('google/veo-3.1-lite')!
+const WAN = findModel('alibaba/wan-2.7')!
+
+const make = (model = VEO_LITE) => new OpenRouterProvider({ apiKey: 'test-key', model })
+
+describe('OpenRouter 能力快照', () => {
+  it('池的单位是 (provider, model)——id 带上模型名', () => {
+    expect(make().id).toBe('openrouter:google/veo-3.1-lite')
+    expect(make().modelId).toBe('google/veo-3.1-lite')
+  })
+
+  /**
+   * **时长必须向上取到受支持的档位。**
+   *
+   * `shots.duration_sec` 允许 2.5、3.5 这类小数（CHECK 只管 0 < d <= 10），而
+   * 每个模型只收一个离散整数列表——veo-3.1-lite 是 [4,6,8]。这条守的是
+   * 「按请求时长线性估价」那个错误做法。
+   */
+  it('snapDuration 向上取整到档位，超上限返回 null', () => {
+    expect(snapDuration(VEO_LITE, 2.5)).toBe(4)
+    expect(snapDuration(VEO_LITE, 4)).toBe(4)
+    expect(snapDuration(VEO_LITE, 4.1)).toBe(6)
+    expect(snapDuration(VEO_LITE, 9)).toBeNull()
+    // wan 的档位密得多，2.5 秒的镜头只要付 3 秒
+    expect(snapDuration(WAN, 2.5)).toBe(3)
+  })
+
+  it('价目表按 (分辨率, 有无音轨) 从具体退化到笼统', () => {
+    expect(pricePerSecond(VEO_LITE, '720p', false)).toBe(0.03)
+    expect(pricePerSecond(VEO_LITE, '720p', true)).toBe(0.05)
+    // 1080p 没有专门的键，退回不带分辨率的那条
+    expect(pricePerSecond(VEO_LITE, '1080p', false)).toBe(0.05)
+    // wan 只有一条笼统键
+    expect(pricePerSecond(WAN, '720p', false)).toBe(0.1)
+    expect(pricePerSecond(VEO_LITE, '8K', false)).toBe(0.05)
+  })
+
+  /**
+   * 这条是预算闸门的地基。低估的直接后果是闸门放行了实际会超限的批量。
+   */
+  it('估价按取整后的时长，不是请求时长', () => {
+    const p = make()
+    // 2.5s 的镜头按 4s 付：4 × $0.03 = $0.12 = 120000 微美元
+    expect(p.estimateCost(makeRequest({ durationSec: 2.5 }))).toBe(120_000)
+    expect(p.estimateCost(makeRequest({ durationSec: 4 }))).toBe(120_000)
+    // 线性估算会给出 2.5 × 0.03 = 75000，比真实账单低 38%
+    expect(p.estimateCost(makeRequest({ durationSec: 2.5 }))).not.toBe(75_000)
+    // wan 档位密，2.5s 只付 3s
+    expect(make(WAN).estimateCost(makeRequest({ durationSec: 2.5 }))).toBe(300_000)
+  })
+
+  it('validate 零 IO，且拒绝超出档位的时长', () => {
+    const p = make()
+    expect(p.validate(makeRequest({ durationSec: 4 }))).toMatchObject({ ok: true })
+    expect(p.validate(makeRequest({ durationSec: 9 }))).toMatchObject({ ok: false })
+    expect(p.validate(makeRequest({ resolution: '480p' }))).toMatchObject({ ok: false })
+    // 非 t2v 要参考图，与 mock 同一条规则
+    expect(p.validate(makeRequest({ mode: 'i2v' }))).toMatchObject({ ok: false })
+  })
+
+  /**
+   * mature 内容按 04 §5 规则 2 只路由到 serverSideContentFilter===false 的
+   * provider。所有走 OpenRouter 的模型都有服务端过滤——这一位写错会让 L2 的
+   * 镜头被路由到一个必然拒绝它的地方，白烧一次 attempt。
+   */
+  it('声明有服务端内容过滤——L2 不会被路由过来', () => {
+    expect(make().capabilities.serverSideContentFilter).toBe(true)
+  })
+
+  it('统一请求体没有 negative_prompt，如实声明', () => {
+    expect(make().capabilities.supportsNegative).toBe(false)
+  })
+
+  it('cancel 是 no-op：OpenRouter 没有这个端点，不该假装取消成功', async () => {
+    await expect(make().cancel()).resolves.toBeUndefined()
+  })
+})
+
+describe('OpenRouter 进池的条件', () => {
+  it('没有 key 就不进池——「无 GPU 无 key 跑通全链路」的前提', () => {
+    expect(buildProviderPool({}).map((p) => p.id)).toEqual(['mock'])
+  })
+
+  it('配了 key 与 model 才进，每个 model 一个条目', () => {
+    const pool = buildProviderPool({
+      OPENROUTER_API_KEY: 'k',
+      OPENROUTER_VIDEO_MODELS: 'google/veo-3.1-lite, alibaba/wan-2.7',
+    })
+    expect(pool.map((p) => p.id)).toEqual([
+      'mock',
+      'openrouter:google/veo-3.1-lite',
+      'openrouter:alibaba/wan-2.7',
+    ])
+  })
+
+  it('配了 key 但没配 model 时池里只有 mock，不是悄悄用默认模型', () => {
+    expect(buildProviderPool({ OPENROUTER_API_KEY: 'k' }).map((p) => p.id)).toEqual(['mock'])
+  })
+
+  // 静默跳过会让人以为配了就生效，而实际池里没有它——错的方向是安静的那个
+  it('不认识的 model 直接抛，不静默跳过', () => {
+    expect(() =>
+      buildProviderPool({ OPENROUTER_API_KEY: 'k', OPENROUTER_VIDEO_MODELS: 'acme/nope' }),
+    ).toThrow(/不在能力快照/)
+  })
+
+  it('DEFAULT_PROVIDER 把指定条目排到第一', () => {
+    const pool = buildProviderPool({
+      OPENROUTER_API_KEY: 'k',
+      OPENROUTER_VIDEO_MODELS: 'google/veo-3.1-lite',
+      DEFAULT_PROVIDER: 'openrouter:google/veo-3.1-lite',
+    })
+    expect(pool[0]!.id).toBe('openrouter:google/veo-3.1-lite')
+  })
+})
