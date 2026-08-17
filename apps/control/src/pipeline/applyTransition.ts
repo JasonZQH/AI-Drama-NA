@@ -1,5 +1,5 @@
 import type { GenerationRequest, VideoProvider } from '@ai-drama/contracts'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { routeProvider } from '../providers/route.js'
@@ -239,9 +239,31 @@ export async function applyShotTransition(
         case 'set.selectedTake':
           await tx.update(s.takes).set({ status: 'selected' }).where(eq(s.takes.id, e.takeId))
           await tx.update(s.shots).set({ selectedTakeId: e.takeId }).where(eq(s.shots.id, e.shotId))
+          /*
+           * **accepted 的唯一写 true 的地方。**
+           *
+           * 它的含义是「这次生成被选中」，不是「这次生成出了片子」——后者是
+           * ingest 从前写的，会让 usdPerAcceptedMicro 的分母变成成功生成数，
+           * 于是重试越多每可用镜头成本越低（见 ingest.ts 的注释）。
+           *
+           * 一条语句同时点亮选中的、熄灭其余的：改选时旧的必须跟着灭，
+           * 否则分母只增不减，而 review 态下改选是常规操作。
+           */
+          await tx
+            .update(s.generationJobs)
+            .set({
+              accepted: sql`${s.generationJobs.id} = (select ${s.takes.jobId} from ${s.takes} where ${s.takes.id} = ${e.takeId})`,
+            })
+            .where(eq(s.generationJobs.shotId, e.shotId))
           break
         case 'clear.selectedTake':
           await tx.update(s.shots).set({ selectedTakeId: null }).where(eq(s.shots.id, e.shotId))
+          // 选择被撤销（redo / 改 intent），accepted 跟着灭——否则这一镜在
+          // 分母里留着一个已经不算数的名额，而它的 take 已经被 archive.takes 归档
+          await tx
+            .update(s.generationJobs)
+            .set({ accepted: false })
+            .where(eq(s.generationJobs.shotId, e.shotId))
           break
         case 'archive.takes':
           // 归档而非删除：系统永不自动销毁已经花钱生成的东西（03 §7）

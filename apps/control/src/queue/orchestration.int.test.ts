@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
@@ -1347,5 +1347,96 @@ describe('BullMQ 真的能用（msgpackr 原生模块未编译的验证）', () 
     const jobs = await queues.ingest.getJobs(['waiting', 'prioritized'])
     expect(jobs.some((j) => j.data.sourceUrl === '/tmp/x.mp4')).toBe(true)
     await queues.ingest.drain(true)
+  })
+})
+
+/**
+ * accepted 的含义是「这次生成**被选中**」，不是「这次生成出了片子」。
+ *
+ * 它唯一的用途是 usdPerAcceptedMicro 的分母（stats.ts、api.ts）与首过率
+ * （stats.ts 的 firstPass）。写成「出了片子」的话，一个镜头重试三次、三次
+ * 都出片、人只选一条，账面上成本被三条候选摊薄——**重试越多这个指标越好看**。
+ * 而它恰恰是 M1 最重要的那个数，且从历史行算出来：真钱跑过一集之后再修，
+ * 那些付费生成不会重来。
+ *
+ * 防退化：把 ingest.ts 那行改回 `accepted: true`，第一条必须变红（3 ≠ 1）。
+ */
+describe('accepted = 被选中，不是出了片子（usdPerAccepted 的分母）', () => {
+  const tdeps = () => ({ db, queues, providers: [provider], maxAttempts: 4 })
+
+  /** 跑一次完整的 生成 → 轮询 → ingest，返回 jobId */
+  async function generatedTake(): Promise<string> {
+    const id = await newJob()
+    await handleGenerate(deps, { generationJobId: id })
+    const [job] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
+    const res = await provider.poll({
+      providerId: 'mock',
+      externalId: job!.providerJobRef!,
+      submittedAt: Date.now() - 10,
+    })
+    if (res.status !== 'succeeded') throw new Error('mock 应当成功')
+    await handleIngest(
+      { db, storage },
+      { generationJobId: id, shotId, projectId, sourceUrl: res.outputUrl },
+    )
+    return id
+  }
+
+  const acceptedOf = async (ids: string[]) =>
+    await db
+      .select({ id: s.generationJobs.id, accepted: s.generationJobs.accepted })
+      .from(s.generationJobs)
+      .where(inArray(s.generationJobs.id, ids))
+
+  const takeOf = async (jobId: string) =>
+    (await db.select({ id: s.takes.id }).from(s.takes).where(eq(s.takes.jobId, jobId)))[0]!.id
+
+  afterEach(async () => {
+    await queues.generate.drain(true)
+    await queues.poll.drain(true)
+  })
+
+  it('三次生成都出片、人只选一条 → accepted 恰好一个 true', async () => {
+    const ids = [await generatedTake(), await generatedTake(), await generatedTake()]
+
+    // ingest 之后、选片之前：出了片子 ≠ 被选中，一个都不该是 true
+    expect(
+      (await acceptedOf(ids)).filter((r) => r.accepted === true),
+      'ingest 不该写 accepted——它不知道人会选哪一条',
+    ).toHaveLength(0)
+
+    await db
+      .update(s.shots)
+      .set({ status: 'review', selectedTakeId: null })
+      .where(eq(s.shots.id, shotId))
+    const r = await applyShotTransition(tdeps(), shotId, {
+      type: 'take.selected',
+      takeId: await takeOf(ids[1]!),
+    })
+    expect(r).toMatchObject({ ok: true, next: 'locked' })
+
+    const rows = await acceptedOf(ids)
+    expect(
+      rows.filter((x) => x.accepted === true),
+      '分母是「被选中的生成数」，不是「成功的生成数」——否则重试越多成本越好看',
+    ).toHaveLength(1)
+    expect(rows.find((x) => x.accepted === true)!.id).toBe(ids[1])
+  })
+
+  it('redo 撤销选择后 accepted 跟着灭', async () => {
+    const id = await generatedTake()
+    await db
+      .update(s.shots)
+      .set({ status: 'review', selectedTakeId: null })
+      .where(eq(s.shots.id, shotId))
+    await applyShotTransition(tdeps(), shotId, { type: 'take.selected', takeId: await takeOf(id) })
+    expect((await acceptedOf([id]))[0]!.accepted).toBe(true)
+
+    await applyShotTransition(tdeps(), shotId, { type: 'redo.requested' })
+
+    expect(
+      (await acceptedOf([id]))[0]!.accepted,
+      'redo 之后这一镜在分母里还留着一个已经不算数的名额',
+    ).not.toBe(true)
   })
 })
