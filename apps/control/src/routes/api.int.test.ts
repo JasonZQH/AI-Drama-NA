@@ -5,9 +5,11 @@ import { createDb } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
 import { createConnection, createQueues } from '../queue/queues.js'
-import { buildServer } from '../server.js'
+import { MediaWorkerUnavailable } from '../pipeline/render.js'
+import { buildServer, type ServerDeps } from '../server.js'
 import { Storage, storageFromEnv } from '../storage/s3.js'
 import { resolveDependencies } from '../pipeline/batch.js'
+import { createGenerationJob } from '../queue/ingest.js'
 
 /**
  * API 集成测试：真起 Fastify，打真实 Postgres / Redis / MinIO。
@@ -90,7 +92,20 @@ async function cleanup(): Promise<void> {
     )
   if (stale.length > 0) {
     const ids = stale.map((r) => r.id)
-    await db.delete(s.takes).where(inArray(s.takes.jobId, ids))
+    /*
+     * timeline_clips 要先删。`timeline_clips.take_id → takes` 没有 cascade，
+     * 一旦哪个用例真的渲染过（渲染会 ensureTimeline 建 clips），这里就 23503。
+     *
+     * 同一条链在 db/seed.ts 里也踩过——`timeline_clips → takes → assets` 三层
+     * 引用全都没有 cascade，于是每一处拆解都得自己维护顺序。
+     */
+    const takeIds = (
+      await db.select({ id: s.takes.id }).from(s.takes).where(inArray(s.takes.jobId, ids))
+    ).map((t) => t.id)
+    if (takeIds.length > 0) {
+      await db.delete(s.timelineClips).where(inArray(s.timelineClips.takeId, takeIds))
+      await db.delete(s.takes).where(inArray(s.takes.id, takeIds))
+    }
     await db.delete(s.generationJobs).where(inArray(s.generationJobs.id, ids))
   }
   // 本文件走真实端点，创建的是自然 attempt（1、2…），不落在保留号段里，
@@ -378,5 +393,144 @@ describe('资产内容：302 到预签名 URL，控制面不代理字节流（10
     const loc = r.headers.location as string
     expect(loc).toContain('X-Amz-Signature') // 真的是预签名 URL
     expect(loc).not.toContain('/api/') // 不经控制面中转
+  })
+})
+
+/**
+ * 依赖不可达要回 503，不能压成 409。
+ *
+ * 实测踩到的：media worker 没起时，面板上显示的是
+ * `409 CONFLICT: fetch failed`——两条信息都错。409 让人以为是这一集的数据有问题，
+ * 而 `fetch failed` 是 undici 对连不上的统称，既不说是谁没起、也不说该去哪看。
+ * 处置动作完全不同：503 是「去把服务起起来」，409 是「去看这一集」。
+ */
+describe('依赖不可达 → 503，而不是 409', () => {
+  // 与 beforeAll 的主 app 同形，只换 media 桩——本用例要验的就是这一个依赖
+  const render = (media: ServerDeps['media']) =>
+    buildServer({
+      db,
+      queues,
+      storage,
+      providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })],
+      maxAttempts: 4,
+      media,
+      healthProbe: () => client`SELECT 1`,
+      makeSubscriber: () => createConnection(REDIS_URL),
+      apiKey: TEST_API_KEY,
+    })
+
+  /**
+   * 让这一集变成**可渲染**。
+   *
+   * 不放 beforeAll 而是用例里现调：文件级的 `cleanup()` 会把所有 shot 重置回
+   * `ready` 并清掉 selectedTakeId，跟它赌执行顺序是错的。
+   *
+   * 必须先有 clip，否则 renderEpisode 在调 media 之前就以「没有已选定的镜头」
+   * 抛出——那本来就该是 409，桩根本走不到，用例会假装自己在测映射。
+   * （写这条时先踩了一次。）
+   */
+  // 两条用例各调一次，号写死就会撞 gj_shot_attempt_uq。区间 [800,900) 由 cleanup 兜底
+  let fixtureAttempt = TEST_ATTEMPT_BASE + 70
+  const makeRenderable = async (): Promise<void> => {
+    const [shot] = await db
+      .select({ id: s.shots.id })
+      .from(s.shots)
+      .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+      .where(eq(s.scenes.episodeId, episodeId))
+      .limit(1)
+    /*
+     * 集成测试必须能反复跑。两处残留都会让这条用例以 409 假失败：
+     * - 上一轮的 asset 撞 assets_storage_key_uq
+     * - 上一轮的 timeline 被 ensureTimeline 原样复用，而它的 clips 指向已被
+     *   清掉的 take ⇒ clips.length === 0 ⇒ renderEpisode 在调 media 之前就抛
+     *   「没有已选定的镜头」，那本来就是 409
+     */
+    const tls = await db
+      .select({ id: s.timelines.id })
+      .from(s.timelines)
+      .where(eq(s.timelines.episodeId, episodeId))
+    if (tls.length > 0) {
+      const tlIds = tls.map((t) => t.id)
+      await db.delete(s.renderJobs).where(inArray(s.renderJobs.timelineId, tlIds))
+      await db.delete(s.timelineClips).where(inArray(s.timelineClips.timelineId, tlIds))
+      await db.delete(s.timelines).where(inArray(s.timelines.id, tlIds))
+    }
+
+    const key = `test/render-503/${shot!.id}.mp4`
+    const stale = await db.select({ id: s.assets.id }).from(s.assets).where(eq(s.assets.storageKey, key))
+    if (stale.length > 0) {
+      const ids = stale.map((a) => a.id)
+      await db.delete(s.takes).where(inArray(s.takes.assetId, ids))
+      await db.delete(s.assets).where(inArray(s.assets.id, ids))
+    }
+
+    const [asset] = await db
+      .insert(s.assets)
+      .values({
+        projectId,
+        kind: 'video',
+        storageKey: key,
+        mime: 'video/mp4',
+        bytes: 1,
+        sha256: 'e'.repeat(64),
+        producedBy: 'generation',
+      })
+      .returning({ id: s.assets.id })
+    const jobId = await createGenerationJob(db, {
+      shotId: shot!.id,
+      attempt: fixtureAttempt++,
+      providerId: 'mock',
+      modelId: 'mock-v1',
+      mode: 't2v',
+      promptText: 'render-503 fixture',
+    })
+    const [take] = await db
+      .insert(s.takes)
+      .values({ shotId: shot!.id, jobId, assetId: asset!.id, status: 'selected' })
+      .returning({ id: s.takes.id })
+    await db
+      .update(s.shots)
+      .set({ status: 'locked', selectedTakeId: take!.id })
+      .where(eq(s.shots.id, shot!.id))
+  }
+
+  it('media worker 连不上 → 503 DEPENDENCY_UNAVAILABLE，且消息指明是谁', async () => {
+    await makeRenderable()
+    const app = render({
+      render: () =>
+        Promise.reject(new MediaWorkerUnavailable('media worker 不可达（http://x:8002）：ECONNREFUSED')),
+    })
+    await app.ready()
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/episodes/${episodeId}/render`,
+        headers: { 'x-api-key': TEST_API_KEY },
+      })
+      expect(res.statusCode).toBe(503)
+      const body = res.json() as { error: { code: string; message: string } }
+      expect(body.error.code).toBe('DEPENDENCY_UNAVAILABLE')
+      expect(body.error.message, '要说清是谁不可达').toContain('media worker')
+      expect(body.error.message, '要给出可行动的原因，不是 fetch failed').toContain('ECONNREFUSED')
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('worker 起着但渲染失败 → 仍是 409，不要把数据问题说成服务没起', async () => {
+    await makeRenderable()
+    const app = render({ render: () => Promise.reject(new Error('media worker 500: ffmpeg 解码失败')) })
+    await app.ready()
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/episodes/${episodeId}/render`,
+        headers: { 'x-api-key': TEST_API_KEY },
+      })
+      expect(res.statusCode).toBe(409)
+      expect((res.json() as { error: { code: string } }).error.code).toBe('CONFLICT')
+    } finally {
+      await app.close()
+    }
   })
 })

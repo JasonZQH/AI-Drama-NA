@@ -12,6 +12,14 @@ export const ERROR_CODES = {
   BUDGET_EXCEEDED: 402,
   RATE_LIMITED: 429,
   NO_PROVIDER_AVAILABLE: 503,
+  /**
+   * 我们依赖的某个进程不可达（media worker、将来的 GPU worker）。
+   *
+   * 与 CONFLICT 分开是因为处置动作完全不同：503 是「去把服务起起来」，
+   * 409 是「这一集的数据有问题」。此前 media worker 没起时回的是
+   * `409 CONFLICT: fetch failed`——两条信息都是错的。
+   */
+  DEPENDENCY_UNAVAILABLE: 503,
 } as const
 
 export type ErrorCode = keyof typeof ERROR_CODES

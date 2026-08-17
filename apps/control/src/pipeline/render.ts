@@ -29,14 +29,60 @@ export interface MediaWorkerClient {
   }>
 }
 
+/**
+ * media worker 没起时抛这个，而不是 undici 的裸 `TypeError: fetch failed`。
+ *
+ * 区分「连不上」与「它回了个错」不是分类癖：前者是运维问题（服务没起、地址配错），
+ * 后者是数据问题（clip 缺失、ffmpeg 失败）。路由层据此给 503 还是 409，
+ * 而看到 503 的人知道该去起服务，看到 409 的人知道该去看这一集。
+ */
+export class MediaWorkerUnavailable extends Error {
+  override readonly name = 'MediaWorkerUnavailable'
+}
+
+/** 一集 12 镜实测 4 秒级。60 秒是「它挂住了」而不是「它在忙」 */
+const RENDER_TIMEOUT_MS = 60_000
+
+/**
+ * 把 fetch 的失败挖到能行动的那一层。
+ *
+ * Node 对 localhost 走 happy-eyeballs：同时试 `::1` 和 `127.0.0.1`，两边都失败时
+ * `cause` 是一个 `AggregateError`——`String()` 它只得到「AggregateError」六个字母，
+ * 真正的 `ECONNREFUSED` 在 `.errors[]` 里。少挖这一层，报错就等于没报。
+ */
+function describeCause(e: unknown): string {
+  const cause = (e as { cause?: unknown }).cause ?? e
+  if (cause instanceof AggregateError && cause.errors.length > 0) {
+    return [...new Set(cause.errors.map((x) => (x as { code?: string }).code ?? String(x)))].join(' / ')
+  }
+  const code = (cause as { code?: string }).code
+  return code ?? String(cause)
+}
+
 export function httpMediaWorker(baseUrl: string): MediaWorkerClient {
   return {
     async render(req) {
-      const res = await fetch(`${baseUrl}/v1/render`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(req),
-      })
+      let res: Response
+      try {
+        res = await fetch(`${baseUrl}/v1/render`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(req),
+          // 渲染是同步等的（见 routes/api.ts 的注释）。没有超时的话 worker 挂住
+          // 就等于这个 HTTP 请求永久挂住，而调用方连「它死了」都不知道
+          signal: AbortSignal.timeout(RENDER_TIMEOUT_MS),
+        })
+      } catch (e) {
+        /*
+         * undici 对连不上一律抛 `TypeError: fetch failed`，真正的原因埋在 cause 里
+         * （ECONNREFUSED / ENOTFOUND / …）。原样往上抛的话，运维在面板上看到的就是
+         * 「fetch failed」四个字——既不知道是谁没起，也不知道该去哪台机器看。
+         */
+        throw new MediaWorkerUnavailable(
+          `media worker 不可达（${baseUrl}）：${describeCause(e)}。` +
+            `本机开发用 docker compose 起 media-worker，或检查 MEDIA_WORKER_URL。`,
+        )
+      }
       if (!res.ok) {
         throw new Error(`media worker ${res.status}: ${(await res.text()).slice(0, 500)}`)
       }
