@@ -123,7 +123,7 @@ async function pollHandler(job: Job<PollJobData>) {
 > | 级别 | 状态 |
 > |---|---|
 > | 换 seed（attempt ≥ 2）| ✅ 已实现（`pipeline/applyTransition.ts`）|
-> | 强化 prompt | ⏳ 等 `prompt-kit`——现在的 prompt 只是 `action + shotType` 拼串，没有可强化的结构 |
+> | 强化 prompt | ⚠️ 结构已经有了（`pipeline/prompt.ts` 把景别/运镜/动作/角色锚点/地点/时间/风格拼成分句的散文 prompt），但**重试时还没有真的去强化它**——第二级要改的是措辞权重，那是 prompt-kit 之上的一层 |
 > | 换 provider | ⏳ 池里只有 mock。但**规避逻辑已经在跑**：路由器会把本镜被 `content_filtered` 过的那家排到最后（`04` §5 第 3 步），池里一有第二个可选项就自动生效 |
 >
 > 此前三级一个都没有：每次重试用完全相同的 seed / prompt / provider 重投，

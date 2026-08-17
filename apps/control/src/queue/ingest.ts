@@ -180,6 +180,8 @@ export async function createGenerationJob(
     modelId: string
     mode: 't2v' | 'i2v' | 'ref2v' | 'extend'
     promptText: string
+    /** 来自 style_profiles.negative_prompt。此前这一列没有任何写入方 */
+    negativeText?: string
     params?: Record<string, unknown>
     seed?: number
     /** 在途预留：建行即占额度，见 applyTransition 的注释 */
@@ -196,6 +198,7 @@ export async function createGenerationJob(
     modelId: input.modelId,
     mode: input.mode,
     promptText: input.promptText,
+    ...(input.negativeText === undefined ? {} : { negativeText: input.negativeText }),
     params: input.params ?? {},
     ...(input.seed === undefined ? {} : { seed: input.seed }),
     ...(input.costMicroUsd === undefined ? {} : { costMicroUsd: input.costMicroUsd }),

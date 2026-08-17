@@ -1,12 +1,25 @@
 import type { GenerationRequest, VideoProvider } from '@ai-drama/contracts'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { routeProvider } from '../providers/route.js'
 import { createGenerationJob } from '../queue/ingest.js'
 import type { Queues } from '../queue/queues.js'
 import { budgetFromEnv, spentTodayForShot, type BudgetPolicy, type BudgetСheckResult } from './batch.js'
+import { buildPrompt, type PromptCharacter } from './prompt.js'
 import { transition, type ShotEvent } from './shotMachine.js'
+
+/**
+ * M1 只有 t2v。
+ *
+ * 另外三种 mode 都要视觉输入：i2v / ref2v 要参考图，extend 要末帧——而参考图
+ * 通路的上下游都还不存在（三张资产表的图片列全空、没有上传端点、presignGet 签
+ * 的是 S3_PUBLIC_ENDPOINT=localhost 云端取不到）。等 M2 一并接。
+ *
+ * 提出来是因为它此前在两处各写了一遍字面量：路由 probe 和真实请求。两处独立
+ * 演化的话，路由就是在对一个与实际不符的请求做能力判断。
+ */
+const GENERATION_MODE = 't2v' as const
 
 /**
  * 状态迁移的**唯一执行点**。
@@ -120,11 +133,80 @@ export async function applyShotTransition(
             aspectRatio: '9:16' as const,
             fps: 24,
           }
+          /*
+           * prompt 在路由**之前**构建，两个理由：
+           *
+           * 1. `CostModel.unit` 允许 `per_token`。估算要看得见真 prompt，否则
+           *    对按 token 计价的 provider，闸门读到的是一个空串的价钱。
+           * 2. probe 与真实请求用同一个 prompt，路由才不是在对一个假请求做能力
+           *    判断。此前 probe 的 prompt 恒为 ''，两者从一开始就不是一回事。
+           */
+          const [ctx] = await tx
+            .select({
+              timeOfDay: s.scenes.timeOfDay,
+              locDescription: s.locations.description,
+              locInterior: s.locations.interior,
+              locAnchors: s.locations.anchorTokens,
+              styleDescription: s.styleProfiles.description,
+              styleNegative: s.styleProfiles.negativePrompt,
+            })
+            .from(s.shots)
+            .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+            .innerJoin(s.episodes, eq(s.scenes.episodeId, s.episodes.id))
+            .innerJoin(s.projects, eq(s.episodes.projectId, s.projects.id))
+            .leftJoin(s.locations, eq(s.scenes.locationId, s.locations.id))
+            .leftJoin(s.styleProfiles, eq(s.projects.styleProfileId, s.styleProfiles.id))
+            .where(eq(s.shots.id, e.shotId))
+
+          // 本镜出场的角色。锚点是跨镜头一致性的载体（ADR-0008）——同一个角色
+          // 每一镜都带着同一串视觉锚点进 prompt，模型才有机会画成同一个人
+          const cast: PromptCharacter[] =
+            row.characterIds.length === 0
+              ? []
+              : await tx
+                  .select({
+                    name: s.characters.name,
+                    description: s.characters.description,
+                    anchorTokens: s.characters.anchorTokens,
+                  })
+                  .from(s.characters)
+                  .where(inArray(s.characters.id, row.characterIds))
+
+          const style =
+            ctx?.styleDescription === undefined || ctx.styleDescription === null
+              ? null
+              : { description: ctx.styleDescription, negativePrompt: ctx.styleNegative }
+
+          // promptOverride 是人工旁路：写了就原样用，不再拼装（当前无写入方）
+          const built = row.promptOverride
+            ? { prompt: row.promptOverride, negativePrompt: style?.negativePrompt ?? null }
+            : buildPrompt(
+                {
+                  shotType: row.shotType,
+                  action: row.action,
+                  cameraMove: row.cameraMove,
+                  emotion: row.emotion,
+                  timeOfDay: ctx?.timeOfDay ?? null,
+                },
+                {
+                  characters: cast,
+                  location:
+                    ctx?.locDescription === undefined || ctx.locDescription === null
+                      ? null
+                      : {
+                          description: ctx.locDescription,
+                          interior: ctx.locInterior ?? true,
+                          anchorTokens: ctx.locAnchors ?? [],
+                        },
+                  style,
+                },
+              )
+
           const probe: GenerationRequest = {
             requestId: '00000000-0000-4000-8000-000000000000',
             shotId: e.shotId,
-            mode: 't2v',
-            prompt: '',
+            mode: GENERATION_MODE,
+            prompt: built.prompt,
             refImages: [],
             safetyProfile: row.safetyProfile,
             priority: 'normal',
@@ -201,9 +283,30 @@ export async function applyShotTransition(
             // 此前硬编码 'mock-v1'——ledger 里每一笔真实花费的模型名都会是 mock 的，
             // 而 gj_analytics_idx 正是按 (provider_id, model_id) 建的
             modelId: provider.modelId,
-            mode: 't2v',
-            promptText: row.promptOverride ?? `${row.action}, ${row.shotType}`,
-            params,
+            mode: GENERATION_MODE,
+            promptText: built.prompt,
+            /*
+             * 负向词来自 style_profiles，此前这一列没有任何写入方。
+             * OpenRouter 的请求体没有 negative_prompt，适配器忽略即可；
+             * M2 的 ComfyUI 体系里它有效。列已经在，写它不花钱。
+             */
+            ...(built.negativePrompt ? { negativeText: built.negativePrompt } : {}),
+            params: {
+              ...params,
+              // 此前 buildRequest 把 safetyProfile 写死 'standard'，而路由 probe
+              // 用的是 row.safetyProfile——同一次生成，路由看到的和真实请求不一致
+              safetyProfile: row.safetyProfile,
+              /*
+               * 景别单独传给适配器，不再指望它从 prompt 里正则出来。
+               *
+               * mock 的 fixturePathFor 原本靠 `\bcu\b` 这类正则匹配 prompt，
+               * 之所以能工作纯粹因为老 promptText 是 `${action}, ${shotType}`
+               * 拼串。换成散文 prompt 后所有镜头会静默退回 ms.mp4，而且没有
+               * 任何测试会失败。providerParams 是契约里写明的 adapter-only
+               * 逃生舱（04 §2），这正是它的用途。
+               */
+              providerParams: { shotType: row.shotType },
+            },
             /*
              * **重试换 seed。**
              *

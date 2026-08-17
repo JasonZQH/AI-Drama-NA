@@ -254,8 +254,11 @@ function planBatch(shots: Shot[]): { runnable: Shot[]; blocked: Shot[] } {
 > `ready`**，要人再点一次「生成整集」才进得去。
 >
 > 真做还有个前置：即便放行了，后续镜头也拿不到前序的末帧——`buildRequest` 的
-> `refImages` 恒为空、`mode` 恒为 `t2v`。所以「末帧接首帧」和「自动解锁」是一件事的两半，
-> 一起等 prompt-kit（M1 P2）。
+> `refImages` 恒为空、`mode` 恒为 `t2v`。**M1 P2 交付的 prompt-kit 没有解决这一半**：
+> 它接的是三路资产的**文本**（角色描述与锚点、地点、风格、负向词），而参考图那一半
+> 的上下游都还不存在——三张资产表的图片列全空、没有上传端点、`presignGet` 签的是
+> `S3_PUBLIC_ENDPOINT`（本地是 `localhost:9000`，云端取不到）。所以「末帧接首帧」
+> 与「自动解锁」一起推到 M2，和自部署 worker 同期。
 
 ## 7. 回退与版本
 
