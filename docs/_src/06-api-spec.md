@@ -12,7 +12,27 @@
 | 分页 | 游标分页 `?cursor=&limit=`，响应含 `nextCursor` |
 | 幂等 | 所有会产生费用的 POST 支持 `Idempotency-Key` 头 |
 | 错误 | 统一错误体（见 §8） |
-| 认证 | MVP 无认证（本地）。预留 `Authorization: Bearer`，中间件已挂载但默认放行 |
+| 认证 | **所有非 GET 请求必须带 `x-api-key: $CONTROL_API_KEY`**，否则 401。GET 与 SSE 不校验（见下） |
+
+> **为什么是自定义头而不是 `Authorization: Bearer`，为什么只挡写路径。**
+>
+> 这道闸门防的是一条实测走通过的路径：任意网页发一个**无 body、无 Content-Type** 的
+> `POST /api/episodes/:id/generate-batch` 就能规划整集并真的花钱。那是 CORS
+> **简单请求**——浏览器直接发，`no-cors` 下响应虽读不到，但服务端已经执行完。
+> 所以收紧 CORS origin 拦不住它；`/generate` 压根不读 body，`generate-batch` 的
+> `req.body ?? {}` 又让 `dryRun` 取默认值 `false`，于是无头请求直接花钱。
+>
+> 唯一同时堵住的是**要求一个自定义头**：自定义头强制浏览器先发预检，
+> 恶意来源的预检过不了，真实请求根本发不出去。用 `x-api-key` 而非
+> `Authorization` 只是为了不与将来真正的用户认证抢语义。
+>
+> **GET 刻意放行**：SSE 走 `EventSource`，浏览器 API 不支持自定义头，
+> 护 GET 会直接打断实时进度流。钱的边界全在非 GET 上。要连读也堵，
+> 得把 token 挪进 query param，那是另一件事。
+>
+> 配套两个开关：`CONTROL_HOST` 默认 `127.0.0.1`（不上局域网）；
+> `WEB_ORIGIN` 收紧 CORS——它不是钱的闸门，但决定攻击是「盲打」还是
+> 「先跨域读 GET 枚举出 UUID 再精确制导」。
 
 ## 2. 项目与剧本
 

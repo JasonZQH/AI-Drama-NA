@@ -29,6 +29,10 @@ const storage = new Storage(
   }),
 )
 
+/** 写路径闸门的测试用 key（server.ts 的 guardWrites） */
+const TEST_API_KEY = 'test-key'
+const WRITE_HEADERS = { 'x-api-key': TEST_API_KEY }
+
 let app: FastifyInstance
 let projectId: string
 let episodeId: string
@@ -51,6 +55,7 @@ beforeAll(async () => {
     maxAttempts: 4,
     healthProbe: () => client`SELECT 1`,
     makeSubscriber: () => createConnection(REDIS_URL),
+    apiKey: TEST_API_KEY,
   })
   await app.ready()
 
@@ -87,6 +92,21 @@ async function cleanup(): Promise<void> {
     .where(eq(s.generationJobs.shotId, shotId))
   if (mine.length > 0) {
     const ids = mine.map((r) => r.id)
+    /*
+     * timeline_clips 要先删：它引用 takes 且无级联，而渲染那组用例会建 timeline。
+     * 少了这一步，只要本文件跑过一次渲染，**下一次跑就必然炸在 cleanup 上**
+     * （FK 23503），整个文件的用例全被跳过。CI 每次起新容器所以从没暴露过，
+     * 本地连着跑第二遍才会撞上——顺手修掉，它挡住的正是最常用的验证方式。
+     */
+    const takeIds = await db.select({ id: s.takes.id }).from(s.takes).where(inArray(s.takes.jobId, ids))
+    if (takeIds.length > 0) {
+      await db.delete(s.timelineClips).where(
+        inArray(
+          s.timelineClips.takeId,
+          takeIds.map((t) => t.id),
+        ),
+      )
+    }
     await db.delete(s.takes).where(inArray(s.takes.jobId, ids))
     await db.delete(s.generationJobs).where(inArray(s.generationJobs.id, ids))
   }
@@ -100,6 +120,64 @@ afterAll(async () => {
   await app.close()
   await queues.close()
   await client.end()
+})
+
+/**
+ * 写路径闸门（server.ts 的 guardWrites）。
+ *
+ * 这一组钉的是一条**实测走通过**的攻击：任意网页发一个无 body、无 Content-Type
+ * 的 POST 就能规划整集并真的花钱（当时实测 202，11 镜，$0.77 预估）。那种请求是
+ * CORS 简单请求，浏览器直接发，`no-cors` 下响应虽读不到但服务端已经执行完——
+ * 收紧 origin 拦不住，只有「要求一个自定义头」才行。
+ */
+describe('写路径闸门：没有 x-api-key 就不能花钱', () => {
+  it('无头无 body 的 generate-batch 回 401，且一行 job 都没建', async () => {
+    const before = await db.select({ id: s.generationJobs.id }).from(s.generationJobs)
+
+    // 与攻击形态逐字一致：无 x-api-key、无 payload、无 content-type
+    const r = await app.inject({
+      method: 'POST',
+      url: `/api/episodes/${episodeId}/generate-batch`,
+    })
+
+    expect(r.statusCode).toBe(401)
+    expect(r.json().error.code).toBe('UNAUTHORIZED')
+
+    const after = await db.select({ id: s.generationJobs.id }).from(s.generationJobs)
+    expect(after.length, '401 之后不该有任何新的生成任务').toBe(before.length)
+  })
+
+  it('key 不对也回 401', async () => {
+    const r = await app.inject({
+      method: 'POST',
+      headers: { 'x-api-key': 'wrong' },
+      url: `/api/shots/${shotId}/generate`,
+    })
+    expect(r.statusCode).toBe(401)
+  })
+
+  /**
+   * GET 刻意不挡：SSE 走 EventSource，浏览器 API 设不了自定义头，
+   * 护 GET 会直接打断实时进度流。钱的边界全在非 GET 上。
+   */
+  it('GET 不受影响——否则 SSE 与整个只读面板会一起挂掉', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/projects' })
+    expect(r.statusCode).toBe(200)
+  })
+
+  /** OPTIONS 是 CORS 预检本身，挡掉它等于把合法前端也一起挡了 */
+  it('OPTIONS 预检放行', async () => {
+    const r = await app.inject({
+      method: 'OPTIONS',
+      url: `/api/shots/${shotId}/generate`,
+      headers: {
+        origin: 'http://localhost:3000',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'x-api-key',
+      },
+    })
+    expect(r.statusCode).toBeLessThan(400)
+  })
 })
 
 describe('读取路由', () => {
@@ -144,6 +222,7 @@ describe('generate-batch 的 dryRun（06 §4：必须先用的那个）', () => 
 
     const r = await app.inject({
       method: 'POST',
+      headers: WRITE_HEADERS,
       url: `/api/episodes/${episodeId}/generate-batch`,
       payload: { dryRun: true },
     })
@@ -163,6 +242,7 @@ describe('generate-batch 的 dryRun（06 §4：必须先用的那个）', () => 
 
     const r = await app.inject({
       method: 'POST',
+      headers: WRITE_HEADERS,
       url: `/api/episodes/${episodeId}/generate-batch`,
       payload: {},
     })
@@ -202,7 +282,11 @@ describe('依赖解析（03 §6）', () => {
 describe('状态迁移必须走状态机', () => {
   it('对 draft 镜头调 generate 回 400 INVALID_STATE_TRANSITION', async () => {
     await db.update(s.shots).set({ status: 'draft' }).where(eq(s.shots.id, shotId))
-    const r = await app.inject({ method: 'POST', url: `/api/shots/${shotId}/generate` })
+    const r = await app.inject({
+      method: 'POST',
+      headers: WRITE_HEADERS,
+      url: `/api/shots/${shotId}/generate`,
+    })
     expect(r.statusCode).toBe(400)
     expect(r.json().error.code).toBe('INVALID_STATE_TRANSITION')
     expect(r.json().error.details).toMatchObject({ from: 'draft', event: 'generate.requested' })
@@ -211,7 +295,11 @@ describe('状态迁移必须走状态机', () => {
 
   it('ready 镜头 generate 回 202，写入 job 并入队', async () => {
     await queues.generate.drain(true)
-    const r = await app.inject({ method: 'POST', url: `/api/shots/${shotId}/generate` })
+    const r = await app.inject({
+      method: 'POST',
+      headers: WRITE_HEADERS,
+      url: `/api/shots/${shotId}/generate`,
+    })
     expect(r.statusCode).toBe(202)
     expect(r.json().status).toBe('generating')
 

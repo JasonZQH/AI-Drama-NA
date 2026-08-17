@@ -20,10 +20,20 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   // content-type 只在真有 body 时设。无 body 的 POST 带着这个头会被 Fastify
   // 以「Body cannot be empty when content-type is set to 'application/json'」拒绝
   const hasBody = init?.body !== undefined && init.body !== null
+  /*
+   * 变更请求要带 x-api-key（控制面 server.ts 的 guardWrites）。
+   *
+   * 注意上面那条注释描述的「无 body 的 POST 不设 content-type」——那恰好就是
+   * CORS 简单请求的形态，也正是任意网页能替你花钱的那条路径。加上这个自定义头
+   * 之后浏览器会强制先发预检，恶意来源的预检过不了，真实请求根本不会发出。
+   * GET 不带，因为 EventSource 设不了头，护 GET 会打断 SSE。
+   */
+  const isWrite = (init?.method ?? 'GET') !== 'GET'
   const res = await fetch(`${API}${path}`, {
     ...init,
     headers: {
       ...(hasBody ? { 'content-type': 'application/json' } : {}),
+      ...(isWrite ? { 'x-api-key': process.env['NEXT_PUBLIC_CONTROL_API_KEY'] ?? '' } : {}),
       ...(init?.headers ?? {}),
     },
     cache: 'no-store',
