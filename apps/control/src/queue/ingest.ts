@@ -132,10 +132,17 @@ export async function handleIngest(deps: IngestDeps, input: IngestInput): Promis
    * take 与 asset 已经建好，**不回滚**：字节已经在 MinIO 里、钱已经花过，
    * 系统永不自动销毁已经花钱生成的东西（03-pipeline.md §7）。只是不再推状态机——
    * 镜头已经走到别处，硬推只会被状态机拒掉并留下一个没人看的孤儿 take。
+   *
+   * **这里不写 accepted。** 它此前写的是 true，于是 accepted 的含义成了
+   * 「这次生成出了片子」，而它唯一的用途是 usdPerAcceptedMicro 的分母
+   * （stats.ts、api.ts）与首过率。分母若是「成功生成数」，一个镜头重试三次、
+   * 三次都出片、人只选一条，账面上成本就被三条候选摊薄——**重试越多这个指标
+   * 越好看**，而它恰恰是 M1 最重要的那个数。真正的语义是「被选中」，唯一
+   * 知道这件事的是状态机的 set.selectedTake，所以写入点搬去了 applyTransition。
    */
   const settled = await deps.db
     .update(s.generationJobs)
-    .set({ status: 'succeeded', accepted: true, finishedAt: new Date() })
+    .set({ status: 'succeeded', finishedAt: new Date() })
     .where(
       and(
         eq(s.generationJobs.id, input.generationJobId),
