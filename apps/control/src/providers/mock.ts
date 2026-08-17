@@ -132,6 +132,14 @@ export class MockProvider implements VideoProvider {
     if (!c.aspectRatios.includes(req.aspectRatio)) return { ok: false, reason: `不支持 ${req.aspectRatio}` }
     if (req.refImages.length > c.maxRefImages)
       return { ok: false, reason: `参考图 ${req.refImages.length} 张超过上限 ${c.maxRefImages}` }
+    /*
+     * 下界。此前只查上界，于是 `mode: 'i2v'` 配零张参考图也判合法——
+     * 契约套件里那条「声明支持的每种 mode 都能通过 validate」就成了重言式，
+     * 而真 provider 收到同样的请求会直接 400。t2v 之外的三种模式按定义
+     * 都需要一个视觉输入：首帧、角色参考、或要续写的末帧。
+     */
+    if (req.mode !== 't2v' && req.refImages.length === 0)
+      return { ok: false, reason: `mode=${req.mode} 至少需要一张参考图` }
     return { ok: true }
   }
 
