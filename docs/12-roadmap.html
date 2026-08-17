@@ -246,7 +246,7 @@ M6 优化          自动评测 + 智能路由     数据驱动
 <li class="task-list-item"><input disabled="" type="checkbox"/> 远程 GPU 真实产出视频，进度百分比真实推进</li>
 <li class="task-list-item"><input disabled="" type="checkbox"/> 洞察页能并排比较云 API 与自部署的每可用镜头成本</li>
 <li class="task-list-item"><input disabled="" type="checkbox"/> worker 崩溃/OOM 时控制面正确标记失败并重试</li>
-<li class="task-list-item"><input disabled="" type="checkbox"/> <code>IDLE_SHUTDOWN_MIN</code> 生效，不会忘关烧钱</li>
+<li class="task-list-item"><input disabled="" type="checkbox"/> <strong>控制面</strong>在队列空时调供应商 API 停机，实测「跑完自动停机 + 账单归零」（⚠️ 原设计写的是 worker 自行退出——<strong>那不停止计费</strong>，见 <a href="09-python-worker.html" title="Python 生成 Worker 与远程 GPU 部署"><code>09-python-worker.md</code></a> §5.3）</li>
 </ul>
 <hr/>
 <h2 id="m3-音频与成片">M3 · 音频与成片<a aria-label="链接到此节" class="anchor" href="#m3-音频与成片">#</a></h2>

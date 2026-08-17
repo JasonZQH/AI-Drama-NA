@@ -270,20 +270,32 @@ _sem = asyncio.Semaphore(MAX_CONCURRENT)
 </thead>
 <tbody>
 <tr>
-<td><strong>Wan2.2 TI2V-5B</strong></td>
+<td><strong>Wan2.2 I2V-A14B</strong>（<code>fp8_scaled</code>）</td>
 <td>Apache 2.0</td>
-<td>~24GB（720p）</td>
-<td>主力：单卡可跑，性价比最高</td>
+<td><strong>14.3GB × 2 expert，逐 expert 加载 → 24–32GB 卡可跑</strong></td>
+<td><strong>主力</strong>。FLF2V 复用同一组权重</td>
 </tr>
 <tr>
-<td><strong>Wan2.2 I2V-A14B</strong></td>
+<td><strong>Wan2.2 TI2V-5B</strong></td>
 <td>Apache 2.0</td>
-<td>~80GB（或 offload）</td>
-<td>质量优先，H100 级</td>
+<td>~10GB（fp16）/ ~24GB（720p）</td>
+<td>备选：只用于「无首尾帧需求 + 要快」的镜头与预览档</td>
+</tr>
+<tr>
+<td><strong>Wan2.2 S2V-14B</strong></td>
+<td>Apache 2.0</td>
+<td>同 A14B 量级</td>
+<td>对白口型档（M3 音频阶段）</td>
+</tr>
+<tr>
+<td><strong>Wan Animate-2</strong></td>
+<td>Apache 2.0</td>
+<td>同 A14B 量级</td>
+<td>跨镜头角色一致性档</td>
 </tr>
 <tr>
 <td><strong>HunyuanVideo 1.5</strong></td>
-<td>腾讯社区许可</td>
+<td>腾讯社区许可（<strong>地域排除，见下</strong>）</td>
 <td>~14GB（offload 开）</td>
 <td>备选：显存友好，4090 可跑</td>
 </tr>
@@ -293,10 +305,20 @@ _sem = asyncio.Semaphore(MAX_CONCURRENT)
 <td>视版本</td>
 <td>动画风专用</td>
 </tr>
+<tr>
+<td><del>LTX-2.x</del></td>
+<td>⛔ <strong>否决</strong></td>
+<td>—</td>
+<td>AUP 禁性内容且明写涵盖 on-premises；另有竞品条款</td>
+</tr>
 </tbody>
 </table></div>
 <blockquote>
-<p>许可注意：Wan 系列 Apache 2.0 最干净，官方声明不主张生成内容权利。HunyuanVideo 1.5 的社区许可<strong>排除欧盟/英国/韩国</strong>，且 MAU 超 1 亿需另行申请——纯本地开发无影响，但主体和服务器所在地要留意。Wan 2.5 之后转闭源，自部署路线锁定在 2.2 分支。</p>
+<p><strong>2026-08-17 修订，三处口径变了：</strong></p>
+<p><strong>① 主力从 5B 换成 I2V-A14B。</strong> <a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a> §5 的「末帧接首帧」依赖 FLF2V，而 <strong>5B 没有 FLF2V 档</strong>——ComfyUI 用 <code>WanFirstLastFrameToVideo</code> 节点配 I2V-A14B 权重实现它。<code>lightx2v/Wan2.2-Lightning</code> 的 <code>TI2V-5B-4steps</code> 至今仍在 TODO 未发布，所以「5B + 4 步」这条最诱人的省钱路径<strong>当前拿不到</strong>。</p>
+<p><strong>② A14B 不需要 H100。</strong> 原文写「~80GB（或 offload）/ H100 级」会把选型引向错误的贵档。官方 Comfy-Org repack 的 <code>wan2.2_i2v_{high,low}_noise_14B_fp8_scaled.safetensors</code> 每个 <strong>14.3GB</strong>，ComfyUI 逐 expert 加载 ⇒ 24–32GB 卡即可（24GB 是擦边，<strong>待实测</strong>）。</p>
+<p><strong>③ HunyuanVideo 1.5 的地域限制是硬约束，不是「留意」。</strong> 许可原文是 "the worldwide territory, <strong>excluding</strong> the territory of the European Union, United Kingdom and South Korea"——排除的是<strong>授权范围本身</strong>，主体在 EU/UK/KR 则该许可根本不授予，本地开发也一样。（注意：二手文章广泛误传它是 Apache 2.0，是错的。）</p>
+<p>Wan 系列 Apache 2.0 最干净，官方声明不主张生成内容权利。Wan 2.5 之后转闭源，自部署路线锁定在 2.2 分支——但 2.2 分支仍在更新（Animate-2 是 2026-08-08 的事）。</p>
 </blockquote>
 <p>每个 checkpoint 必须在 <code>workflows/MODELS.md</code> 中登记许可、版本、来源 URL 与引用它的工作流，方便后续审计。</p>
 <h2 id="5.-部署远程-gpu">5. 部署：远程 GPU<a aria-label="链接到此节" class="anchor" href="#5.-部署远程-gpu">#</a></h2>
@@ -360,29 +382,69 @@ CMD ["uv","run","uvicorn","app.main:app","--host","0.0.0.0","--port","8001"]
   --name adv-video ai-drama/video-worker:latest
 </code></pre></div>
 <h3 id="5.3-云-gpu-供应商注意事项">5.3 云 GPU 供应商注意事项<a aria-label="链接到此节" class="anchor" href="#5.3-云-gpu-供应商注意事项">#</a></h3>
+<p><strong>内容分级决定可选供应商</strong>（条款逐字核实于 2026-08-17，日期为条款自身的 Last Updated）：</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
 <th>供应商</th>
-<th>备注</th>
+<th>非成人内容</th>
+<th>L2 / mature</th>
+<th>依据</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>Lambda / CoreWeave</strong></td>
-<td>AUP 只禁非法类别，条款相对宽松；按需 H100 约 $2.5–3.4/hr</td>
+<td><strong>RunPod</strong></td>
+<td>🟢 最便宜、工具链最全（4090 Community $0.34/hr、5090 $0.69/hr）</td>
+<td>🔴 <strong>禁区</strong></td>
+<td>ToS（2026-03-24）§6 禁 "pornography or <strong>graphic adult content</strong>"；§8 附 "as determined by us"；后果 immediate termination + <strong>permanent ban</strong></td>
 </tr>
 <tr>
-<td><strong>RunPod</strong></td>
-<td>便宜、启动快（4090 约 $0.35–0.69/hr），但 ToS 字面禁 "graphic adult content"——若将来做成熟向内容需先书面确认</td>
+<td><strong>CoreWeave</strong></td>
+<td>🟢</td>
+<td>🟢 <strong>主流厂里唯一无泛成人禁令</strong></td>
+<td>AUP（2021-09-17）唯一涉性条款只禁 CSAM 与未经同意传播的裸露/性行为内容</td>
+</tr>
+<tr>
+<td><strong>Lambda</strong></td>
+<td>🟢</td>
+<td>🟡 需确认</td>
+<td>ToS 内嵌 AUP（2025-08）：pornography 带 illegal 限定，但 <strong>obscene / indecent 不带</strong>；动词是 "distributing"</td>
+</tr>
+<tr>
+<td><strong>Vast.ai</strong></td>
+<td>🟢 便宜</td>
+<td>🟡 逐 host 看政策（verified DC host）</td>
+<td>官方无明确立场，<strong>查不到</strong></td>
+</tr>
+<tr>
+<td><strong>Modal</strong></td>
+<td>🟡</td>
+<td>🔴</td>
+<td>ToS（2026-05）禁 "indecent or obscene material"，另禁 "media-serving platform services"——双钩子</td>
+</tr>
+<tr>
+<td><strong>Novita AI</strong></td>
+<td>🟡</td>
+<td>🔴 <strong>不是 plan B</strong></td>
+<td>与 RunPod 逐字相同的 boilerplate</td>
 </tr>
 <tr>
 <td><strong>AWS/GCP</strong></td>
-<td>贵 3–6 倍，除非已有额度否则不划算</td>
+<td>贵 3–6 倍</td>
+<td>—</td>
+<td>除非已有额度否则不划算</td>
 </tr>
 </tbody>
 </table></div>
-<p><strong>成本控制</strong>：GPU 按小时计费，开发期务必配置<strong>空闲自动停机</strong>。跑一晚上（约 12 小时）忘关的 H100 是 $30–40，忘一整天就是 $60–80。建议 worker 内置 <code>IDLE_SHUTDOWN_MIN=30</code>，超时无任务自行退出，配合供应商的自动伸缩。</p>
+<p>⇒ <strong>分两阶段</strong>：阶段 1 用 RunPod Community 跑<strong>非成人测试素材</strong>验管道；阶段 2 量产 L2 之前必须拿到 CoreWeave 合同或书面豁免。<strong>在此之前不要把模型权重卷和账号绑在 RunPod 上</strong>——封号会连带权重与在跑任务一起没。</p>
+<p><strong>存储</strong>：用 <strong>Network Volume</strong>（$0.07/GB/mo）配 <strong>terminate</strong>，不要 Volume Disk 配 stop——后者停机 $0.20/GB/mo 比运行时还贵一倍，且官方文档明说停机再起「可能分到 0 张 GPU」。Network Volume 区域锁定，worker 必须与卷同 DC。</p>
+<p><strong>成本控制</strong>：GPU 按小时计费。忘关一夜（12h）的 4090 是 $4，H100 SXM 是 $32。</p>
+<blockquote>
+<p>⚠️ <strong><code>IDLE_SHUTDOWN_MIN</code> 的原设计是错的，必须改。</strong> 原文写「worker 内置 <code>IDLE_SHUTDOWN_MIN=30</code>，超时无任务自行退出」——<strong>worker 进程退出不停止计费</strong>，实例还在，账单照走。</p>
+<p>正解是<strong>控制面在队列空时调平台 API 停机</strong>（RunPod <code>POST rest.runpod.io/v1/pods/{id}/stop</code>，Vast <code>vastai stop instance</code>）。控制面本来就知道队列深度（<code>/v1/health</code> 已暴露 <code>queue_depth</code>），而 worker 不该持有平台凭证——这与 ADR-0005「worker 无状态、无依赖」一致。</p>
+<p>顺带：把 <code>IDLE_SHUTDOWN_MIN</code> 从 30 降到 5 分钟，在 4090 / 12 镜一唤醒下只省 15%（$0.082 → $0.070）。<strong>不是主要矛盾，忘关才是。</strong></p>
+</blockquote>
 <h2 id="6.-媒体-workercpu本机">6. 媒体 Worker（CPU，本机）<a aria-label="链接到此节" class="anchor" href="#6.-媒体-workercpu本机">#</a></h2>
 <p><code>workers/media</code> 不需要 GPU，直接在 Mac 上跑 docker：</p>
 <div class="codeblock is-diagram"><pre><code>POST /v1/render     时间线 JSON → 拼接渲染 → 母版
