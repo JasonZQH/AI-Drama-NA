@@ -61,7 +61,7 @@ const workers = [
           storage,
           // 断掉这条回调，镜头会永远停在 generating
           onTakeAccepted: (shotId, takeId) =>
-            applyShotTransition({ db, queues, providerId: providers[0]!.id, maxAttempts: 4 }, shotId, {
+            applyShotTransition({ db, queues, provider: providers[0]!, maxAttempts: 4 }, shotId, {
               type: 'take.accepted',
               takeId,
             }),

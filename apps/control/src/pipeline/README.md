@@ -40,8 +40,14 @@ Effects it knows how to perform: enqueue a generation (creating the `generation_
 `planBatch()` produces the `BatchPlan` behind the confirmation dialog: `planned`, `blocked`, `skipped`, `estimatedCostMicroUsd`, and a budget block. The UI calls it with `dryRun: true` first, which is what makes rule R2 (never let a user spend without seeing the amount) real rather than aspirational.
 
 - `resolveDependencies()` handles `continuityFromShotId` — a shot whose predecessor has no locked take is `blocked`, not `planned`. Generating it first would produce continuity nonsense.
-- `spentToday()` is a live sum over `generation_jobs`, not a counter. Counters drift; a sum cannot.
-- `budgetFromEnv()` reads the daily limit and the on-exceed policy. **Exceeding the budget warns, it does not forbid** — the confirm button turns red and still works. This is a warning, not parental control; the decision belongs to the operator.
+- `spentTodayForShot()` / `spentToday()` are live sums over `generation_jobs`, not counters. Counters drift; a sum cannot. The sum includes **in-flight reservations**: `applyShotTransition` writes the estimate into `cost_micro_usd` at row creation, so a queued batch starts consuming the budget immediately instead of the gate seeing zero until money has already been spent.
+- `budgetFromEnv()` reads the daily limit and the on-exceed policy, and the policy decides who wins:
+  - `warn` — the confirm button turns red and still works. A warning, not parental control; the decision belongs to the operator.
+  - `block` (the default) — the server returns 402 and the confirm button is disabled, because letting someone click a button that is guaranteed to fail is not respecting their decision, it is wasting their click.
+
+  This file used to claim the budget only ever warns. It did not: the default has always been `block`, and the frontend ignored the flag, so the operator got a clickable red button and a 402. Both `08-screen-specs.md` §2 and the M1 acceptance criterion were right; the bug was that nobody read `onExceed`.
+
+**Where the gate lives.** In `applyShotTransition`'s `enqueue.generation` branch — the single point every spend flows through (single-shot API, batch, and the retry that `fail()` schedules). `planBatch()` still checks up front so the dialog can promise an all-or-nothing batch, but that is a pre-flight for the UI, not the invariant.
 
 ## `render.ts` — assembly
 

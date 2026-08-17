@@ -134,6 +134,9 @@ export async function createGenerationJob(
     promptText: string
     params?: Record<string, unknown>
     seed?: number
+    /** 在途预留：建行即占额度，见 applyTransition 的注释 */
+    costMicroUsd?: number
+    costEstimated?: boolean
   },
 ): Promise<string> {
   const id = randomUUID()
@@ -147,6 +150,8 @@ export async function createGenerationJob(
     promptText: input.promptText,
     params: input.params ?? {},
     ...(input.seed === undefined ? {} : { seed: input.seed }),
+    ...(input.costMicroUsd === undefined ? {} : { costMicroUsd: input.costMicroUsd }),
+    ...(input.costEstimated === undefined ? {} : { costEstimated: input.costEstimated }),
     status: 'queued',
   })
   return id

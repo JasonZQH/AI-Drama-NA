@@ -1,8 +1,10 @@
+import type { VideoProvider } from '@ai-drama/contracts'
 import { and, eq } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { createGenerationJob } from '../queue/ingest.js'
 import type { Queues } from '../queue/queues.js'
+import { budgetFromEnv, spentTodayForShot, type BudgetPolicy, type BudgetСheckResult } from './batch.js'
 import { transition, type ShotEvent } from './shotMachine.js'
 
 /**
@@ -29,13 +31,29 @@ export interface TransitionQueues {
 export interface TransitionDeps {
   readonly db: Db
   readonly queues: TransitionQueues
-  readonly providerId: string
+  /**
+   * 要整个 provider 而不只是它的 id：闸门下沉到这里之后需要 `estimateCost`
+   * 来算预留（provider 路由器落地时这个字段会换成一个解析函数）。
+   */
+  readonly provider: VideoProvider
   readonly maxAttempts: number
+  /** 不传则读 env。测试要压低日限额时传它，不必去改 process.env */
+  readonly budget?: BudgetPolicy
 }
 
 export type ApplyResult =
   | { readonly ok: true; readonly next: string }
-  | { readonly ok: false; readonly reason: string; readonly from: string }
+  | {
+      readonly ok: false
+      /**
+       * 两种拒绝要分开：状态机拒绝是 400（用户点错了），预算拒绝是 402
+       * （用户没点错，是钱不够）。混成一种的话 UI 说不清该让人做什么。
+       */
+      readonly code: 'INVALID_TRANSITION' | 'BUDGET_EXCEEDED'
+      readonly reason: string
+      readonly from: string
+      readonly budget?: BudgetСheckResult
+    }
 
 /**
  * 一次迁移里所有要入队的东西。**必须等事务提交之后再发。**
@@ -87,24 +105,74 @@ export async function applyShotTransition(
       event,
       { maxAttempts: deps.maxAttempts },
     )
-    if (!r.ok) return { ok: false, reason: r.reason, from: row.status }
+    if (!r.ok) return { ok: false, code: 'INVALID_TRANSITION', reason: r.reason, from: row.status }
 
     for (const e of r.effects) {
       switch (e.type) {
         case 'enqueue.generation': {
+          const params = {
+            durationSec: Number(row.durationSec),
+            resolution: '720p' as const,
+            aspectRatio: '9:16' as const,
+            fps: 24,
+          }
+
+          /*
+           * 预算闸门就在这里，而不是在三个 caller 各写一遍。
+           *
+           * `enqueue.generation` 是全系统唯一的花钱入口：单镜 API、批量生成、
+           * 以及 fail() 里自动创建的下一次 attempt 全都经过它。此前闸门只挂在
+           * 批量路由上，后两条完全裸奔——一个镜头失败重试 4 次不过任何闸门。
+           */
+          const estimate = deps.provider.estimateCost({
+            requestId: '00000000-0000-4000-8000-000000000000',
+            shotId: e.shotId,
+            mode: 't2v',
+            prompt: '',
+            refImages: [],
+            safetyProfile: row.safetyProfile,
+            priority: 'normal',
+            providerParams: {},
+            ...params,
+          })
+          const policy = deps.budget ?? budgetFromEnv()
+          const spent = await spentTodayForShot(tx, e.shotId)
+          if (spent + estimate > policy.dailyLimitMicroUsd && policy.onExceed === 'block') {
+            return {
+              ok: false,
+              code: 'BUDGET_EXCEEDED',
+              from: row.status,
+              reason: `预估 ${estimate} + 已花 ${spent} 超过日限 ${policy.dailyLimitMicroUsd}（微美元）`,
+              budget: {
+                dailyLimitMicroUsd: policy.dailyLimitMicroUsd,
+                spentTodayMicroUsd: spent,
+                wouldExceed: true,
+                onExceed: policy.onExceed,
+              },
+            }
+          }
+
           const jobId = await createGenerationJob(tx, {
             shotId: e.shotId,
             attempt: e.attempt,
-            providerId: deps.providerId,
+            providerId: deps.provider.id,
             modelId: 'mock-v1',
             mode: 't2v',
             promptText: row.promptOverride ?? `${row.action}, ${row.shotType}`,
-            params: {
-              durationSec: Number(row.durationSec),
-              resolution: '720p',
-              aspectRatio: '9:16',
-              fps: 24,
-            },
+            params,
+            /*
+             * **在途预留**：建行的同时就把估算值记进成本。
+             *
+             * `spentTodayForShot` 求和的就是这一列，所以排队中的任务立刻开始
+             * 占额度，不必新建表或计数器。任务落终态时真实计费会覆盖它
+             * （成功走 handlePoll、失败走 fail()，两条都已经在写这一列）；
+             * 能力校验不通过写 0，等于把预留退回去。
+             *
+             * 没有它，闸门只看得见「已结算」的钱：一次批量把 12 个镜头全排进去
+             * 时账面仍是 0，闸门形同虚设。
+             */
+            costMicroUsd: estimate,
+            costEstimated: true,
           })
           pending.push(() =>
             deps.queues.generate.add('generate', { generationJobId: jobId, shotId: e.shotId }),

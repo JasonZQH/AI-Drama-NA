@@ -1,6 +1,6 @@
 import type { VideoProvider } from '@ai-drama/contracts'
 import { and, eq, gte, sql } from 'drizzle-orm'
-import type { Db } from '../db/client.js'
+import type { Db, DbOrTx } from '../db/client.js'
 import * as s from '../db/schema.js'
 
 /**
@@ -68,6 +68,33 @@ export function resolveDependencies(
     }
   }
   return { runnable, blocked, skipped }
+}
+
+/**
+ * 同一个项目今天已花 + **在途预留**，从某个镜头反查。
+ *
+ * 闸门下沉到 `applyShotTransition` 之后要在事务里问这个数，所以收 `DbOrTx`；
+ * 入口是 shotId 而不是 projectId，因为那里手上只有镜头。
+ */
+export async function spentTodayForShot(db: DbOrTx, shotId: string): Promise<number> {
+  const [row] = await db
+    .select({ total: sql<string>`coalesce(sum(${s.generationJobs.costMicroUsd}), 0)` })
+    .from(s.generationJobs)
+    .innerJoin(s.shots, eq(s.generationJobs.shotId, s.shots.id))
+    .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+    .innerJoin(s.episodes, eq(s.scenes.episodeId, s.episodes.id))
+    .where(
+      and(
+        sql`${s.episodes.projectId} = (
+          select e.project_id from ${s.shots} sh
+          join ${s.scenes} sc on sc.id = sh.scene_id
+          join ${s.episodes} e on e.id = sc.episode_id
+          where sh.id = ${shotId}
+        )`,
+        gte(s.generationJobs.createdAt, sql`date_trunc('day', now())`),
+      ),
+    )
+  return Number(row?.total ?? 0)
 }
 
 /** 今日已花费。成本以整数微美元存储，浮点算钱迟早出问题（02 §1） */

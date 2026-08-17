@@ -23,6 +23,14 @@ export function ConfirmSpend({
 }): React.ReactElement {
   const remaining = plan.budget.dailyLimitMicroUsd - plan.budget.spentTodayMicroUsd
   const over = plan.budget.wouldExceed
+  /*
+   * 超预算之后按钮到底能不能点，取决于服务端的策略，不能写死。
+   *
+   * 08 §2 说「警告但不禁用，决定权在用户」，而服务端默认 BUDGET_ON_EXCEED=block
+   * 会直接回 402——此前按钮永远可点，于是这是一条**死路交互**：用户点一个可点的
+   * 红按钮，拿到一个错误。两份文档都没错，错在前端没读 onExceed 这个已经返回了的字段。
+   */
+  const blocked = over && plan.budget.onExceed === 'block'
 
   return (
     <div
@@ -72,6 +80,13 @@ export function ConfirmSpend({
           </dd>
         </dl>
 
+        {blocked && (
+          <p className="mb-4 text-[13px] leading-[20px]" style={{ color: 'var(--status-error)' }}>
+            日预算闸门当前是 <code>block</code>，这批会被服务端拦下。 调高 <code>BUDGET_DAILY_MICRO_USD</code>
+            ，或把 <code>BUDGET_ON_EXCEED</code> 设成 <code>warn</code> 让决定权回到你手上。
+          </p>
+        )}
+
         <div className="flex justify-end gap-2">
           <button
             type="button"
@@ -82,17 +97,22 @@ export function ConfirmSpend({
             取消
           </button>
           {/*
-            超预算时按钮变红但**不禁用**——是警告不是家长控制，决定权在用户
-            （08-screen-specs.md §2）
+            `warn` 下超预算按钮变红但**不禁用**——是警告不是家长控制，决定权在
+            用户（08-screen-specs.md §2）。`block` 下禁用，因为服务端本来就会
+            回 402：让用户点一个注定失败的按钮不是尊重决定权，是浪费他一次点击。
           */}
           <button
             type="button"
             onClick={onConfirm}
-            disabled={busy || plan.planned === 0}
+            disabled={busy || plan.planned === 0 || blocked}
             className="rounded-md px-3 py-1.5 font-medium disabled:opacity-50"
             style={{ background: over ? 'var(--status-error)' : 'var(--accent)', color: '#fff' }}
           >
-            {busy ? '入队中…' : `生成 ${plan.planned} 个镜头（约 ${usd(plan.estimatedCostMicroUsd)}）`}
+            {busy
+              ? '入队中…'
+              : blocked
+                ? `超出日预算，无法生成（约 ${usd(plan.estimatedCostMicroUsd)}）`
+                : `生成 ${plan.planned} 个镜头（约 ${usd(plan.estimatedCostMicroUsd)}）`}
           </button>
         </div>
       </div>

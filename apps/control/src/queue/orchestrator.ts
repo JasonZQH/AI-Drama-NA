@@ -420,7 +420,7 @@ async function fail(
   cost: FailureCost = ZERO_COST,
 ): Promise<void> {
   const [job] = await deps.db
-    .select({ shotId: s.generationJobs.shotId })
+    .select({ shotId: s.generationJobs.shotId, providerId: s.generationJobs.providerId })
     .from(s.generationJobs)
     .where(eq(s.generationJobs.id, generationJobId))
 
@@ -452,14 +452,26 @@ async function fail(
   if (claimed.length === 0) return
 
   if (!job) return
-  const tdeps = {
-    db: deps.db,
-    queues: deps.queues,
-    providerId: deps.providers[0]?.id ?? 'mock',
-    maxAttempts: deps.maxAttempts,
-  }
+
+  /*
+   * 用**这一行自己的** provider，而不是 providers[0]。
+   *
+   * 原来写死 providers[0] 有两个问题：重试会被静默改派到另一个 provider
+   * （成本对比就没意义了），而且闸门下沉之后 estimateCost 也会用错家的价目表。
+   * 池里找不到就退回 providers[0]——那是配置问题，不该让失败路径再抛一次。
+   */
+  const provider = deps.providers.find((p) => p.id === job.providerId) ?? deps.providers[0]
+  if (!provider) return
+
+  const tdeps = { db: deps.db, queues: deps.queues, provider, maxAttempts: deps.maxAttempts }
   const r = await applyShotTransition(tdeps, job.shotId, { type: 'attempt.failed', code })
-  // 回到 ready 说明还能重试——立刻创建下一次尝试，不等人来点
+  /*
+   * 回到 ready 说明还能重试——立刻创建下一次尝试，不等人来点。
+   *
+   * 这一步现在会过预算闸门（闸门在 enqueue.generation 分支里）。被拦下时
+   * 镜头停在 ready，人在面板上看得到，加额度后可以手动再发起——比原先
+   * 「不问额度直接重投」安全，那正是「一次误操作烧穿预算」的主力路径之一。
+   */
   if (r?.ok && r.next === 'ready') {
     await applyShotTransition(tdeps, job.shotId, { type: 'generate.requested' })
   }
