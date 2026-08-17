@@ -149,7 +149,9 @@ export async function handleGenerate(
     const req = buildRequest(job)
     const v = provider.validate(req)
     if (!v.ok) {
-      await fail(deps, job.id, 'invalid_output', `能力不匹配：${v.reason}`)
+      // validate 不得有 IO（04 §7），所以走到这里一次网络调用都没发生过——
+      // 这是全部五个失败入口里唯一一个**确知**没花钱的
+      await fail(deps, job.id, 'invalid_output', `能力不匹配：${v.reason}`, ZERO_COST)
       return 'skipped'
     }
 
@@ -169,7 +171,20 @@ export async function handleGenerate(
        * 这个方向的错误便宜得多——真 provider 的第一笔重复扣费是查不回来的。
        * ponytail: 一刀切保守。等适配器能抛出带「请求是否已发出」的类型化错误再放宽。
        */
-      await fail(deps, job.id, 'submit_unknown', `提交结果未知，本行不再重投：${String(e)}`)
+      /*
+       * 按估算值记账，并标成估算。
+       *
+       * 记 0 会让预算闸门失效——这正是本 PR 要修的那个洞；记成真账则是
+       * Ledger 在说谎，因为这笔钱可能压根没花出去。costEstimated 让两者都成立：
+       * 闸门照样把它算进今日花费，报表能把它与真实计费分开显示。
+       */
+      await fail(
+        deps,
+        job.id,
+        'submit_unknown',
+        `提交结果未知，本行不再重投：${String(e)}`,
+        estimatedCost(provider, job),
+      )
       return 'skipped'
     }
 
@@ -250,8 +265,9 @@ export async function handlePoll(
    *
    * 一次 select 关掉下面所有写入口，比在三处 UPDATE 各挂一个谓词好懂。
    */
+  // 读整行而不是只读 status：超时估算与后面取 shotId 都要用，反而少一次查询
   const [current] = await deps.db
-    .select({ status: s.generationJobs.status })
+    .select()
     .from(s.generationJobs)
     .where(eq(s.generationJobs.id, data.generationJobId))
   if (!current) return 'skipped'
@@ -265,7 +281,18 @@ export async function handlePoll(
   if (res.status === 'running' || res.status === 'submitted') {
     if (Date.now() - data.submittedAt > PROVIDER_TIMEOUT_MS) {
       await provider.cancel(handle).catch(() => undefined)
-      await fail(deps, data.generationJobId, 'timeout', `超过 ${PROVIDER_TIMEOUT_MS / 60000} 分钟未返回`)
+      /*
+       * 超时一定是花过钱的——任务在 provider 那边真的跑了十几分钟。
+       * 而且 cancel 是 best-effort（失败被吞掉），所以它很可能还在继续跑、继续计费。
+       * 只能按价目表估，标成估算。
+       */
+      await fail(
+        deps,
+        data.generationJobId,
+        'timeout',
+        `超过 ${PROVIDER_TIMEOUT_MS / 60000} 分钟未返回`,
+        estimatedCost(provider, current),
+      )
       return 'timeout'
     }
     await deps.db
@@ -292,7 +319,17 @@ export async function handlePoll(
   }
 
   if (res.status === 'failed') {
-    await fail(deps, data.generationJobId, res.code, res.message)
+    /*
+     * provider 报了就用它的真数；没报就估。
+     *
+     * 「没报」不等于「免费」——多数厂商对失败的生成照样计费，只是不在失败
+     * 响应里带账单。这里的默认值必须是「估一个」，不是「记 0」。
+     */
+    const cost =
+      res.costMicroUsd === undefined
+        ? estimatedCost(provider, current)
+        : { microUsd: res.costMicroUsd, estimated: false }
+    await fail(deps, data.generationJobId, res.code, res.message, cost)
     return 'failed'
   }
 
@@ -302,18 +339,19 @@ export async function handlePoll(
   if (res.status !== 'succeeded') return 'running'
 
   // 终态成功：转 ingest 下载/转存。控制面不在这里搬字节
-  const [job] = await deps.db
-    .select({ shotId: s.generationJobs.shotId })
-    .from(s.generationJobs)
-    .where(eq(s.generationJobs.id, data.generationJobId))
-  if (!job) return 'failed'
-
-  const projectId = await projectOfShot(deps.db, job.shotId)
+  const projectId = await projectOfShot(deps.db, current.shotId)
   await deps.db
     .update(s.generationJobs)
     .set({
       status: 'downloading',
       costMicroUsd: res.costMicroUsd,
+      /*
+       * 成功路径同样要标。契约说得很清楚：provider 不回报成本时由适配器按
+       * 价目表估算并标 providerMeta.costEstimated（04 §2）——这个标记此前
+       * 被原地丢掉，于是「厂商回报的真实计费」与「适配器自己估的」在库里
+       * 长得一模一样。M1 验收第 1 条要的正是「成本正确回填」。
+       */
+      costEstimated: res.providerMeta['costEstimated'] === true,
       latencyMs: Date.now() - data.submittedAt,
       ...(res.seedUsed === undefined ? {} : { seed: res.seedUsed }),
     })
@@ -321,7 +359,7 @@ export async function handlePoll(
 
   await deps.queues.ingest.add('ingest', {
     generationJobId: data.generationJobId,
-    shotId: job.shotId,
+    shotId: current.shotId,
     projectId,
     sourceUrl: res.outputUrl,
     ...(res.storageKey ? { storageKey: res.storageKey } : {}),
@@ -351,11 +389,35 @@ async function projectOfShot(db: Db, shotId: string): Promise<string> {
  * 由它创建下一个 attempt——这就是 05 §5.2 的「换 seed / 参数 / provider」
  * 升级路径的驱动点。
  */
+/**
+ * 失败也要记账。
+ *
+ * `cost` 的三种取值对应三种事实，调用方必须想清楚自己是哪一种：
+ * - `{ microUsd: n, estimated: false }` —— provider 回报的真实计费
+ * - `{ microUsd: n, estimated: true }`  —— 我们按价目表估的（超时、结果未知）
+ * - `ZERO_COST`                          —— 确知没花钱（请求根本没发出去）
+ *
+ * 不传等同于 ZERO_COST，但**别靠这个默认值**：真 provider 对失败、超时、
+ * 取消照样计费，把它们当免费是 M0 遗留下来最贵的一个假设。
+ */
+interface FailureCost {
+  readonly microUsd: number
+  readonly estimated: boolean
+}
+
+const ZERO_COST: FailureCost = { microUsd: 0, estimated: false }
+
+/** 按价目表估这一行的花费。用于 provider 没回报成本、或压根来不及回报的情形 */
+function estimatedCost(provider: VideoProvider, job: typeof s.generationJobs.$inferSelect): FailureCost {
+  return { microUsd: provider.estimateCost(buildRequest(job)), estimated: true }
+}
+
 async function fail(
   deps: OrchestratorDeps,
   generationJobId: string,
   code: NonNullable<(typeof s.generationJobs.$inferSelect)['failureCode']>,
   detail: string,
+  cost: FailureCost = ZERO_COST,
 ): Promise<void> {
   const [job] = await deps.db
     .select({ shotId: s.generationJobs.shotId })
@@ -377,6 +439,8 @@ async function fail(
       failureDetail: detail,
       finishedAt: new Date(),
       accepted: false,
+      costMicroUsd: cost.microUsd,
+      costEstimated: cost.estimated,
     })
     .where(
       and(
@@ -450,7 +514,13 @@ export async function reconcileOnBoot(
          * 两者之间选「停下来交给人」——submit_unknown 不可重试，人在面板上
          * 看到解释后用 POST /api/shots/:id/reset 决定要不要再来一次。
          */
-        await fail(deps, job.id, 'submit_unknown', '提交期间进程中断，是否已计费未知，需人工确认')
+        await fail(
+          deps,
+          job.id,
+          'submit_unknown',
+          '提交期间进程中断，是否已计费未知，需人工确认',
+          estimatedCost(providerOf(deps, job.providerId), job),
+        )
         inDoubt++
       }
     } catch (e) {

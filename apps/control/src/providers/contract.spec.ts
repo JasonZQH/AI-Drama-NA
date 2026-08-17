@@ -108,6 +108,32 @@ export function runContractSuite(name: string, make: () => VideoProvider): void 
       if (r.status === 'failed') expect(r.retryable).toBe(true)
     })
 
+    /**
+     * 失败也要能记账。
+     *
+     * 真 provider 对失败、超时、取消的生成照样计费——算力已经消耗。适配器
+     * 知道就填 `costMicroUsd`，不知道就留空由编排层估算。这条只要求「字段
+     * 存在时必须是合法的非负整数」，不强求一定要填：有些失败（提交即被内容
+     * 策略拒绝）确实不计费，硬性要求填会逼适配器编数字。
+     *
+     * 它挡的是另一件事——填了一个负数、小数、或 0 之外的假值。
+     */
+    it('失败结果若报成本，必须是合法的非负整数微美元', async () => {
+      const p = make()
+      const handle = await p.submit(
+        makeRequest({
+          requestId: uuid(8),
+          providerParams: { mock: { failFirstAttempt: 'provider_error' } },
+        }),
+      )
+      const r = await drain(p, handle)
+      expect(r.status).toBe('failed')
+      if (r.status === 'failed' && r.costMicroUsd !== undefined) {
+        expect(Number.isInteger(r.costMicroUsd)).toBe(true)
+        expect(r.costMicroUsd).toBeGreaterThanOrEqual(0)
+      }
+    })
+
     it('成本非空：成功结果的 costMicroUsd > 0', async () => {
       const p = make()
       const handle = await p.submit(makeRequest({ requestId: uuid(6) }))

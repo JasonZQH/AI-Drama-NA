@@ -218,9 +218,52 @@ async function pollHandler(job: Job&lt;PollJobData&gt;) {
 <figure class="diagram"><div class="mermaid">flowchart LR
     A["① 入队前&lt;br/&gt;estimateCost()&lt;br/&gt;预算闸门检查 · 不写库"]
     B["② 提交后&lt;br/&gt;provider 回报实际计费&lt;br/&gt;→ generation_jobs.cost_micro_usd"]
-    C["③ 终态&lt;br/&gt;未回报则按价目表 × 实际时长回填&lt;br/&gt;标记 costEstimated"]
+    C["③ 终态&lt;br/&gt;未回报则按价目表 × 实际时长回填&lt;br/&gt;标记 cost_estimated"]
     A --&gt; B --&gt; C
 </div></figure>
+<h3 id="6.1-失败也要记账">6.1 失败也要记账<a aria-label="链接到此节" class="anchor" href="#6.1-失败也要记账">#</a></h3>
+<p><strong>这是 M0 遗留下来最贵的一个假设。</strong> mock 的失败不花钱，于是「失败 = 免费」这条
+从来没有被检验过；而真 provider 对失败、超时、取消的生成照样计费——算力已经消耗掉了。</p>
+<p>五个失败入口各是一种事实，不能一刀切：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>入口</th>
+<th>花钱了吗</th>
+<th>写什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>能力校验不通过（<code>validate</code> 前置）</td>
+<td><strong>没有</strong>。<code>validate</code> 不得有 IO，一次调用都没发生</td>
+<td><code>0</code>，非估算</td>
+</tr>
+<tr>
+<td>provider 回报失败且带了金额</td>
+<td>是，且<strong>它知道确切数字</strong></td>
+<td>真数，非估算</td>
+</tr>
+<tr>
+<td>provider 回报失败但没带金额</td>
+<td>多半是。没报 ≠ 免费</td>
+<td>估算值，标 <code>cost_estimated</code></td>
+</tr>
+<tr>
+<td>超时</td>
+<td>是。任务真跑了十几分钟，且 <code>cancel</code> 是 best-effort，可能还在烧</td>
+<td>估算值，标 <code>cost_estimated</code></td>
+</tr>
+<tr>
+<td>提交结果未知（<code>submit_unknown</code>）</td>
+<td><strong>不知道</strong></td>
+<td>估算值，标 <code>cost_estimated</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>最后一行是个两难：记 <code>0</code> 会让预算闸门失效（闸门读的就是 <code>cost_micro_usd</code> 的和），
+记成真账则是 Ledger 在说谎。<code>cost_estimated</code> 让两者同时成立——闸门照样把它算进
+今日花费，报表能把估算与真实计费分开显示。没有这一列，只能二选一。</p>
 <p><strong>预算闸门</strong>在项目级：</p>
 <div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export interface BudgetPolicy {
   projectDailyLimitMicroUsd: number
@@ -329,6 +372,7 @@ async function pollHandler(job: Job&lt;PollJobData&gt;) {
 <a class="lvl-3" href="#5.2-生成质量重试换参数重生成">5.2 生成质量重试（换参数重生成）</a>
 <a class="lvl-3" href="#5.3-不可重试的失败">5.3 不可重试的失败</a>
 <a class="lvl-2" href="#6.-成本记账">6. 成本记账</a>
+<a class="lvl-3" href="#6.1-失败也要记账">6.1 失败也要记账</a>
 <a class="lvl-2" href="#7.-实时进度sse">7. 实时进度：SSE</a>
 <a class="lvl-2" href="#7.5-bullmq-生产加固三条必改的默认值">7.5 BullMQ 生产加固（三条必改的默认值）</a>
 <a class="lvl-2" href="#8.-崩溃恢复">8. 崩溃恢复</a>

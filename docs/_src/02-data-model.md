@@ -232,6 +232,7 @@ export const generationJobs = pgTable('generation_jobs', {
 
   // ── 结果与成本 ──
   costMicroUsd:  bigint('cost_micro_usd', { mode: 'number' }),
+  costEstimated: boolean('cost_estimated'),   // 按价目表估的，不是 provider 回报（05 §6.1）
   accepted:      boolean('accepted'),
   failureCode:   text('failure_code').$type<FailureCode>(),
   failureDetail: text('failure_detail'),

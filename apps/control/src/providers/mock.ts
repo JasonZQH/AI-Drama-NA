@@ -212,6 +212,14 @@ export class MockProvider implements VideoProvider {
         message: `mock 注入的失败：${job.failWith}`,
         // content_filtered 同 prompt 必然再被拒（05 §5.3）
         retryable: job.failWith !== 'content_filtered',
+        /*
+         * **失败也计费**，跟真 provider 一样——算力已经消耗掉了。
+         *
+         * 唯一的例外是被内容策略挡下的：那是提交后立刻拒，没有真的跑推理，
+         * 多数厂商也不收这笔。这个区分不是装饰——它让「哪些失败该记账」这条
+         * 逻辑在 mock 上就能被真实触发，而不是等接上真账单才第一次执行。
+         */
+        ...(job.failWith === 'content_filtered' ? {} : { costMicroUsd: this.estimateCost(job.req) }),
       }
       return Promise.resolve(f)
     }

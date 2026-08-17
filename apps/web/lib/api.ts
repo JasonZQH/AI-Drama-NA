@@ -206,6 +206,8 @@ export interface JobRow {
   negativeText: string | null
   seed: number | null
   costMicroUsd: number | null
+  /** true = 这笔是按价目表估的，不是 provider 回报的真实计费（超时、提交结果未知等） */
+  costEstimated: boolean | null
   latencyMs: number | null
   accepted: boolean | null
   failureCode: string | null

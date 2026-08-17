@@ -306,6 +306,15 @@ export const generationJobs = pgTable(
 
     // ── 结果与成本 ──
     costMicroUsd: bigint('cost_micro_usd', { mode: 'number' }),
+    /**
+     * true = cost_micro_usd 是按价目表估算的，不是 provider 回报的真实计费。
+     *
+     * 三种情况会写估算值：超时（provider 没来得及回报）、提交结果未知
+     * （连接断了，钱花没花都不知道）、以及 provider 压根不报成本。
+     * 没有这一列，预算闸门与 Ledger 只能二选一——要么少记账让闸门失效，
+     * 要么把估算当真账记进去让报表说谎（约束 C4）。
+     */
+    costEstimated: boolean('cost_estimated'),
     accepted: boolean('accepted'),
     failureCode: text('failure_code').$type<FailureCode>(),
     failureDetail: text('failure_detail'),
