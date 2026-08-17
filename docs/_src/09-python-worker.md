@@ -207,12 +207,23 @@ on_progress(msg['value'] / msg['max'] * 90, 'denoising')   # 留 10% 给解码�
 
 | 模型 | 许可 | 显存 | 定位 |
 |---|---|---|---|
-| **Wan2.2 TI2V-5B** | Apache 2.0 | ~24GB（720p） | 主力：单卡可跑，性价比最高 |
-| **Wan2.2 I2V-A14B** | Apache 2.0 | ~80GB（或 offload） | 质量优先，H100 级 |
-| **HunyuanVideo 1.5** | 腾讯社区许可 | ~14GB（offload 开） | 备选：显存友好，4090 可跑 |
+| **Wan2.2 I2V-A14B**（`fp8_scaled`） | Apache 2.0 | **14.3GB × 2 expert，逐 expert 加载 → 24–32GB 卡可跑** | **主力**。FLF2V 复用同一组权重 |
+| **Wan2.2 TI2V-5B** | Apache 2.0 | ~10GB（fp16）/ ~24GB（720p） | 备选：只用于「无首尾帧需求 + 要快」的镜头与预览档 |
+| **Wan2.2 S2V-14B** | Apache 2.0 | 同 A14B 量级 | 对白口型档（M3 音频阶段） |
+| **Wan Animate-2** | Apache 2.0 | 同 A14B 量级 | 跨镜头角色一致性档 |
+| **HunyuanVideo 1.5** | 腾讯社区许可（**地域排除，见下**） | ~14GB（offload 开） | 备选：显存友好，4090 可跑 |
 | **Index-AniSora** | Apache 2.0 | 视版本 | 动画风专用 |
+| ~~LTX-2.x~~ | ⛔ **否决** | — | AUP 禁性内容且明写涵盖 on-premises；另有竞品条款 |
 
-> 许可注意：Wan 系列 Apache 2.0 最干净，官方声明不主张生成内容权利。HunyuanVideo 1.5 的社区许可**排除欧盟/英国/韩国**，且 MAU 超 1 亿需另行申请——纯本地开发无影响，但主体和服务器所在地要留意。Wan 2.5 之后转闭源，自部署路线锁定在 2.2 分支。
+> **2026-08-17 修订，三处口径变了：**
+>
+> **① 主力从 5B 换成 I2V-A14B。** `03-pipeline.md` §5 的「末帧接首帧」依赖 FLF2V，而 **5B 没有 FLF2V 档**——ComfyUI 用 `WanFirstLastFrameToVideo` 节点配 I2V-A14B 权重实现它。`lightx2v/Wan2.2-Lightning` 的 `TI2V-5B-4steps` 至今仍在 TODO 未发布，所以「5B + 4 步」这条最诱人的省钱路径**当前拿不到**。
+>
+> **② A14B 不需要 H100。** 原文写「~80GB（或 offload）/ H100 级」会把选型引向错误的贵档。官方 Comfy-Org repack 的 `wan2.2_i2v_{high,low}_noise_14B_fp8_scaled.safetensors` 每个 **14.3GB**，ComfyUI 逐 expert 加载 ⇒ 24–32GB 卡即可（24GB 是擦边，**待实测**）。
+>
+> **③ HunyuanVideo 1.5 的地域限制是硬约束，不是「留意」。** 许可原文是 "the worldwide territory, **excluding** the territory of the European Union, United Kingdom and South Korea"——排除的是**授权范围本身**，主体在 EU/UK/KR 则该许可根本不授予，本地开发也一样。（注意：二手文章广泛误传它是 Apache 2.0，是错的。）
+>
+> Wan 系列 Apache 2.0 最干净，官方声明不主张生成内容权利。Wan 2.5 之后转闭源，自部署路线锁定在 2.2 分支——但 2.2 分支仍在更新（Animate-2 是 2026-08-08 的事）。
 
 每个 checkpoint 必须在 `workflows/MODELS.md` 中登记许可、版本、来源 URL 与引用它的工作流，方便后续审计。
 
@@ -299,13 +310,29 @@ docker run -d --gpus all \
 
 ### 5.3 云 GPU 供应商注意事项
 
-| 供应商 | 备注 |
-|---|---|
-| **Lambda / CoreWeave** | AUP 只禁非法类别，条款相对宽松；按需 H100 约 $2.5–3.4/hr |
-| **RunPod** | 便宜、启动快（4090 约 $0.35–0.69/hr），但 ToS 字面禁 "graphic adult content"——若将来做成熟向内容需先书面确认 |
-| **AWS/GCP** | 贵 3–6 倍，除非已有额度否则不划算 |
+**内容分级决定可选供应商**（条款逐字核实于 2026-08-17，日期为条款自身的 Last Updated）：
 
-**成本控制**：GPU 按小时计费，开发期务必配置**空闲自动停机**。跑一晚上（约 12 小时）忘关的 H100 是 $30–40，忘一整天就是 $60–80。建议 worker 内置 `IDLE_SHUTDOWN_MIN=30`，超时无任务自行退出，配合供应商的自动伸缩。
+| 供应商 | 非成人内容 | L2 / mature | 依据 |
+|---|---|---|---|
+| **RunPod** | 🟢 最便宜、工具链最全（4090 Community $0.34/hr、5090 $0.69/hr） | 🔴 **禁区** | ToS（2026-03-24）§6 禁 "pornography or **graphic adult content**"；§8 附 "as determined by us"；后果 immediate termination + **permanent ban** |
+| **CoreWeave** | 🟢 | 🟢 **主流厂里唯一无泛成人禁令** | AUP（2021-09-17）唯一涉性条款只禁 CSAM 与未经同意传播的裸露/性行为内容 |
+| **Lambda** | 🟢 | 🟡 需确认 | ToS 内嵌 AUP（2025-08）：pornography 带 illegal 限定，但 **obscene / indecent 不带**；动词是 "distributing" |
+| **Vast.ai** | 🟢 便宜 | 🟡 逐 host 看政策（verified DC host） | 官方无明确立场，**查不到** |
+| **Modal** | 🟡 | 🔴 | ToS（2026-05）禁 "indecent or obscene material"，另禁 "media-serving platform services"——双钩子 |
+| **Novita AI** | 🟡 | 🔴 **不是 plan B** | 与 RunPod 逐字相同的 boilerplate |
+| **AWS/GCP** | 贵 3–6 倍 | — | 除非已有额度否则不划算 |
+
+⇒ **分两阶段**：阶段 1 用 RunPod Community 跑**非成人测试素材**验管道；阶段 2 量产 L2 之前必须拿到 CoreWeave 合同或书面豁免。**在此之前不要把模型权重卷和账号绑在 RunPod 上**——封号会连带权重与在跑任务一起没。
+
+**存储**：用 **Network Volume**（$0.07/GB/mo）配 **terminate**，不要 Volume Disk 配 stop——后者停机 $0.20/GB/mo 比运行时还贵一倍，且官方文档明说停机再起「可能分到 0 张 GPU」。Network Volume 区域锁定，worker 必须与卷同 DC。
+
+**成本控制**：GPU 按小时计费。忘关一夜（12h）的 4090 是 $4，H100 SXM 是 $32。
+
+> ⚠️ **`IDLE_SHUTDOWN_MIN` 的原设计是错的，必须改。** 原文写「worker 内置 `IDLE_SHUTDOWN_MIN=30`，超时无任务自行退出」——**worker 进程退出不停止计费**，实例还在，账单照走。
+>
+> 正解是**控制面在队列空时调平台 API 停机**（RunPod `POST rest.runpod.io/v1/pods/{id}/stop`，Vast `vastai stop instance`）。控制面本来就知道队列深度（`/v1/health` 已暴露 `queue_depth`），而 worker 不该持有平台凭证——这与 ADR-0005「worker 无状态、无依赖」一致。
+>
+> 顺带：把 `IDLE_SHUTDOWN_MIN` 从 30 降到 5 分钟，在 4090 / 12 镜一唤醒下只省 15%（$0.082 → $0.070）。**不是主要矛盾，忘关才是。**
 
 ## 6. 媒体 Worker（CPU，本机）
 

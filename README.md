@@ -233,6 +233,7 @@ Each ADR records the alternatives rejected and — where relevant — the condit
 | [0009](docs/adr/0009-modular-monolith-not-microservices.md) | Modular monolith plus stateless compute workers |
 | [0010](docs/adr/0010-http-over-grpc.md) | HTTP/JSON across processes, not gRPC |
 | [0011](docs/adr/0011-drizzle-over-alternatives.md) | Drizzle for the data layer; SafeQL deferred to M1 |
+| [0012](docs/adr/0012-openrouter-m1-comfyui-m2.md) | OpenRouter in M1, ComfyUI added in M2; both live in one provider pool |
 
 ---
 
