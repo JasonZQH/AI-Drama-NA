@@ -60,7 +60,7 @@
 <div class="label">生成质量</div>
 <a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
 </div>
-<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr.html"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
   <main class="content"><div class="doc-head"><div class="eyebrow">文档 07</div><h1>前端设计系统</h1></div><blockquote>
 <p>Status: Draft v1 · 2026-08-10 · 适用：<code>apps/web</code> + <code>packages/ui</code>
 注：原计划用 <code>/frontentdesign</code> skill，该 skill 在当前环境不可用，本文为自建规范。若后续引入该 skill，以其输出覆盖本文的令牌部分，结构与组件清单可保留。</p>
@@ -401,6 +401,7 @@
 <th>项</th>
 <th>选择</th>
 <th>理由</th>
+<th>现状</th>
 </tr>
 </thead>
 <tbody>
@@ -408,44 +409,64 @@
 <td>样式</td>
 <td>Tailwind CSS v4 + CSS 变量令牌</td>
 <td>令牌集中，类名就地，暗浅色一处切换</td>
+<td>✅ 已在用</td>
 </tr>
 <tr>
 <td>组件基座</td>
 <td>Radix UI Primitives</td>
 <td>无样式、可访问性到位，不背设计包袱</td>
+<td>⛔ 未装 · 当前是手写组件</td>
 </tr>
 <tr>
 <td>图标</td>
 <td>Lucide</td>
 <td>覆盖全、线性风格统一</td>
+<td>⛔ 未装 · 当前用 Unicode 字形</td>
 </tr>
 <tr>
 <td>表格/虚拟化</td>
 <td>TanStack Table + Virtual</td>
 <td>资产与 Ledger 列表需要</td>
+<td>⚠️ 只装了 Virtual，Table 未装</td>
 </tr>
 <tr>
 <td>图表</td>
 <td>Recharts</td>
 <td>成本与质量趋势，配 §3.4 色板</td>
+<td>⛔ 未装 · 当前是 <code>TrendChart.tsx</code> 的内联 SVG</td>
 </tr>
 <tr>
 <td>状态</td>
 <td>TanStack Query（服务端态）+ Zustand（UI 态）</td>
 <td>严格区分两类状态，不混用</td>
+<td>⛔ 两个都未装 · 当前是 <code>useState</code> + SSE Context</td>
 </tr>
 <tr>
 <td>播放器</td>
 <td>原生 <code>&lt;video&gt;</code> + hls.js</td>
 <td>不引入重播放器，母版是标准 MP4/HLS</td>
+<td>⚠️ 原生 <code>&lt;video&gt;</code> ✅；hls.js 未装（HLS 属 M5）</td>
 </tr>
 <tr>
 <td>表单</td>
 <td>React Hook Form + zod resolver</td>
 <td>与 contracts 的 schema 直接复用</td>
+<td>⛔ 未装 · 目前没有需要校验的表单</td>
+</tr>
+<tr>
+<td><strong>动画</strong></td>
+<td><strong>GSAP + @gsap/react</strong></td>
+<td>面板的描线与过渡</td>
+<td>✅ <strong>已在用，但此前本表没写</strong></td>
 </tr>
 </tbody>
 </table></div>
+<blockquote>
+<p><strong>「现状」列是 2026-08 实测的。</strong> 标 ⛔ 的六项当前一个都没装，能力由手写实现顶着——
+这不是欠债，是有意为之：面板只有五个页面，为它引六个库不划算。选型表保留下来
+是因为它记录的是「真要引的时候引哪个、为什么」，而不是「已经引了」。
+反过来 GSAP 是唯一一个<strong>在用却没被文档记录</strong>的运行时依赖，这次补上。</p>
+</blockquote>
 <h2 id="10.-目录约定">10. 目录约定<a aria-label="链接到此节" class="anchor" href="#10.-目录约定">#</a></h2>
 <div class="codeblock is-diagram"><pre><code>apps/web/
 ├─ app/

@@ -62,7 +62,7 @@ CHEN MO: 我等你三个小时了。
 **动作**：LLM 把每场拆成 Shot Intent 序列。这是**结构化输出**，不是自由文本——用 zod schema 约束 LLM 输出。
 
 ```ts
-const ShotIntentSchema = z.object({
+export const ShotIntent = z.object({  // packages/contracts/src/shot.ts
   shotType:    ShotType,
   cameraMove:  CameraMove.optional(),
   action:      z.string().min(4),
@@ -78,7 +78,10 @@ const ShotIntentSchema = z.object({
 1. **剧情信息与尺度画面永不同镜。** 承载对白、关键动作、道具揭示的镜头，不得同时包含需要降级的画面。违反这条，L1 版本会剧情断裂，只能重新生成——成本翻倍。
 2. **每个「热点 beat」规划三个覆盖镜头**：`L2` 完整 → `L1` 同机位但遮蔽/换装/更早切出 → `L0` 反应镜头或特写脸部。AI 生成的边际成本优势正在于此：**多生成两个镜头远比重剪一场戏便宜**，增量成本约为 L2 的 10–20%；而"分开生成两版"是 80–100%。
 
-**完成判据**：
+**完成判据**（⏳ **三条都还没有校验器**——目前是写给人看的验收口径，不是系统闸门；
+唯一落地的是单镜时长，两层：zod `ShotIntent.durationSec` 的软边界与数据库
+`shots_duration_ck` 的硬约束。S1–S4 是 LLM 驱动的创作链路，仓里目前一行 LLM 代码都没有，
+M0 的分镜数据来自 `db/seed.ts` 的 12 镜夹具）：
 - 每场的镜头时长总和 ≈ 场次目标时长（±15%）。
 - 单集镜头数在 10–25 之间（60–90 秒 / 2–8 秒每镜，典型 18 镜 × 4 秒）。
 - 景别有变化：连续三个同景别会被校验器标黄。
@@ -130,22 +133,36 @@ flowchart TD
     draft["draft<br/>intent 未填全"]
     ready["ready<br/>intent 完整，可生成"]
     generating["generating<br/>至少一个 job 在跑"]
-    evaluating["evaluating"]
     review["review<br/>有 candidate 待选"]
     locked["locked<br/>已选定 selectedTakeId"]
-    failed["failed<br/>重试耗尽"]
-    retry{"attempt &lt; maxAttempts ?"}
+    failed["failed<br/>失败码不可重试，或重试耗尽"]
+    skipped["skipped<br/>人工跳过"]
+    retry{"码可重试 且 attempt &lt; maxAttempts ?"}
     draft -->|"intent 校验通过"| ready
     ready -->|"用户点生成 / 批量入队"| generating
-    generating -->|"job 完成"| evaluating
-    evaluating -->|"Eval 通过"| review
-    evaluating -->|"Eval 拒绝"| retry
-    retry -->|"是 · 换 seed / 参数 / provider"| ready
+    generating -->|"take 过闸（take.accepted）"| review
+    generating -->|"attempt.failed"| retry
+    review -->|"人工全部拒绝，等价一次质量重试"| retry
+    retry -->|"是 · 开下一次 attempt"| ready
     retry -->|"否"| failed
     review -->|"人工选定"| locked
     locked -.->|"人工「重做」"| ready
-    failed -.->|"人工介入"| ready
+    failed -.->|"manual.reset / intent.edited"| ready
+    ready -.->|"人工跳过"| skipped
+    skipped -.->|"manual.reset"| ready
 ```
+
+> 这张图与代码对齐过三处（issue #30）：
+>
+> - **删掉了 `evaluating` 节点**。`ShotStatus` 枚举里从来没有它——自动评测发生在
+>   **job** 侧而不是镜头侧（`JobStatus` 里确有 `evaluating`），镜头是 `generating → review`
+>   直接过去的。留着它会让人以为镜头有一个查不到的中间态。
+> - **补上了 `skipped`**。枚举里有，图上原先没有任何边。
+> - **重试判定加了「码可重试」这一半**。不是所有失败都会重试：`content_filtered` /
+>   `quota_exceeded` / `invalid_output` / `submit_unknown` 直接判死（`05` §5.3）。
+>
+> ⏳ 另注意「开下一次 attempt」目前**用的是完全相同的参数**——`05` §5.2 描述的
+> 「换 seed → 强化 prompt → 换 provider」还没有实现，随 provider 路由器一并落地。
 
 状态迁移规则以纯函数实现在 `apps/control/src/pipeline/shotMachine.ts`，**不含任何 IO**，便于单测：
 
@@ -230,6 +247,15 @@ function planBatch(shots: Shot[]): { runnable: Shot[]; blocked: Shot[] } {
 ```
 
 批次完成后重新解析一轮，把新解锁的镜头推进去，直到没有 runnable 为止。
+
+> ⚠️ **自动解锁尚未实现。** 依赖解析**只在「生成整集」那一次请求里跑一次**，
+> 此后没有任何调用方会重跑它——镜头 locked 走的是 `POST /api/takes/:id/select`，
+> 那条路径根本不碰 `batch.ts`。所以被 `blocked` 的镜头在前序锁定后会**一直停在
+> `ready`**，要人再点一次「生成整集」才进得去。
+>
+> 真做还有个前置：即便放行了，后续镜头也拿不到前序的末帧——`buildRequest` 的
+> `refImages` 恒为空、`mode` 恒为 `t2v`。所以「末帧接首帧」和「自动解锁」是一件事的两半，
+> 一起等 prompt-kit（M1 P2）。
 
 ## 7. 回退与版本
 

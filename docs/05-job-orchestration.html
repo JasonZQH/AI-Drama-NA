@@ -60,7 +60,7 @@
 <div class="label">生成质量</div>
 <a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
 </div>
-<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr.html"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
   <main class="content"><div class="doc-head"><div class="eyebrow">文档 05</div><h1>任务编排：队列、重试、并发与记账</h1></div><blockquote>
 <p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="03-pipeline.html" title="生产流水线与状态机"><code>03-pipeline.md</code></a>、<a href="04-provider-adapter.html" title="Provider 适配器契约"><code>04-provider-adapter.md</code></a></p>
 </blockquote>
@@ -89,6 +89,15 @@
     QG -.-&gt;|"提交后转轮询"| QP
 </div></figure>
 <p>拆成多队列而不是一个大队列的理由：<strong>并发度需求完全不同</strong>。<code>q:generate</code> 受 provider 配额约束（可能只有 4），<code>q:ingest</code> 是 IO 密集（可以 20），<code>q:render</code> 是 CPU 密集（等于核数）。混在一起就只能取最小值，浪费吞吐。</p>
+<blockquote>
+<p><strong>图上的队列，代码里跑着四个，而「没跑」有两种，落到代码上完全不同。</strong></p>
+<ul>
+<li><strong>跑着的四个</strong>：<code>q:generate</code> / <code>q:poll</code> / <code>q:ingest</code> / <code>q:notify</code>——队列、生产者、Worker 三样齐全（<code>apps/control/src/worker.ts</code>）。</li>
+<li><strong><code>q:eval</code> 是一个空队列</strong>：<code>Queue</code> 对象建了、<code>EvalJobData</code> 类型也有，但<strong>零生产者、零消费者</strong>。这比「不存在」更能骗人——有人去查队列深度，看到 0 会以为是没积压。M6 随自动评测一并接上。</li>
+<li><strong><code>q:render</code> 压根没建</strong>：<code>queues.ts</code> 里有一段注释明说「要到 media worker 存在时才有消费者，现在不定义」。渲染当前走同步 HTTP（<code>POST /api/episodes/:id/render</code>，见 <a href="06-api-spec.html" title="控制面 API 规范"><code>06-api-spec.md</code></a> §5）。</li>
+<li><strong><code>q:tts</code> 同 <code>q:render</code></strong>，M3 启用。</li>
+</ul>
+</blockquote>
 <h2 id="3.-并发控制三层限流">3. 并发控制：三层限流<a aria-label="链接到此节" class="anchor" href="#3.-并发控制三层限流">#</a></h2>
 <figure class="diagram"><div class="mermaid">flowchart TD
     L1["① 全局闸门&lt;br/&gt;MAX_GLOBAL_CONCURRENT = 32"]
@@ -96,7 +105,11 @@
     L3["③ 项目配额&lt;br/&gt;每 project 默认 12&lt;br/&gt;防止单项目饿死其他项目"]
     L1 --&gt; L2 --&gt; L3
 </div></figure>
-<p>BullMQ 用 <code>Worker</code> 的 <code>concurrency</code> 实现第 ①③ 层；第 ② 层用 <strong>BullMQ Group / 自建信号量</strong>按 <code>providerId</code> 分组限流。</p>
+<p>第 ① 层就是 BullMQ <code>Worker</code> 的 <code>concurrency</code>（<code>worker.ts</code> 读 <code>MAX_GLOBAL_CONCURRENT</code>，默认 32），外加一个令牌桶防瞬时打爆。</p>
+<p>第 ② 层<strong>不是 BullMQ Group，是自建的 Redis 计数器信号量</strong>（<code>queue/semaphore.ts</code>）——provider 配额必须跨进程有效，否则起两个 worker 就等于把配额翻倍，直接触发对方限流。拿不到槽位就延时重排、绝不阻塞 worker 槽位；槽位在<strong>提交完成</strong>后释放：占的是「并发提交数」，不是「并发生成数」。</p>
+<blockquote>
+<p>⏳ <strong>第 ③ 层项目配额尚未实现。</strong> 代码里只有一个全局 <code>concurrency</code>，没有任何按 <code>projectId</code> 的限流，<code>.env.example</code> 也只有 <code>MAX_GLOBAL_CONCURRENT</code>。所以图上那句「防止单项目饿死其他项目」目前<strong>不成立</strong>：两个项目同时批量生成，谁先入队谁占满全局槽位。只有一个项目在跑时这个洞不疼，所以留到真有第二个项目再说。</p>
+</blockquote>
 <div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">const generateWorker = new Worker&lt;GenerateJobData&gt;('q:generate', handler, {
   connection,
   concurrency: env.MAX_GLOBAL_CONCURRENT,
@@ -274,10 +287,11 @@ async function pollHandler(job: Job&lt;PollJobData&gt;) {
 记成真账则是 Ledger 在说谎。<code>cost_estimated</code> 让两者同时成立——闸门照样把它算进
 今日花费，报表能把估算与真实计费分开显示。没有这一列，只能二选一。</p>
 <p><strong>预算闸门</strong>在项目级：</p>
-<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">export interface BudgetPolicy {
-  projectDailyLimitMicroUsd: number
-  episodeLimitMicroUsd:      number
-  onExceed: 'block' | 'warn' | 'downgrade_provider'
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">// pipeline/batch.ts —— 以代码为准，这里是照抄
+export interface BudgetPolicy {
+  readonly dailyLimitMicroUsd: number   // 项目级日限额；注意字段名里没有 project 前缀
+  readonly onExceed: 'block' | 'warn'   // ⏳ 'downgrade_provider' 是目标态，见下
+  // ⏳ readonly episodeLimitMicroUsd: number   // 单集限额，尚未实现，见下
 }
 </code></pre></div>
 <p>超限时 <code>block</code> 会让批量入队直接失败并在 UI 弹出，而不是安静地烧钱。开发期默认 <code>projectDailyLimitMicroUsd = 5_000_000</code>（$5），<strong>防止一次误操作把整批任务打到云 API</strong>。这条在 M1 接真实 provider 时尤其重要。</p>

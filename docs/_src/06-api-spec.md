@@ -8,11 +8,11 @@
 |---|---|
 | 风格 | REST + 资源嵌套；实时进度走 SSE |
 | 格式 | JSON；时间一律 ISO-8601 UTC 字符串 |
-| 校验 | 每个路由用 `packages/contracts` 的 zod schema 校验入参，校验失败返回 422 |
-| 分页 | 游标分页 `?cursor=&limit=`，响应含 `nextCursor` |
-| 幂等 | 所有会产生费用的 POST 支持 `Idempotency-Key` 头 |
-| 错误 | 统一错误体（见 §8） |
-| 认证 | **所有非 GET 请求必须带 `x-api-key: $CONTROL_API_KEY`**，否则 401。GET 与 SSE 不校验（见下） |
+| 校验 | ⚠️ 422 与统一错误体 ✅ 成立，但 schema 是**各路由文件里就地写的 `z.object`**，不是来自 `packages/contracts`（那里根本没有 HTTP 入参 schema）。且并非每个路由都校验——多条只解析 `:id`，body 与 query 基本不校验 |
+| 分页 | ⛔ 未实现。全仓零 `cursor`；`GET /api/projects` 全量返回，`/api/attention` 写死 `limit 50`。等真有几百个项目再说 |
+| 幂等 | ⛔ HTTP 层未实现——没有任何路由读 `Idempotency-Key`。**防重复付费在队列层**：每行 `generation_jobs` 至多 submit 一次（`queue/orchestrator.ts` 的 `claimForSubmit`），结果未知时停下不自动重投（`05` §5.3）。HTTP 幂等键是目标态 |
+| 错误 | ✅ 统一错误体（见 §8） |
+| 认证 | ✅ **所有非 GET 请求必须带 `x-api-key: $CONTROL_API_KEY`**，否则 401。GET、SSE 与 CORS 预检的 `OPTIONS` 不校验（见下） |
 
 > **为什么是自定义头而不是 `Authorization: Bearer`，为什么只挡写路径。**
 >
@@ -33,6 +33,39 @@
 > 配套两个开关：`CONTROL_HOST` 默认 `127.0.0.1`（不上局域网）；
 > `WEB_ORIGIN` 收紧 CORS——它不是钱的闸门，但决定攻击是「盲打」还是
 > 「先跨域读 GET 枚举出 UUID 再精确制导」。
+
+## 1.1 承诺与实现的总账
+
+> **本文承诺 53 条路由，控制面实际注册 22 条，而 53 条里真正被服务的只有 17 条。**
+> 差额不是「还没写完」那么简单——有 5 条已实现的路由本文一个字没提，另有 10 条
+> 路径对得上但**签名或语义不符**。核验方式：起真控制面 `app.printRoutes()` 打路由表，
+> 再对每条承诺 `app.inject()` 实测状态码与响应体。
+
+| 状态 | 条数 | 说明 |
+|---|---|---|
+| ✅ 签名相符 | 7 | 照着文档调就能用 |
+| ⚠️ 已实现但不符 | 10 | 路径对，但 body / query / 响应形状与文档不同——**照着文档调会静默拿到别的东西** |
+| ⛔ 未实现 | 36 | 实测 404 |
+| 📋 已实现但本文没写 | 5 | 见 §6.1 |
+
+十条「不符」的具体差异（这些最容易踩）：
+
+| 端点 | 差在哪 |
+|---|---|
+| `GET /api/projects/:id` | 不含统计摘要，实为 `{ project, episodes }`；统计在 `/stats` |
+| `GET /api/episodes/:id` | 返回三个**平铺数组**不是嵌套树；shots 每项额外带 `takeCount` / 成本 |
+| `POST /api/shots/:id/generate` | **body 完全不解析**（`providerHint` / `overrides` / `count` 静默忽略）；响应是 `{ shotId, status }` 不是 `{ generationJobIds }` |
+| `POST /api/episodes/:id/generate-batch` | 只解析 `dryRun`；`scope` / `providerHint` 传了不报错也不生效；`dryRun:true` 回 **200** 且形状不同；`batchId` 不落库 |
+| `POST /api/takes/:id/reject` | 不止改 take——拒掉**最后一个**候选会带动镜头走状态机；响应里的 `status` 是镜头状态 |
+| `GET /api/projects/:id/assets` | **路径被 §3 的一致性资产占用**，返回 `{ characters, locations, styles }`；`?kind=&cursor=&limit=` 全不解析。媒体资产列表没有端点 |
+| `GET /api/watch/:episodeId` | `hlsUrl`（M5）与 `subtitleUrl`（M3）**永远不出现** |
+| `GET /api/projects/:id/stats` | 四段形状**全部**与文档不同，且没有 `queue` 段（跨项目的在 `/api/stats/overview`）|
+| `GET /api/projects/:id/events` | **`:id` 不做过滤**——这个频道是全量广播，路径里的 id 只是历史形状 |
+| `POST /api/episodes/:id/render` | 见 §5：同步，回 200 不是 202 |
+
+> **为什么不逐条在下面标 ⛔。** 36 条未实现的散落在 §2–§5，逐行加标记会让代码块
+> 读不下去，而且每次实现一条就要改两处（代码块 + 这张表）。总账集中在这里，
+> 下面各节保持「目标 API 长什么样」的可读性——需要知道某条能不能用，回来查这张表。
 
 ## 2. 项目与剧本
 
@@ -203,6 +236,21 @@ GET /api/projects/:id/stats
         queue:  { depth, running }
       }
 ```
+
+### 6.1 管理面板端点（✅ 已实现，此前未写入本文档）
+
+```
+GET /api/stats/overview                   跨项目总览：totals / attention / queue / budget
+                                          （distribution 与 revenue 恒为 null，M4 接投放回传时填充）
+GET /api/stats/timeseries  ?range=30d|3m|6m|1y|all   成本与通过率时间序列，粒度由区间自动推导
+GET /api/projects/summary                 项目列表 + 集数/镜头/locked/成本聚合（避免前端 N+1）
+GET /api/attention                        跨项目待办：failed 与 review 的镜头（写死 limit 50）
+GET /api/events                           SSE 全量广播，管理面板一条连接分发给各标签
+```
+
+> 每个成本聚合都同时给出 `mockCostMicroUsd`——mock provider 的钱不是真花的钱，
+> 界面必须能把两者分开标。同理 `cost_estimated`：超时与「提交结果未知」记的是
+> 按价目表估的数，不是 provider 回报的真实计费（`05` §6.1）。
 
 ## 7. SSE
 

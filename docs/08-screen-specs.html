@@ -60,10 +60,82 @@
 <div class="label">生成质量</div>
 <a class="nav-item" href="13-character-assets.html"><span class="num">13</span><span>角色资产与单镜头 Prompt</span></a>
 </div>
-<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr/"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
+<div class="extra"><a class="nav-item" href="../README.md"><span class="num">↩</span><span>README</span></a><a class="nav-item" href="adr.html"><span class="num">ADR</span><span>架构决策记录</span></a></div></nav>
   <main class="content"><div class="doc-head"><div class="eyebrow">文档 08</div><h1>页面与交互规格</h1></div><blockquote>
 <p>Status: Draft v1 · 2026-08-10 · 依赖：<a href="07-design-system.html" title="前端设计系统"><code>07-design-system.md</code></a>、<a href="06-api-spec.html" title="控制面 API 规范"><code>06-api-spec.md</code></a></p>
 </blockquote>
+<h2 id="0.1-本文与已交付界面的对照">0.1 本文与已交付界面的对照<a aria-label="链接到此节" class="anchor" href="#0.1-本文与已交付界面的对照">#</a></h2>
+<blockquote>
+<p><strong>本文写在管理面板改版之前，七节里有三节的页面不存在、一节的路由变了。</strong>
+已确认的改版设计在 <code>docs/superpowers/specs/2026-08-15-web-admin-panel-design.md</code>
+（一次性工作文档，不进本文档站），本节是两者的对照表。</p>
+</blockquote>
+<p>实际路由只有 6 条（路由组 <code>(admin)</code> / <code>(studio)</code> / <code>(watch)</code> 不进 URL）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>实际路由</th>
+<th>是什么</th>
+<th>对应本文</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/</code></td>
+<td>工作台：跨项目总览、待办、趋势</td>
+<td>⚠️ 本文没写。它吸收了 §6 洞察页的经营指标</td>
+</tr>
+<tr>
+<td><code>/projects/[id]</code></td>
+<td>分集列表 + 项目概览</td>
+<td>⚠️ 本文没写。改版把「分集」提为一级导航</td>
+</tr>
+<tr>
+<td><code>/episodes/[id]</code></td>
+<td>镜头网格 + 镜头抽屉</td>
+<td>§2 分镜页，但<strong>路由从 <code>/projects/[id]/storyboard</code> 变成了这个</strong></td>
+</tr>
+<tr>
+<td><code>/projects/[id]/assets</code></td>
+<td>一致性资产（只读）</td>
+<td>§3 资产页，只读半边</td>
+</tr>
+<tr>
+<td><code>/projects/[id]/review</code></td>
+<td>选片页</td>
+<td>§4</td>
+</tr>
+<tr>
+<td><code>/watch/[episodeId]</code></td>
+<td>播放页</td>
+<td>§7</td>
+</tr>
+</tbody>
+</table></div>
+<p>本文中<strong>没有对应页面</strong>的三节：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>本文小节</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>§1 剧本页 <code>/projects/[id]/script</code></td>
+<td>⛔ 不存在。依赖 <code>/api/ai/*</code>（整组未实现），属剧本产线，不在 M1</td>
+</tr>
+<tr>
+<td>§5 剪辑页 <code>/projects/[id]/timeline</code></td>
+<td>⛔ 不存在。M3（时间线读写端点也还没有）</td>
+</tr>
+<tr>
+<td>§6 洞察页 <code>/projects/[id]/insights</code></td>
+<td>⛔ 该路由不存在；它的指标已被工作台 <code>/</code> 吸收</td>
+</tr>
+</tbody>
+</table></div>
+<p>下面各节的布局、交互与空态规格仍然有效——<strong>变的是它们挂在哪个 URL 上，不是长什么样</strong>。</p>
 <h2 id="0.-全局框架">0. 全局框架<a aria-label="链接到此节" class="anchor" href="#0.-全局框架">#</a></h2>
 <div class="codeblock is-diagram"><pre><code>┌──────────────────────────────────────────────────────────────────────┐
 │ TOPBAR                                                               │
@@ -305,7 +377,8 @@ Provider × 镜头类型 的每可用镜头成本（越低越好）
 </tbody>
 </table></div>
 <p>剪辑页在小屏不提供编辑——精细 trim 在触屏上做不好，与其做个残废版本不如明确不提供。</p><nav class="pager"><a href="07-design-system.html"><div class="dir">← 上一篇</div><div class="name">07 · 前端设计系统</div></a><a class="next" href="09-python-worker.html"><div class="dir">下一篇 →</div><div class="name">09 · Python 生成 Worker 与远程 GPU 部署</div></a></nav></main>
-  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#0.-全局框架">0. 全局框架</a>
+  <aside class="toc"><div class="label">本页目录</div><a class="lvl-2" href="#0.1-本文与已交付界面的对照">0.1 本文与已交付界面的对照</a>
+<a class="lvl-2" href="#0.-全局框架">0. 全局框架</a>
 <a class="lvl-2" href="#1.-剧本页-projectsidscript">1. 剧本页 /projects/[id]/script</a>
 <a class="lvl-2" href="#2.-分镜页-projectsidstoryboard-主战场">2. 分镜页 /projects/[id]/storyboard ★ 主战场</a>
 <a class="lvl-2" href="#3.-资产页-projectsidassets">3. 资产页 /projects/[id]/assets</a>

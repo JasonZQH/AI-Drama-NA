@@ -33,6 +33,13 @@ flowchart TD
 
 拆成多队列而不是一个大队列的理由：**并发度需求完全不同**。`q:generate` 受 provider 配额约束（可能只有 4），`q:ingest` 是 IO 密集（可以 20），`q:render` 是 CPU 密集（等于核数）。混在一起就只能取最小值，浪费吞吐。
 
+> **图上的队列，代码里跑着四个，而「没跑」有两种，落到代码上完全不同。**
+>
+> - **跑着的四个**：`q:generate` / `q:poll` / `q:ingest` / `q:notify`——队列、生产者、Worker 三样齐全（`apps/control/src/worker.ts`）。
+> - **`q:eval` 是一个空队列**：`Queue` 对象建了、`EvalJobData` 类型也有，但**零生产者、零消费者**。这比「不存在」更能骗人——有人去查队列深度，看到 0 会以为是没积压。M6 随自动评测一并接上。
+> - **`q:render` 压根没建**：`queues.ts` 里有一段注释明说「要到 media worker 存在时才有消费者，现在不定义」。渲染当前走同步 HTTP（`POST /api/episodes/:id/render`，见 `06-api-spec.md` §5）。
+> - **`q:tts` 同 `q:render`**，M3 启用。
+
 ## 3. 并发控制：三层限流
 
 ```mermaid
@@ -43,7 +50,11 @@ flowchart TD
     L1 --> L2 --> L3
 ```
 
-BullMQ 用 `Worker` 的 `concurrency` 实现第 ①③ 层；第 ② 层用 **BullMQ Group / 自建信号量**按 `providerId` 分组限流。
+第 ① 层就是 BullMQ `Worker` 的 `concurrency`（`worker.ts` 读 `MAX_GLOBAL_CONCURRENT`，默认 32），外加一个令牌桶防瞬时打爆。
+
+第 ② 层**不是 BullMQ Group，是自建的 Redis 计数器信号量**（`queue/semaphore.ts`）——provider 配额必须跨进程有效，否则起两个 worker 就等于把配额翻倍，直接触发对方限流。拿不到槽位就延时重排、绝不阻塞 worker 槽位；槽位在**提交完成**后释放：占的是「并发提交数」，不是「并发生成数」。
+
+> ⏳ **第 ③ 层项目配额尚未实现。** 代码里只有一个全局 `concurrency`，没有任何按 `projectId` 的限流，`.env.example` 也只有 `MAX_GLOBAL_CONCURRENT`。所以图上那句「防止单项目饿死其他项目」目前**不成立**：两个项目同时批量生成，谁先入队谁占满全局槽位。只有一个项目在跑时这个洞不疼，所以留到真有第二个项目再说。
 
 ```ts
 const generateWorker = new Worker<GenerateJobData>('q:generate', handler, {
@@ -185,10 +196,11 @@ flowchart LR
 **预算闸门**在项目级：
 
 ```ts
+// pipeline/batch.ts —— 以代码为准，这里是照抄
 export interface BudgetPolicy {
-  projectDailyLimitMicroUsd: number
-  episodeLimitMicroUsd:      number
-  onExceed: 'block' | 'warn' | 'downgrade_provider'
+  readonly dailyLimitMicroUsd: number   // 项目级日限额；注意字段名里没有 project 前缀
+  readonly onExceed: 'block' | 'warn'   // ⏳ 'downgrade_provider' 是目标态，见下
+  // ⏳ readonly episodeLimitMicroUsd: number   // 单集限额，尚未实现，见下
 }
 ```
 
