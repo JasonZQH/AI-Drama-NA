@@ -8,8 +8,8 @@ The only directory permitted to import a vendor SDK. Everything upstream speaks 
 |---|---|
 | `mock.ts` | `MockProvider` — the reference implementation. |
 | `registry.ts` | Builds the provider pool from env; resolves by id. |
-| `contract.spec.ts` | The suite **every** provider must pass. |
-| `mock.test.ts` | Mock-specific behaviour (determinism, injection). |
+| `contractSuite.ts` | The suite **every** provider must pass. Exports functions only — it does not register itself. |
+| `mock.test.ts` | Mock-specific behaviour (determinism, injection), and where the suite is registered for mock. |
 
 The import restriction is enforced by `no-restricted-imports` in `eslint.config.js`. It is a lint failure, not a code-review norm — vendor coupling leaks quietly otherwise, and by the time you notice, switching providers means touching thirty files.
 
@@ -46,21 +46,32 @@ It is the load-bearing piece of constraint C3: full pipeline on a Mac, no GPU, n
 - **Is deterministic on demand.** `MOCK_SEED_DETERMINISTIC=1` derives every roll from the seed — same input, same fixture, no random failures.
 - **Accepts injected failures** through `providerParams.mock.failFirstAttempt`. `providerParams` is the spec's documented escape hatch, so e2e gets a guaranteed retry without gambling on a 15% dice roll.
 
-## `contract.spec.ts`
+## `contractSuite.ts`
 
 A shared suite, not a mock test:
 
 ```ts
-runContractSuite('vidu', () => new ViduProvider(cfg))
+runContractSuite('openrouter:google/veo-3.1', () => new OpenRouterProvider(cfg), {
+  timeoutMs: 15 * 60_000, // also becomes drain()'s deadline — see below
+  cancelEffective: false, // if the vendor has no cancel endpoint
+})
 ```
 
-It checks idempotent `submit`, the `PollOutcome` union, failure mapping, capability enforcement in `validate`, and cost sanity. A provider that has not passed it is not finished. Cloud adapters will run it against recorded fixtures (nock/msw) so CI never spends real money.
+It checks idempotent `submit`, the `PollOutcome` union, capability consistency, cancellation, and cost sanity. A provider that has not passed it is not finished.
+
+Two things this file is deliberately shaped around, both of which cost real money when you get them wrong:
+
+**`timeoutMs` sets two clocks, not one.** It is `drain()`'s deadline *and* the vitest suite timeout. Vitest's default `testTimeout` is 5000 ms, so raising only the drain deadline just gets the test killed at 5 s — after `submit` has already billed.
+
+**Only 3 cases submit anything.** Capability consistency runs through `validate()` (which the contract requires to be IO-free), and the two cost assertions share one submission. Proving a declared mode works by submitting to it costs one abandoned billable generation per mode per model entry, and proves less than the `validate` check does.
+
+Failure-mapping cases live in a **separate** export, `runMockFailureSuite`, because they inject failures through `providerParams.mock.failFirstAttempt` — a field only `mock.ts` reads. A cloud adapter physically cannot register that half. Recorded fixtures for cloud adapters land with the first cloud adapter (M1 P5); until then the guard against spending in CI is the outbound-network block in `vitest.setup.ts`.
 
 ## Adding a provider
 
 1. Implement `VideoProvider` in this directory. SDK imports are legal only here.
 2. Register it in `registry.ts`, gated on its env credentials — unconfigured providers must not enter the pool. `buildProviderPool` currently returns mock only; cloud adapters land in M1, self-host in M2.
-3. Run `contract.spec.ts` against it.
+3. Run `runContractSuite` against it from its own `*.test.ts`.
 4. Map its failure modes into `FailureCode`, and decide retryability for each. Self-hosted engines bring shapes the cloud APIs do not have — VRAM OOM (retryable at lower resolution), a missing custom node or a workflow JSON that does not match the image tag (never retryable; it needs a rebuild).
 
 Do not create empty adapter classes ahead of time. Scaffolding with no implementation only pretends the provider is supported.

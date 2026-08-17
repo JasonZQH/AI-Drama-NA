@@ -61,6 +61,6 @@ Every arrow crossing into `providers/` or `storage/` is an interface, not a conc
 
 - `*.test.ts` — pure unit, no infrastructure. `pnpm test`.
 - `*.int.test.ts` — real Postgres, Redis, MinIO. `pnpm test:int`.
-- `providers/contract.spec.ts` — the shared suite every provider must pass.
+- `providers/contractSuite.ts` — the shared suite every provider must pass.
 
 Integration tests assume the seeded demo project exists and that **no queue worker is running**. A live `worker.js` will drain the queues underneath them and produce confusing failures.

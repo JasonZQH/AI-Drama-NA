@@ -38,4 +38,8 @@ if (process.env['RECORD'] !== '1') {
   }
 }
 
-export default defineConfig({})
+export default defineConfig({
+  // 摘掉 key 只挡住「用配好的 key 花钱」；出网拦截挡的是写死的 key、名字不同的
+  // 变量、以及本该零 IO 的 validate() 偷发请求。理由见 vitest.setup.ts
+  test: { setupFiles: ['./vitest.setup.ts'] },
+})

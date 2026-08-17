@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MockProvider, fixturePathFor } from './mock.js'
-import { makeRequest } from './contract.spec.js'
+import { makeRequest, runContractSuite, runMockFailureSuite } from './contractSuite.js'
 import { buildProviderPool, resolveProvider } from './registry.js'
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
@@ -90,3 +90,17 @@ describe('Provider 池（04 §6）', () => {
     expect(p.id).toBe('mock')
   })
 })
+
+/*
+ * 契约套件在这里注册，而不是在 contractSuite.ts 末尾自注册。
+ *
+ * 自注册 + 本文件的 `import { makeRequest }` = 整套用例跑两遍：vitest 收集
+ * 本文件时会重新求值那个模块，顶层的 describe 于是又进了一遍本文件的树。
+ * 20 条里 10 条是影子，改坏实现时红两次、看起来像两个 bug。
+ *
+ * 延迟压到 0 让它跑得快；失败率归零，避免随机注入干扰断言。
+ */
+const fast = () => new MockProvider({ latencyScale: 0, failureRate: 0 })
+
+runContractSuite('MockProvider', fast)
+runMockFailureSuite('MockProvider', fast)
