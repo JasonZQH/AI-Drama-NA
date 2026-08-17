@@ -34,7 +34,7 @@ const Uuid = z.object({ id: z.string().uuid() })
  */
 async function applyTransition(deps: ApiDeps, shotId: string, event: ShotEvent): Promise<{ next: string }> {
   const r = await applyShotTransition(
-    { db: deps.db, queues: deps.queues, provider: deps.providers[0]!, maxAttempts: deps.maxAttempts },
+    { db: deps.db, queues: deps.queues, providers: deps.providers, maxAttempts: deps.maxAttempts },
     shotId,
     event,
   )

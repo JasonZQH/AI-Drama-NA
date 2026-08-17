@@ -130,6 +130,7 @@ function counting(p: VideoProvider): { provider: VideoProvider; submits: () => n
   return {
     provider: {
       id: p.id,
+      modelId: p.modelId,
       capabilities: p.capabilities,
       validate: (r) => p.validate(r),
       estimateCost: (r) => p.estimateCost(r),
@@ -284,7 +285,7 @@ describe('每行至多 submit 一次（花钱的不变量）', () => {
 })
 
 describe('状态迁移是原子的（同一镜头不会被并发付两次钱）', () => {
-  const tdeps = (d: typeof db) => ({ db: d, queues, provider, maxAttempts: 4 })
+  const tdeps = (d: typeof db) => ({ db: d, queues, providers: [provider], maxAttempts: 4 })
 
   const countJobs = async (): Promise<number> =>
     (
@@ -503,11 +504,137 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
   })
 })
 
+describe('路由器落地（04 §5 第 1、3 步）', () => {
+  const tdeps = () => ({ db, queues, providers: [provider], maxAttempts: 4 })
+
+  async function armShot(attemptCount: number, over: Record<string, unknown> = {}): Promise<void> {
+    await db
+      .update(s.shots)
+      .set({ status: 'ready', attemptCount, selectedTakeId: null, ...over })
+      .where(eq(s.shots.id, shotId))
+  }
+
+  const lastJob = async () =>
+    (
+      await db
+        .select()
+        .from(s.generationJobs)
+        .where(eq(s.generationJobs.shotId, shotId))
+        .orderBy(desc(s.generationJobs.createdAt))
+        .limit(1)
+    )[0]
+
+  /**
+   * `model_id` 此前硬编码成 `'mock-v1'`——ledger 里每一笔真实花费的模型名都会是
+   * mock 的，而 `gj_analytics_idx` 正是按 (provider_id, model_id) 建的。
+   * M1 验收第 1 条要的就是「成本可归因」。
+   */
+  it('model_id 来自 provider 而不是硬编码', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 90)
+
+    /*
+     * **必须用一个 modelId ≠ 'mock-v1' 的 provider**，否则这条测不出东西：
+     * MockProvider 的 modelId 恰好就是 'mock-v1'，硬编码与读属性产出同一个值，
+     * 把改动整个回退它照样绿（已实测）。同一类陷阱本文件里踩过两次。
+     */
+    const renamed: VideoProvider = {
+      id: provider.id,
+      modelId: 'veo-3.1-probe',
+      capabilities: provider.capabilities,
+      validate: (r) => provider.validate(r),
+      estimateCost: (r) => provider.estimateCost(r),
+      submit: (r) => provider.submit(r),
+      poll: (h) => provider.poll(h),
+      cancel: (h) => provider.cancel(h),
+      health: () => provider.health(),
+    }
+
+    const r = await applyShotTransition({ ...tdeps(), providers: [renamed] }, shotId, {
+      type: 'generate.requested',
+    })
+    expect(r?.ok).toBe(true)
+
+    const job = await lastJob()
+    expect(job!.modelId).toBe('veo-3.1-probe')
+    expect(job!.providerId).toBe(provider.id)
+    await queues.generate.drain(true)
+  })
+
+  /**
+   * 05 §5.2 开篇写着「同样的参数重试毫无意义，必须改变输入」，而此前每次重试
+   * 用的是完全相同的 seed——一个镜头以同一组参数连撞 4 次，四笔钱买同一个结果。
+   */
+  it('重试换 seed：第一次不带，第二次必须带且与上一次不同', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 91)
+    await applyShotTransition(tdeps(), shotId, { type: 'generate.requested' })
+    const first = await lastJob()
+
+    // 手动推到下一次 attempt（真实路径由 fail() 驱动，这里只验参数变化）
+    await armShot(first!.attempt)
+    await applyShotTransition(tdeps(), shotId, { type: 'generate.requested' })
+    const second = await lastJob()
+
+    expect(second!.attempt).toBe(first!.attempt + 1)
+    /*
+     * 断言的是**两次连续尝试的输入必须不同**，不是「第几次带 seed」。
+     * 后者依赖 attempt 编号，而这个文件用的是 900+ 的保留号段，测不到真实的
+     * attempt 1。前者才是 05 §5.2 那条「同样的参数重试毫无意义」的可执行形式。
+     */
+    expect(second!.seed, 'attempt ≥ 2 必须换 seed').not.toBeNull()
+    expect(second!.seed, '连续两次尝试的 seed 不能相同——否则四笔钱买同一个结果').not.toBe(first!.seed)
+    await queues.generate.drain(true)
+  })
+
+  /** `shots.provider_hint` 此前零读取——加了路由器它才第一次有意义 */
+  it('providerHint 被读取；指向池外的 id 时落回自动路由而不是卡死', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 95, { providerHint: 'not-in-pool' })
+    const r = await applyShotTransition(tdeps(), shotId, { type: 'generate.requested' })
+    expect(r?.ok, '过期的 hint 不该让镜头永久卡住').toBe(true)
+    expect((await lastJob())!.providerId).toBe(provider.id)
+    await db.update(s.shots).set({ providerHint: null }).where(eq(s.shots.id, shotId))
+    await queues.generate.drain(true)
+  })
+
+  it('池里没有能力匹配的 provider 时回 NO_PROVIDER，且不建行', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 97)
+    const before = (await db.select({ id: s.generationJobs.id }).from(s.generationJobs)).length
+
+    // 时长超出 mock 的 10 秒上限 → validate 不过 → 无候选
+    await db.update(s.shots).set({ durationSec: '10.0' }).where(eq(s.shots.id, shotId))
+    // 显式构造：MockProvider 的方法在原型上，`{ ...provider }` 拿不到（同 counting 那条注释）
+    const incapable: VideoProvider = {
+      id: provider.id,
+      modelId: provider.modelId,
+      capabilities: provider.capabilities,
+      validate: () => ({ ok: false, reason: '超能力' }),
+      estimateCost: (r) => provider.estimateCost(r),
+      submit: (r) => provider.submit(r),
+      poll: (h) => provider.poll(h),
+      cancel: (h) => provider.cancel(h),
+      health: () => provider.health(),
+    }
+    const tooLong = { ...tdeps(), providers: [incapable] }
+    const r = await applyShotTransition(tooLong, shotId, { type: 'generate.requested' })
+
+    expect(r).toMatchObject({ ok: false, code: 'NO_PROVIDER' })
+    expect((await db.select({ id: s.generationJobs.id }).from(s.generationJobs)).length).toBe(before)
+    // 还原：seed 夹具那一镜是 4 秒，留着 10 秒会影响后面按时长估价的用例
+    await db.update(s.shots).set({ durationSec: '4.0' }).where(eq(s.shots.id, shotId))
+  })
+
+  afterAll(async () => {
+    await db
+      .update(s.shots)
+      .set({ status: 'ready', attemptCount: 0, selectedTakeId: null, providerHint: null })
+      .where(eq(s.shots.id, shotId))
+  })
+})
+
 describe('预算闸门下沉到唯一花钱入口', () => {
   const tdeps = (over: Partial<Parameters<typeof applyShotTransition>[0]> = {}) => ({
     db,
     queues,
-    provider,
+    providers: [provider],
     maxAttempts: 4,
     ...over,
   })

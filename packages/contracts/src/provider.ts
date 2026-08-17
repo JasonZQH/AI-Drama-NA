@@ -154,6 +154,21 @@ export type PollOutcome = ProviderProgress | GenerationResult | ProviderFailure
  */
 export interface VideoProvider {
   readonly id: string
+
+  /**
+   * 落进 `generation_jobs.model_id` 的值，用于成本归因。
+   *
+   * 为什么是 provider 的属性而不是每次调用传：池的单位是 **(provider, model)**
+   * 而不是 provider。OpenRouter 一家之下 Veo 3.1 有音频、Wan 没有，时长与分辨率
+   * 上限也各不相同——capabilities 是 per-model 的，所以一个 model 就是池里一个条目
+   * （`id = 'openrouter:google/veo-3.1'`）。这样路由器的能力过滤才有真实对象。
+   *
+   * 此前这个值在 `applyTransition` 里硬编码成 `'mock-v1'`，于是 ledger 里每一笔
+   * 真实花费的模型名都会是 mock 的，`gj_analytics_idx` 那个 (provider_id, model_id)
+   * 索引直接失效——而 M1 验收要的正是「成本可归因」。
+   */
+  readonly modelId: string
+
   readonly capabilities: ProviderCapabilities
 
   /** 提交前检查：能力不匹配时快速失败，不浪费一次调用，且不得发起网络请求 */

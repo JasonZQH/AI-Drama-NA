@@ -268,6 +268,46 @@ export interface ProviderProgress {
 
 export function routeProvider(ctx: RoutingContext, pool: VideoProvider[]): VideoProvider
 </code></pre></div>
+<blockquote>
+<p><strong>M1 只落地第 1、3 步</strong>（<code>apps/control/src/providers/route.ts</code>）。另外三步现在没有对象：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 硬约束过滤</td>
+<td>✅ <code>providerHint</code> + <code>validate()</code> 能力过滤。⏳ health 未做——见下</td>
+</tr>
+<tr>
+<td>2 mature 只路由到无服务端过滤的</td>
+<td>⛔ 池里没有自部署，issue #15</td>
+</tr>
+<tr>
+<td>3 失败规避</td>
+<td>✅ 在某家被 <code>content_filtered</code> 过就排到最后</td>
+</tr>
+<tr>
+<td>4 统计排序</td>
+<td>⛔ 依赖不存在的物化视图，且样本不足 30 必走退化分支——M1 期间 100% 如此</td>
+</tr>
+<tr>
+<td>5 预算闸门</td>
+<td>✅ 已在 <code>pipeline/applyTransition.ts</code> 下沉到唯一花钱入口，路由器不重复实现</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong><code>RoutingContext</code> / <code>ProviderPriors</code> 都没有建。</strong> 下面那个签名是目标态；实际的
+上下文只有三个字段（<code>providerHint</code> / <code>filteredBy</code> / 探针请求），因为第 4 步不做就
+不需要 priors，第 5 步已经在别处。给一个不存在的输入建统计管道是纯浪费。</p>
+<p><strong>health 刻意不做</strong>：主动探测意味着每次路由决策一次网络调用，而池里只有一个
+provider 时它挡不掉任何东西。真要做也不该是主动探测——用 Redis 里的 per-provider
+连续失败计数（<code>queue/semaphore.ts</code> 有现成模式），由已经在发生的 poll 失败驱动。</p>
+<p>路由器是<strong>纯同步零 IO</strong> 的，失败历史由调用方查好传进来，所以它能被单测穷举。</p>
+</blockquote>
 <p>决策顺序（<strong>规则优先，统计其次</strong>——先保证正确，再谈优化）：</p>
 <ol>
 <li><strong>硬约束过滤</strong>：<code>shot.providerHint</code> 指定则直接用；否则筛掉 <code>validate()</code> 不通过、<code>health()</code> 不健康、能力不匹配（如需要 <code>supportsFirstLastFrame</code> 但不支持）的。</li>

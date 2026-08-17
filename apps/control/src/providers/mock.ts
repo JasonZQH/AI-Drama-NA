@@ -78,6 +78,7 @@ function mockStage(frac: number): GenStage {
 
 export class MockProvider implements VideoProvider {
   readonly id = 'mock'
+  readonly modelId = 'mock-v1'
 
   readonly capabilities: ProviderCapabilities = {
     modes: ['t2v', 'i2v', 'ref2v', 'extend'],
