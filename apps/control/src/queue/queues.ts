@@ -23,7 +23,6 @@ export const QUEUE = {
   generate: 'generate',
   poll: 'poll',
   ingest: 'ingest',
-  eval: 'eval',
   notify: 'notify',
 } as const
 
@@ -32,6 +31,9 @@ export type QueueName = (typeof QUEUE)[keyof typeof QUEUE]
 /**
  * `q:render` 要到 media worker 存在时才有消费者（PR 11），现在不定义——
  * 没有消费者的队列只会让人以为这里已经支持了。`q:tts` 同理，留到 M3。
+ *
+ * `q:eval` 曾经违反了上面这条规矩：Queue 实例和 EvalJobData 都建了，
+ * 生产者和消费者都是零。自动质量闸门是 M1+ 的事，那时再建。
  */
 
 export interface GenerateJobData {
@@ -55,13 +57,9 @@ export interface IngestJobData {
   readonly storageKey?: string
 }
 
-export interface EvalJobData {
-  readonly takeId: string
-  readonly assetStorageKey: string
-}
-
 export interface NotifyJobData {
-  readonly projectId: string
+  // 此前还有一个 projectId，两个生产者都写死 '' 且无人读取——SSE 是全量广播，
+  // 没有按项目路由这回事（sse.ts）。真要分频道时它是新增字段，不是复活这个
   readonly payload: unknown
 }
 
@@ -96,7 +94,6 @@ export interface Queues {
   readonly generate: Queue<GenerateJobData>
   readonly poll: Queue<PollJobData>
   readonly ingest: Queue<IngestJobData>
-  readonly eval: Queue<EvalJobData>
   readonly notify: Queue<NotifyJobData>
   close(): Promise<void>
 }
@@ -106,17 +103,15 @@ export function createQueues(connection: ConnectionOptions): Queues {
   const generate = new Queue<GenerateJobData>(QUEUE.generate, opts)
   const poll = new Queue<PollJobData>(QUEUE.poll, opts)
   const ingest = new Queue<IngestJobData>(QUEUE.ingest, opts)
-  const evalQ = new Queue<EvalJobData>(QUEUE.eval, opts)
   const notify = new Queue<NotifyJobData>(QUEUE.notify, opts)
 
   return {
     generate,
     poll,
     ingest,
-    eval: evalQ,
     notify,
     async close() {
-      await Promise.all([generate.close(), poll.close(), ingest.close(), evalQ.close(), notify.close()])
+      await Promise.all([generate.close(), poll.close(), ingest.close(), notify.close()])
     },
   }
 }

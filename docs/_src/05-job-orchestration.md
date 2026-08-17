@@ -36,7 +36,7 @@ flowchart TD
 > **图上的队列，代码里跑着四个，而「没跑」有两种，落到代码上完全不同。**
 >
 > - **跑着的四个**：`q:generate` / `q:poll` / `q:ingest` / `q:notify`——队列、生产者、Worker 三样齐全（`apps/control/src/worker.ts`）。
-> - **`q:eval` 是一个空队列**：`Queue` 对象建了、`EvalJobData` 类型也有，但**零生产者、零消费者**。这比「不存在」更能骗人——有人去查队列深度，看到 0 会以为是没积压。M6 随自动评测一并接上。
+> - **`q:eval` ⛔ 已删除，不是「建好等接」**：它曾经是个空队列（`Queue` 对象和 `EvalJobData` 类型都有，零生产者零消费者），这比「不存在」更能骗人——有人去查队列深度，看到 0 会以为是没积压。已按 `q:render` 的同一条规矩删掉，M6 随自动评测一并新建。
 > - **`q:render` 压根没建**：`queues.ts` 里有一段注释明说「要到 media worker 存在时才有消费者，现在不定义」。渲染当前走同步 HTTP（`POST /api/episodes/:id/render`，见 `06-api-spec.md` §5）。
 > - **`q:tts` 同 `q:render`**，M3 启用。
 
@@ -214,14 +214,19 @@ export interface BudgetPolicy {
 前端订阅 `GET /api/projects/:id/events`（SSE），控制面从 Redis pub/sub 转发。
 
 ```ts
+// ✅ 已交付：三种都有真实生产者
 type StudioEvent =
   | { type: 'shot.status',    shotId: string, status: ShotStatus }
   | { type: 'job.progress',   jobId: string, shotId: string, pct: number, etaMs?: number, stage?: GenStage }
-  | { type: 'take.created',   shotId: string, takeId: string, thumbUrl: string }
-  | { type: 'batch.progress', episodeId: string, done: number, total: number, failed: number }
-  | { type: 'cost.updated',   projectId: string, spentMicroUsd: number }
   | { type: 'error',          shotId?: string, code: FailureCode, message: string }
 ```
+
+> **⛔ 曾经还列过三种，已从契约里删除**：`take.created` / `batch.progress` / `cost.updated`。
+> 它们声明了、前端订阅了、`EpisodeView` 还为其中两种写好了分支，但**全仓零处发送**——
+> 声明了却没人发的事件比没有更糟，读代码的人会以为那条路已经通了。
+>
+> 它们也确实多余：面板是「收到任何事件就防抖重拉」的设计，`shot.status` 一发该刷的都刷了。
+> 要加回来，先有生产者。
 
 选 SSE 不选 WebSocket 的理由：进度是**单向广播**，SSE 够用且天然支持断线重连与 HTTP/2 多路复用，不需要维护双向连接的状态机。有交互需求（比如协同编辑）时再上 WS 不迟。
 

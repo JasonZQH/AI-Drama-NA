@@ -105,12 +105,10 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
           ...(e.stage ? { stage: e.stage } : {}),
         },
       }))
-    } else if (e.type === 'shot.status' || e.type === 'take.created') {
+    } else if (e.type === 'shot.status') {
       if (!shotIds.has(e.shotId)) return
       // 状态跃迁了就清掉这一镜的进度条——它已经不在生成中
       setProgress((p) => Object.fromEntries(Object.entries(p).filter(([k]) => k !== e.shotId)))
-      scheduleReload()
-    } else if (e.type === 'batch.progress' && e.episodeId === episodeId) {
       scheduleReload()
     }
   })

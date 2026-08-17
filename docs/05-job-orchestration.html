@@ -93,7 +93,7 @@
 <p><strong>图上的队列，代码里跑着四个，而「没跑」有两种，落到代码上完全不同。</strong></p>
 <ul>
 <li><strong>跑着的四个</strong>：<code>q:generate</code> / <code>q:poll</code> / <code>q:ingest</code> / <code>q:notify</code>——队列、生产者、Worker 三样齐全（<code>apps/control/src/worker.ts</code>）。</li>
-<li><strong><code>q:eval</code> 是一个空队列</strong>：<code>Queue</code> 对象建了、<code>EvalJobData</code> 类型也有，但<strong>零生产者、零消费者</strong>。这比「不存在」更能骗人——有人去查队列深度，看到 0 会以为是没积压。M6 随自动评测一并接上。</li>
+<li><strong><code>q:eval</code> ⛔ 已删除，不是「建好等接」</strong>：它曾经是个空队列（<code>Queue</code> 对象和 <code>EvalJobData</code> 类型都有，零生产者零消费者），这比「不存在」更能骗人——有人去查队列深度，看到 0 会以为是没积压。已按 <code>q:render</code> 的同一条规矩删掉，M6 随自动评测一并新建。</li>
 <li><strong><code>q:render</code> 压根没建</strong>：<code>queues.ts</code> 里有一段注释明说「要到 media worker 存在时才有消费者，现在不定义」。渲染当前走同步 HTTP（<code>POST /api/episodes/:id/render</code>，见 <a href="06-api-spec.html" title="控制面 API 规范"><code>06-api-spec.md</code></a> §5）。</li>
 <li><strong><code>q:tts</code> 同 <code>q:render</code></strong>，M3 启用。</li>
 </ul>
@@ -316,14 +316,19 @@ export interface BudgetPolicy {
 <p>超限时 <code>block</code> 会让批量入队直接失败并在 UI 弹出，而不是安静地烧钱。开发期默认 <code>projectDailyLimitMicroUsd = 5_000_000</code>（$5），<strong>防止一次误操作把整批任务打到云 API</strong>。这条在 M1 接真实 provider 时尤其重要。</p>
 <h2 id="7.-实时进度sse">7. 实时进度：SSE<a aria-label="链接到此节" class="anchor" href="#7.-实时进度sse">#</a></h2>
 <p>前端订阅 <code>GET /api/projects/:id/events</code>（SSE），控制面从 Redis pub/sub 转发。</p>
-<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">type StudioEvent =
+<div class="codeblock"><span class="lang">ts</span><pre><code class="language-ts">// ✅ 已交付：三种都有真实生产者
+type StudioEvent =
   | { type: 'shot.status',    shotId: string, status: ShotStatus }
   | { type: 'job.progress',   jobId: string, shotId: string, pct: number, etaMs?: number, stage?: GenStage }
-  | { type: 'take.created',   shotId: string, takeId: string, thumbUrl: string }
-  | { type: 'batch.progress', episodeId: string, done: number, total: number, failed: number }
-  | { type: 'cost.updated',   projectId: string, spentMicroUsd: number }
   | { type: 'error',          shotId?: string, code: FailureCode, message: string }
 </code></pre></div>
+<blockquote>
+<p><strong>⛔ 曾经还列过三种，已从契约里删除</strong>：<code>take.created</code> / <code>batch.progress</code> / <code>cost.updated</code>。
+它们声明了、前端订阅了、<code>EpisodeView</code> 还为其中两种写好了分支，但<strong>全仓零处发送</strong>——
+声明了却没人发的事件比没有更糟，读代码的人会以为那条路已经通了。</p>
+<p>它们也确实多余：面板是「收到任何事件就防抖重拉」的设计，<code>shot.status</code> 一发该刷的都刷了。
+要加回来，先有生产者。</p>
+</blockquote>
 <p>选 SSE 不选 WebSocket 的理由：进度是<strong>单向广播</strong>，SSE 够用且天然支持断线重连与 HTTP/2 多路复用，不需要维护双向连接的状态机。有交互需求（比如协同编辑）时再上 WS 不迟。</p>
 <p>节流：<code>job.progress</code> 每个 job 最多 1 秒 1 条，服务端合并后再发，避免几十个任务同时刷把浏览器打爆。</p>
 <p><strong>发出点是 <code>handlePoll</code> 的 running 分支</strong>：<code>provider.poll()</code> 返回的 <code>progressPct</code> / <code>stage</code> 必须转成事件，否则整条链路是死的——契约有、节流有、前端进度条在等，就是没人发。这个洞真实存在过，mock 跑得太快所以一直没暴露。</p>

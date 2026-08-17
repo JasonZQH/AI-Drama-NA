@@ -368,11 +368,15 @@ GET /api/events                           SSE 全量广播，管理面板一条�
 data: {"shotId":"...","status":"review","ts":"2026-08-10T00:31:02Z"}
 
 event: job.progress
-data: {"jobId":"...","shotId":"...","pct":62,"etaMs":48000}
+data: {"jobId":"...","shotId":"...","pct":62,"etaMs":48000,"stage":"denoising"}
 
-event: batch.progress
-data: {"episodeId":"...","done":18,"total":24,"failed":1}
+event: error
+data: {"shotId":"...","code":"content_filtered","message":"..."}
 </code></pre></div>
+<blockquote>
+<p>⚠️ 路径里的 <code>:id</code> <strong>不参与过滤</strong>——<code>GET /api/events</code> 与 <code>GET /api/projects/:id/events</code>
+共用同一个 handler，频道从来就是全量广播（<code>routes/sse.ts</code>）。按项目筛选目前在客户端做。</p>
+</blockquote>
 <p>事件负载类型即 <a href="05-job-orchestration.html" title="任务编排：队列、重试、并发与记账"><code>05-job-orchestration.md</code></a> §7 的 <code>StudioEvent</code>。客户端用 <code>EventSource</code>，断线自带重连；服务端每 20s 发一次 <code>: keepalive</code> 注释帧防中间层超时断连。</p>
 <h2 id="8.-错误规范">8. 错误规范<a aria-label="链接到此节" class="anchor" href="#8.-错误规范">#</a></h2>
 <div class="codeblock"><span class="lang">json</span><pre><code class="language-json">{
