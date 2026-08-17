@@ -15,6 +15,7 @@ import {
 } from './orchestrator.js'
 import { createConnection, createQueues, pollDelayMs } from './queues.js'
 import { spentToday } from '../pipeline/batch.js'
+import { applyShotTransition, type TransitionQueues } from '../pipeline/applyTransition.js'
 import { inFlight, release, reset, tryAcquire } from './semaphore.js'
 
 /**
@@ -29,6 +30,16 @@ const DB_URL = process.env['DATABASE_URL'] ?? 'postgresql://drama:drama@localhos
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379'
 
 const { db, client } = createDb(DB_URL, 3)
+
+/**
+ * 第二个连接池，专给并发用例。
+ *
+ * **不能只靠一个池 + `Promise.all`**：postgres.js 会把并发查询串到同一条连接上
+ * 顺序执行，于是第二个调用在读的时候已经看得见第一个的结果——这样的用例把被测
+ * 逻辑整个删掉也照样绿（PR-A 实测过一次，见「每行至多 submit 一次」那组的注释）。
+ * 两个池 = 两条 TCP 连接 = 两个真正并行的 Postgres 事务。
+ */
+const other = createDb(DB_URL, 1)
 const redis = createConnection(REDIS_URL)
 const queues = createQueues({ url: REDIS_URL })
 const provider = new MockProvider({ latencyScale: 0, failureRate: 0 })
@@ -84,6 +95,7 @@ afterAll(async () => {
   await queues.close()
   redis.disconnect()
   await client.end()
+  await other.client.end()
 })
 
 /** 每个用例用独立 attempt 号，避开 UNIQUE(shot_id, attempt) */
@@ -266,6 +278,201 @@ describe('每行至多 submit 一次（花钱的不变量）', () => {
     const [row] = await db.select().from(s.generationJobs).where(eq(s.generationJobs.id, id))
     expect(row!.failureCode).toBeNull()
     expect(row!.status).toBe('queued')
+  })
+})
+
+describe('状态迁移是原子的（同一镜头不会被并发付两次钱）', () => {
+  const tdeps = (d: typeof db) => ({ db: d, queues, providerId: 'mock', maxAttempts: 4 })
+
+  const countJobs = async (): Promise<number> =>
+    (
+      await db
+        .select({ id: s.generationJobs.id })
+        .from(s.generationJobs)
+        .where(eq(s.generationJobs.shotId, shotId))
+    ).length
+
+  /** 把 attemptCount 落在本文件的号段里，免得建出的 job 撞别的测试文件 */
+  async function armShot(attemptCount: number): Promise<void> {
+    await db
+      .update(s.shots)
+      .set({ status: 'ready', attemptCount, selectedTakeId: null })
+      .where(eq(s.shots.id, shotId))
+  }
+
+  /**
+   * 行锁本身。**这条才是本 PR 的防退化网。**
+   *
+   * 不要指望「两个 Promise.all 的迁移」能把竞态跑出来——实测两个独立连接池
+   * 也造不出危险交错，把 `.for('update')` 整个删掉，那种写法照样绿
+   * （probe 实测：有锁无锁的 results 与 jobs 完全一致）。同样的坑 PR-A 踩过一次。
+   *
+   * 所以直接钉机制：一个连接持锁不放，另一个的迁移必须被挡住；放锁之后
+   * 它才能继续，并且此时读到的是**提交后的新状态**，于是被状态机干净拒绝。
+   */
+  it('shot 行被锁住时，迁移要等锁释放并读到提交后的新状态', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 80)
+
+    let unlock!: () => void
+    const holding = new Promise<void>((r) => (unlock = r))
+    // A 持锁 + 改状态，模拟「另一个请求正在做一次迁移」，故意不提交
+    const holder = db.transaction(async (tx) => {
+      await tx.select().from(s.shots).where(eq(s.shots.id, shotId)).for('update')
+      await tx.update(s.shots).set({ status: 'generating' }).where(eq(s.shots.id, shotId))
+      await holding
+    })
+    await new Promise((r) => setTimeout(r, 150)) // 确保锁真的拿到了
+
+    const bDone = applyShotTransition(tdeps(other.db), shotId, { type: 'generate.requested' })
+    const raced = await Promise.race([
+      bDone.then(() => 'finished' as const),
+      new Promise<'blocked'>((r) => setTimeout(() => r('blocked'), 400)),
+    ])
+    expect(raced).toBe('blocked')
+
+    unlock()
+    await holder
+
+    /*
+     * 这一条断言才是区分点，「被阻塞」本身不是——没有 FOR UPDATE 时 B 的 SELECT
+     * 立刻读到旧的 'ready'，随后仍会卡在自己的 UPDATE 上，所以照样表现为「阻塞」。
+     * 差别在醒来之后：读了锁才会看到提交后的 'generating' 并干净拒绝；
+     * 没读锁则是拿着陈旧状态继续往下走——建一行 job（一笔钱）再把状态覆盖回去。
+     */
+    await expect(bDone).resolves.toMatchObject({ ok: false, from: 'generating' })
+    await queues.generate.drain(true)
+  })
+
+  /**
+   * 端到端的那一面：并发两次生成只该建一行 job。
+   *
+   * 坦白说这条**不区分**有没有行锁——两个调用即便都通过状态机，
+   * `UNIQUE(shot_id, attempt)` 也会兜住第二次（两边读到同一个 attemptCount，
+   * 算出同一个号）。留着是因为它断言的是最终结果，而上面那条断言的是机制；
+   * 真正的防退化靠上面那条。
+   */
+  it('并发 generate.requested：只建一行 job，另一个被状态机干净拒绝', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 50)
+    const before = await countJobs()
+
+    const [a, b] = await Promise.all([
+      applyShotTransition(tdeps(db), shotId, { type: 'generate.requested' }),
+      applyShotTransition(tdeps(other.db), shotId, { type: 'generate.requested' }),
+    ])
+
+    expect((await countJobs()) - before, '同一镜头并发生成建了两行 = 付了两次钱').toBe(1)
+
+    const ok = [a, b].filter((r) => r?.ok)
+    const rejected = [a, b].filter((r) => r !== null && !r.ok)
+    expect(ok).toHaveLength(1)
+    // 干净拒绝，而不是唯一约束抛出的裸 pg 错（那会变成 500）
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]).toMatchObject({ ok: false, from: 'generating' })
+
+    await queues.generate.drain(true)
+  })
+
+  it('并发 take.selected：只有一个能锁定，另一个从 locked 被拒', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 60)
+    // 造两个候选 take，模拟两次点击选不同的片
+    const jobId = await newJob()
+    const [asset] = await db.select({ id: s.assets.id }).from(s.assets).limit(1)
+    if (!asset) throw new Error('库里没有 asset，先跑一次 ingest 用例')
+    const takes = await db
+      .insert(s.takes)
+      .values([
+        { shotId, jobId, assetId: asset.id, status: 'candidate' },
+        { shotId, jobId, assetId: asset.id, status: 'candidate' },
+      ])
+      .returning({ id: s.takes.id })
+    await db.update(s.shots).set({ status: 'review' }).where(eq(s.shots.id, shotId))
+
+    const [a, b] = await Promise.all([
+      applyShotTransition(tdeps(db), shotId, { type: 'take.selected', takeId: takes[0]!.id }),
+      applyShotTransition(tdeps(other.db), shotId, { type: 'take.selected', takeId: takes[1]!.id }),
+    ])
+
+    expect([a, b].filter((r) => r?.ok)).toHaveLength(1)
+    const [shot] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
+    expect(shot!.status).toBe('locked')
+    // 选中的必须是赢的那一个，不能是两次写互相覆盖后的残留
+    expect([takes[0]!.id, takes[1]!.id]).toContain(shot!.selectedTakeId)
+
+    await db.delete(s.takes).where(
+      inArray(
+        s.takes.id,
+        takes.map((t) => t.id),
+      ),
+    )
+  })
+
+  /**
+   * 入队必须在事务提交之后。
+   *
+   * 在事务里发的话，回滚时队列条目不会跟着回滚——留下一条指向不存在的
+   * generation_jobs 行的任务。这里用唯一约束把事务打回来，断言队列干净。
+   */
+  it('事务回滚时不留下队列条目', async () => {
+    const attempt = TEST_ATTEMPT_BASE + 70
+    await armShot(attempt - 1) // 于是状态机会算出 attempt 这个号
+    // 先占掉这个号，让事务里的 INSERT 撞唯一约束
+    await createGenerationJob(db, {
+      shotId,
+      attempt,
+      providerId: 'mock',
+      modelId: 'mock-v1',
+      mode: 't2v',
+      promptText: 'occupied',
+    })
+    await queues.generate.drain(true)
+
+    await expect(applyShotTransition(tdeps(db), shotId, { type: 'generate.requested' })).rejects.toThrow()
+
+    const queued = await queues.generate.getJobs(['waiting', 'delayed', 'prioritized', 'active'])
+    expect(
+      queued.filter((j) => j.data.shotId === shotId),
+      '回滚了却留下队列条目',
+    ).toHaveLength(0)
+
+    // 状态机没跑完，镜头必须还在原地
+    const [shot] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
+    expect(shot!.status).toBe('ready')
+  })
+
+  /**
+   * 入队在事务**之后**这件事，靠上一条测不出来——那里唯一约束是在入队之前就抛的，
+   * 两种写法都走不到入队。所以反过来验：让入队自己失败。
+   *
+   * - 入队在事务里 → 抛出发生在事务内 → 回滚 → **一行 job 都不该有**
+   * - 入队在提交后 → 事务已落地 → job 行在、shot 已迁移，只是队列里没条目
+   *
+   * 后者正是我们要的：钱的账先落库，队列条目丢了由 reconcileOnBoot 捞回来
+   * （它的第一个分支就负责 queued + provider_job_ref 为空的行）。反过来
+   * 「因为 Redis 抖了就把已经决定好的状态迁移一起丢掉」要难恢复得多。
+   */
+  it('入队失败不回滚已提交的迁移——那正是 reconcile 负责的窗口', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 75)
+    const before = await countJobs()
+
+    const brokenQueues: TransitionQueues = {
+      generate: { add: () => Promise.reject(new Error('redis 抖了')) },
+      notify: queues.notify,
+    }
+
+    await expect(
+      applyShotTransition({ ...tdeps(db), queues: brokenQueues }, shotId, { type: 'generate.requested' }),
+    ).rejects.toThrow()
+
+    expect((await countJobs()) - before, '入队失败不该把已经提交的 job 行也回滚掉').toBe(1)
+    const [shot] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
+    expect(shot!.status).toBe('generating')
+  })
+
+  afterAll(async () => {
+    await db
+      .update(s.shots)
+      .set({ status: 'ready', attemptCount: 0, selectedTakeId: null })
+      .where(eq(s.shots.id, shotId))
   })
 })
 

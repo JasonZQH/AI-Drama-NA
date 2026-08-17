@@ -1,7 +1,7 @@
 import { TERMINAL_JOB_STATUSES } from '@ai-drama/contracts'
 import { and, eq, notInArray } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
-import type { Db } from '../db/client.js'
+import type { Db, DbOrTx } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { s3Key, type Storage } from '../storage/s3.js'
 
@@ -124,7 +124,7 @@ async function hashExisting(deps: IngestDeps, key: string): Promise<{ sha256: st
 
 /** 创建一条生成尝试。attempt 由 UNIQUE(shot_id, attempt) 物理保证不重复 */
 export async function createGenerationJob(
-  db: Db,
+  db: DbOrTx,
   input: {
     shotId: string
     attempt: number
