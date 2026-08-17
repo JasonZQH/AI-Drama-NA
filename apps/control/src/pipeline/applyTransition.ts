@@ -1,7 +1,8 @@
-import type { VideoProvider } from '@ai-drama/contracts'
+import type { GenerationRequest, VideoProvider } from '@ai-drama/contracts'
 import { and, eq } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
+import { routeProvider } from '../providers/route.js'
 import { createGenerationJob } from '../queue/ingest.js'
 import type { Queues } from '../queue/queues.js'
 import { budgetFromEnv, spentTodayForShot, type BudgetPolicy, type BudgetСheckResult } from './batch.js'
@@ -32,10 +33,13 @@ export interface TransitionDeps {
   readonly db: Db
   readonly queues: TransitionQueues
   /**
-   * 要整个 provider 而不只是它的 id：闸门下沉到这里之后需要 `estimateCost`
-   * 来算预留（provider 路由器落地时这个字段会换成一个解析函数）。
+   * 整个池，不是单个 provider。
+   *
+   * 「选哪个」由 `routeProvider` 在这里决定，然后落进 `generation_jobs.provider_id`
+   * ——Ledger 记的是「当时选了谁」，重放与恢复据此取回同一个实例。此前三个调用点
+   * 各自传 `providers[0]`，等于「路由」这件事根本没有发生过。
    */
-  readonly provider: VideoProvider
+  readonly providers: readonly VideoProvider[]
   readonly maxAttempts: number
   /** 不传则读 env。测试要压低日限额时传它，不必去改 process.env */
   readonly budget?: BudgetPolicy
@@ -49,7 +53,7 @@ export type ApplyResult =
        * 两种拒绝要分开：状态机拒绝是 400（用户点错了），预算拒绝是 402
        * （用户没点错，是钱不够）。混成一种的话 UI 说不清该让人做什么。
        */
-      readonly code: 'INVALID_TRANSITION' | 'BUDGET_EXCEEDED'
+      readonly code: 'INVALID_TRANSITION' | 'BUDGET_EXCEEDED' | 'NO_PROVIDER'
       readonly reason: string
       readonly from: string
       readonly budget?: BudgetСheckResult
@@ -116,15 +120,7 @@ export async function applyShotTransition(
             aspectRatio: '9:16' as const,
             fps: 24,
           }
-
-          /*
-           * 预算闸门就在这里，而不是在三个 caller 各写一遍。
-           *
-           * `enqueue.generation` 是全系统唯一的花钱入口：单镜 API、批量生成、
-           * 以及 fail() 里自动创建的下一次 attempt 全都经过它。此前闸门只挂在
-           * 批量路由上，后两条完全裸奔——一个镜头失败重试 4 次不过任何闸门。
-           */
-          const estimate = deps.provider.estimateCost({
+          const probe: GenerationRequest = {
             requestId: '00000000-0000-4000-8000-000000000000',
             shotId: e.shotId,
             mode: 't2v',
@@ -134,7 +130,53 @@ export async function applyShotTransition(
             priority: 'normal',
             providerParams: {},
             ...params,
+          }
+
+          /*
+           * 路由：**这里是全系统唯一决定「用哪个 provider」的地方。**
+           *
+           * 此前三个调用点各自传 `providers[0]`，等于路由这件事根本没发生过；
+           * 而池里一旦出现第二个 provider，`shots.provider_hint` 那一列仍会是零读取。
+           *
+           * 失败历史从库里查：本镜在哪些 provider 上被 content_filtered 过。
+           * 那是不可重试的码——同 prompt 在同一家必然再被拒（05 §5.3），所以
+           * 把它们排到最后。查询在事务里，和下面的预算闸门看到同一份快照。
+           */
+          const filteredRows = await tx
+            .selectDistinct({ providerId: s.generationJobs.providerId })
+            .from(s.generationJobs)
+            .where(
+              and(
+                eq(s.generationJobs.shotId, e.shotId),
+                eq(s.generationJobs.failureCode, 'content_filtered'),
+              ),
+            )
+          const routed = routeProvider(deps.providers, {
+            providerHint: row.providerHint,
+            filteredBy: filteredRows.map((x) => x.providerId),
+            probe,
           })
+          if (!routed) {
+            return {
+              ok: false,
+              code: 'NO_PROVIDER',
+              from: row.status,
+              reason: '池内没有能力匹配的 provider',
+            }
+          }
+          const provider = routed.provider
+
+          /*
+           * 预算闸门就在这里，而不是在三个 caller 各写一遍。
+           *
+           * `enqueue.generation` 是全系统唯一的花钱入口：单镜 API、批量生成、
+           * 以及 fail() 里自动创建的下一次 attempt 全都经过它。此前闸门只挂在
+           * 批量路由上，后两条完全裸奔——一个镜头失败重试 4 次不过任何闸门。
+           *
+           * 注意估算用的是**路由选出来的那家**的价目表，不是 `providers[0]` 的——
+           * 否则 dryRun 的数与实际扣费不是一回事，M1 验收第 2 条（误差 <20%）无从谈起。
+           */
+          const estimate = provider.estimateCost(probe)
           const policy = deps.budget ?? budgetFromEnv()
           const spent = await spentTodayForShot(tx, e.shotId)
           if (spent + estimate > policy.dailyLimitMicroUsd && policy.onExceed === 'block') {
@@ -155,11 +197,25 @@ export async function applyShotTransition(
           const jobId = await createGenerationJob(tx, {
             shotId: e.shotId,
             attempt: e.attempt,
-            providerId: deps.provider.id,
-            modelId: 'mock-v1',
+            providerId: provider.id,
+            // 此前硬编码 'mock-v1'——ledger 里每一笔真实花费的模型名都会是 mock 的，
+            // 而 gj_analytics_idx 正是按 (provider_id, model_id) 建的
+            modelId: provider.modelId,
             mode: 't2v',
             promptText: row.promptOverride ?? `${row.action}, ${row.shotType}`,
             params,
+            /*
+             * **重试换 seed。**
+             *
+             * 05 §5.2 开篇就写着「同样的参数重试毫无意义，必须改变输入」，而此前
+             * 每次重试用的是完全相同的 seed / prompt / provider——一个镜头会以同一组
+             * 参数连撞 4 次然后判死，四笔钱买同一个结果。
+             *
+             * 这里只做第一级（换 seed）。「强化 prompt」要等 prompt-kit（P2），
+             * 「换 provider」要等池里真有第二个可选项——但那两级的钩子已经在了：
+             * 上面的 routeProvider 会自动规避被 content_filtered 过的家。
+             */
+            ...(e.attempt > 1 ? { seed: Math.floor(Math.random() * 2 ** 31) } : {}),
             /*
              * **在途预留**：建行的同时就把估算值记进成本。
              *

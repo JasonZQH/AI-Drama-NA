@@ -118,14 +118,17 @@ async function pollHandler(job: Job<PollJobData>) {
 
 由状态机驱动，每次产生**新的 `generation_jobs` 行**，`attempt` 递增。
 
-> ⚠️ **升级策略尚未实现。** 下面这张表与 `nextAttemptPlan()` 是目标态。
-> 当前 `applyTransition.ts` 每次重试都用**完全相同的 seed、prompt 与 provider**
-> 重投，即本节开头那句「同样的参数重试毫无意义」正是现在的实际行为——
-> 一个镜头会以同一组参数连撞 4 次，然后判死。
+> **三级里第一级已落地，另外两级的钩子也在了。**
 >
-> 换 seed 与强化 prompt 随 provider 路由器一并落地（M1 的 PR-E，那段对象字面量
-> 本来就要重写）；换 provider 要等池子里真有第二个可选项。`shots.provider_hint`
-> 的钩子已经存在但零读取。
+> | 级别 | 状态 |
+> |---|---|
+> | 换 seed（attempt ≥ 2）| ✅ 已实现（`pipeline/applyTransition.ts`）|
+> | 强化 prompt | ⏳ 等 `prompt-kit`——现在的 prompt 只是 `action + shotType` 拼串，没有可强化的结构 |
+> | 换 provider | ⏳ 池里只有 mock。但**规避逻辑已经在跑**：路由器会把本镜被 `content_filtered` 过的那家排到最后（`04` §5 第 3 步），池里一有第二个可选项就自动生效 |
+>
+> 此前三级一个都没有：每次重试用完全相同的 seed / prompt / provider 重投，
+> 一个镜头以同一组参数连撞 4 次然后判死——本节开头那句「同样的参数重试毫无意义」
+> 描述的正是当时的实际行为。
 
 | attempt | 策略 |
 |---|---|

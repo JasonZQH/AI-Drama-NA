@@ -207,6 +207,26 @@ export interface RoutingContext {
 export function routeProvider(ctx: RoutingContext, pool: VideoProvider[]): VideoProvider
 ```
 
+> **M1 只落地第 1、3 步**（`apps/control/src/providers/route.ts`）。另外三步现在没有对象：
+>
+> | 步骤 | 状态 |
+> |---|---|
+> | 1 硬约束过滤 | ✅ `providerHint` + `validate()` 能力过滤。⏳ health 未做——见下 |
+> | 2 mature 只路由到无服务端过滤的 | ⛔ 池里没有自部署，issue #15 |
+> | 3 失败规避 | ✅ 在某家被 `content_filtered` 过就排到最后 |
+> | 4 统计排序 | ⛔ 依赖不存在的物化视图，且样本不足 30 必走退化分支——M1 期间 100% 如此 |
+> | 5 预算闸门 | ✅ 已在 `pipeline/applyTransition.ts` 下沉到唯一花钱入口，路由器不重复实现 |
+>
+> **`RoutingContext` / `ProviderPriors` 都没有建。** 下面那个签名是目标态；实际的
+> 上下文只有三个字段（`providerHint` / `filteredBy` / 探针请求），因为第 4 步不做就
+> 不需要 priors，第 5 步已经在别处。给一个不存在的输入建统计管道是纯浪费。
+>
+> **health 刻意不做**：主动探测意味着每次路由决策一次网络调用，而池里只有一个
+> provider 时它挡不掉任何东西。真要做也不该是主动探测——用 Redis 里的 per-provider
+> 连续失败计数（`queue/semaphore.ts` 有现成模式），由已经在发生的 poll 失败驱动。
+>
+> 路由器是**纯同步零 IO** 的，失败历史由调用方查好传进来，所以它能被单测穷举。
+
 决策顺序（**规则优先，统计其次**——先保证正确，再谈优化）：
 
 1. **硬约束过滤**：`shot.providerHint` 指定则直接用；否则筛掉 `validate()` 不通过、`health()` 不健康、能力不匹配（如需要 `supportsFirstLastFrame` 但不支持）的。

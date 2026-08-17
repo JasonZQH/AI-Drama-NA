@@ -5,6 +5,7 @@ import type IORedis from 'ioredis'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { applyShotTransition } from '../pipeline/applyTransition.js'
+import { resolveProvider } from '../providers/registry.js'
 import { release, tryAcquire } from './semaphore.js'
 import { pollDelayMs, type Queues } from './queues.js'
 
@@ -104,7 +105,8 @@ async function publishProgress(
 }
 
 function providerOf(deps: OrchestratorDeps, id: string): VideoProvider {
-  const p = deps.providers.find((x) => x.id === id)
+  // 查找逻辑只在 registry 里有一份——此前这里另写了一遍 find()，两套各自演化是迟早的事
+  const p = resolveProvider(deps.providers, id)
   if (!p) throw new Error(`provider 不在池中：${id}`)
   return p
 }
@@ -454,16 +456,18 @@ async function fail(
   if (!job) return
 
   /*
-   * 用**这一行自己的** provider，而不是 providers[0]。
+   * 整个池交给 applyShotTransition，由 routeProvider 决定下一次 attempt 用谁。
    *
-   * 原来写死 providers[0] 有两个问题：重试会被静默改派到另一个 provider
-   * （成本对比就没意义了），而且闸门下沉之后 estimateCost 也会用错家的价目表。
-   * 池里找不到就退回 providers[0]——那是配置问题，不该让失败路径再抛一次。
+   * 重试时**换 provider 是有意义的**——尤其上一次是 content_filtered：路由器
+   * 会把失败过的那家排到最后（`providers/route.ts` 第 3 步）。此前这里写死
+   * providers[0]，等于「换 provider」这一级重试升级从来没有发生过。
    */
-  const provider = deps.providers.find((p) => p.id === job.providerId) ?? deps.providers[0]
-  if (!provider) return
-
-  const tdeps = { db: deps.db, queues: deps.queues, provider, maxAttempts: deps.maxAttempts }
+  const tdeps = {
+    db: deps.db,
+    queues: deps.queues,
+    providers: deps.providers,
+    maxAttempts: deps.maxAttempts,
+  }
   const r = await applyShotTransition(tdeps, job.shotId, { type: 'attempt.failed', code })
   /*
    * 回到 ready 说明还能重试——立刻创建下一次尝试，不等人来点。
