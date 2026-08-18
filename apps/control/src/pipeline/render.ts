@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm'
+import { asc, eq, sql } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { s3Key } from '../storage/s3.js'
@@ -103,14 +103,38 @@ export async function ensureTimeline(db: Db, episodeId: string): Promise<string>
     .from(s.timelines)
     .where(eq(s.timelines.episodeId, episodeId))
     .orderBy(asc(s.timelines.version))
-  if (existing) return existing.id
+
+  /*
+   * **空的 timeline 要回填，不能直接复用。**
+   *
+   * 原来是「存在就返回」，于是在一个镜头都没锁定时调用过一次（比如误点渲染），
+   * 就会留下一个 0 clip 的 timeline——此后每次渲染都复用它，`clips.length === 0`
+   * 一路抛「没有已选定的镜头」，**这一集从此再也渲染不了**。以前要 curl 才够得着，
+   * 面板加了渲染按钮之后一次误点就中招。
+   *
+   * 只回填空的：有 clip 的说明可能被人工调过顺序与 trim，那是要保住的。
+   */
+  if (existing) {
+    const [c] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(s.timelineClips)
+      .where(eq(s.timelineClips.timelineId, existing.id))
+    if ((c?.n ?? 0) > 0) return existing.id
+    await fillClips(db, existing.id, episodeId)
+    return existing.id
+  }
 
   const [tl] = await db
     .insert(s.timelines)
     .values({ episodeId, version: 1, status: 'draft' })
     .returning({ id: s.timelines.id })
   const timelineId = tl!.id
+  await fillClips(db, timelineId, episodeId)
+  return timelineId
+}
 
+/** 按 locked 镜头的顺序铺 clip。空 timeline 与新建 timeline 共用 */
+async function fillClips(db: Db, timelineId: string, episodeId: string): Promise<void> {
   const shots = await db
     .select({ id: s.shots.id, index: s.shots.index, takeId: s.shots.selectedTakeId })
     .from(s.shots)
@@ -123,7 +147,6 @@ export async function ensureTimeline(db: Db, episodeId: string): Promise<string>
     .map((x, i) => ({ timelineId, index: i + 1, takeId: x.takeId!, transition: 'cut' as const }))
 
   if (clips.length > 0) await db.insert(s.timelineClips).values(clips)
-  return timelineId
 }
 
 export interface RenderOutcome {
