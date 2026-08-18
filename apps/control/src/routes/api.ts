@@ -6,7 +6,7 @@ import { z } from 'zod'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { budgetFromEnv, planBatch } from '../pipeline/batch.js'
-import { renderEpisode, type MediaWorkerClient } from '../pipeline/render.js'
+import { MediaWorkerUnavailable, renderEpisode, type MediaWorkerClient } from '../pipeline/render.js'
 import { applyShotTransition } from '../pipeline/applyTransition.js'
 import type { ShotEvent } from '../pipeline/shotMachine.js'
 import type { Queues } from '../queue/queues.js'
@@ -41,6 +41,16 @@ async function applyTransition(deps: ApiDeps, shotId: string, event: ShotEvent):
   if (r === null) throw new ApiError('NOT_FOUND', `shot ${shotId} 不存在`)
   if (!r.ok) {
     if (r.code === 'BUDGET_EXCEEDED') throw new ApiError('BUDGET_EXCEEDED', r.reason, { ...r.budget })
+    /*
+     * 池里没有能力匹配的 provider 不是「用户点错了」，是「这套部署当前做不到」。
+     * 此前它落成 400 INVALID_STATE_TRANSITION，而 errors.ts 里的
+     * NO_PROVIDER_AVAILABLE(503) 从建好起零使用。
+     *
+     * 这条在 M1 期间是真会被打到的：mature 镜头只能路由到
+     * serverSideContentFilter===false 的 provider，而池里（mock 之外）只有
+     * OpenRouter，它有服务端过滤。见 issue #15。
+     */
+    if (r.code === 'NO_PROVIDER') throw new ApiError('NO_PROVIDER_AVAILABLE', r.reason, { from: r.from })
     throw new ApiError('INVALID_STATE_TRANSITION', r.reason, { from: r.from, event: event.type })
   }
   return { next: r.next }
@@ -213,6 +223,8 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
     try {
       return await renderEpisode({ db, media: deps.media }, id, { quality: body.quality })
     } catch (e) {
+      // 连不上是运维问题（503，去起服务），其余是数据问题（409，去看这一集）
+      if (e instanceof MediaWorkerUnavailable) throw new ApiError('DEPENDENCY_UNAVAILABLE', e.message)
       throw new ApiError('CONFLICT', e instanceof Error ? e.message : String(e))
     }
   })

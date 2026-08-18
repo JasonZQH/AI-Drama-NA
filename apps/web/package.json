@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=../../.env ./node_modules/.bin/next dev -p 3000",
-    "build": "next build",
+    "dev": "sh -c 'set -a; [ -f ../../.env ] && . ../../.env; set +a; exec next dev -p 3000'",
+    "build": "sh -c 'set -a; [ -f ../../.env ] && . ../../.env; set +a; exec next build'",
     "start": "next start -p 3000",
     "typecheck": "tsc --noEmit"
   },
@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^26.2.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "tailwindcss": "^4.3.3",

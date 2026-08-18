@@ -1,4 +1,17 @@
-export const API = process.env['NEXT_PUBLIC_API_BASE'] ?? 'http://localhost:4000'
+/*
+ * **必须用点号取，不能用 `process.env['NEXT_PUBLIC_...']`。**
+ *
+ * Next 对 `NEXT_PUBLIC_*` 是**编译期字面量替换**，而它只匹配点号形式。写成
+ * 方括号时不会被替换，浏览器里 `process` 根本不存在（实测 `typeof process`
+ * 是 undefined），于是整个表达式恒为 `undefined`。
+ *
+ * 这两个变量都踩过，而症状完全不同：
+ * - `API` 恒取兜底值。本机开发恰好就是 4000，所以看起来一直是对的——
+ *   换端口或部署到别处就会静默连错主机。
+ * - `x-api-key` 恒为空串（bundle 里编译成字面量 `"x-api-key":""`），于是
+ *   面板的**每一个写操作**都被控制面判 401。开箱即坏，且只在点按钮时才发现。
+ */
+export const API = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:4000'
 
 /** 统一错误体（06-api-spec.md §8）。requestId 贯穿日志，报错时给出即可定位全链路 */
 export interface ApiErrorBody {
@@ -33,7 +46,8 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       ...(hasBody ? { 'content-type': 'application/json' } : {}),
-      ...(isWrite ? { 'x-api-key': process.env['NEXT_PUBLIC_CONTROL_API_KEY'] ?? '' } : {}),
+      // 点号形式，理由见文件顶部 API 的注释——方括号会编译成空串，所有写操作 401
+      ...(isWrite ? { 'x-api-key': process.env.NEXT_PUBLIC_CONTROL_API_KEY ?? '' } : {}),
       ...(init?.headers ?? {}),
     },
     cache: 'no-store',

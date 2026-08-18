@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { createDb } from './client.js'
 import * as s from './schema.js'
 
@@ -18,6 +18,51 @@ if (!url) throw new Error('DATABASE_URL 未设置')
 
 const { db, client } = createDb(url, 1)
 
+/*
+ * **先手动删掉引用 assets 的行，再删项目。**
+ *
+ * 文档字符串曾经声称「删项目即级联删全部下游」——一旦这个项目真的生成过东西，
+ * 那句话就是假的：`assets` 是 projects 的直接子表（cascade），而 `takes.asset_id`
+ * 与 `render_jobs.output_asset_id` 引用 assets 时**没有 cascade**。Postgres 删
+ * 直接子表的顺序不保证在孙表之后，于是 assets 先被删、takes 还指着它：
+ *
+ *   23503 · Key (id)=(…) is still referenced from table "takes"
+ *
+ * 症状是「跑过一次生成之后就再也 seed 不了」，而那正是开发期最常做的事。
+ * 这里按依赖顺序显式清掉那两张表，剩下的照旧交给级联。
+ */
+{
+  const ids = (
+    await db.select({ id: s.projects.id }).from(s.projects).where(eq(s.projects.title, DEMO_TITLE))
+  ).map((p) => p.id)
+
+  if (ids.length > 0) {
+    const idsOf = async <T extends { id: string }>(rows: Promise<T[]>): Promise<string[]> =>
+      (await rows).map((r) => r.id)
+
+    // 从叶子往根删。三条 FK 都没有 cascade，顺序错一层就是一个 23503
+    const assetIds = await idsOf(
+      db.select({ id: s.assets.id }).from(s.assets).where(inArray(s.assets.projectId, ids)),
+    )
+    const timelineIds = await idsOf(
+      db
+        .select({ id: s.timelines.id })
+        .from(s.timelines)
+        .innerJoin(s.episodes, eq(s.timelines.episodeId, s.episodes.id))
+        .where(inArray(s.episodes.projectId, ids)),
+    )
+    const takeIds =
+      assetIds.length === 0
+        ? []
+        : await idsOf(db.select({ id: s.takes.id }).from(s.takes).where(inArray(s.takes.assetId, assetIds)))
+
+    if (timelineIds.length > 0) {
+      await db.delete(s.renderJobs).where(inArray(s.renderJobs.timelineId, timelineIds))
+      await db.delete(s.timelineClips).where(inArray(s.timelineClips.timelineId, timelineIds))
+    }
+    if (takeIds.length > 0) await db.delete(s.takes).where(inArray(s.takes.id, takeIds))
+  }
+}
 await db.delete(s.projects).where(eq(s.projects.title, DEMO_TITLE))
 
 const [project] = await db
