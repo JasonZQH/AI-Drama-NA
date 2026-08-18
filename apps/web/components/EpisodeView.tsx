@@ -113,6 +113,11 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
     }
   })
 
+  const lockedCount = useMemo(
+    () => (tree?.shots ?? []).filter((x) => x.shot.status === 'locked').length,
+    [tree],
+  )
+
   const counts = useMemo(() => {
     const c: Record<string, number> = {}
     for (const x of tree?.shots ?? []) c[x.shot.status] = (c[x.shot.status] ?? 0) + 1
@@ -166,6 +171,29 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
     }
   }
 
+  /**
+   * 渲染成片。
+   *
+   * `POST /api/episodes/:id/render` 一直都在，但面板上没有任何入口——12 镜全锁定
+   * 之后只能 curl。端点是**同步**的（见 routes/api.ts 的注释：一集 12 镜实测
+   * 4 秒级，同步等得住），所以这里 await 完就能直接跳去看片。
+   */
+  async function render(): Promise<void> {
+    setBusy(true)
+    setErr(null)
+    try {
+      await api(`/api/episodes/${episodeId}/render`, { method: 'POST', body: JSON.stringify({}) })
+      window.open(`/watch/${episodeId}`, '_blank', 'noopener')
+      await load()
+    } catch (e) {
+      // media worker 没起时这里是 503 DEPENDENCY_UNAVAILABLE，消息里带 ECONNREFUSED
+      // 与该起哪个服务——比「渲染失败」有用得多
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (!tree) {
     return (
       <Shell>
@@ -212,6 +240,17 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
           style={{ background: 'var(--accent)', color: '#fff' }}
         >
           生成整集
+        </button>
+        {/* 一个锁定镜头都没有时渲染必然以「没有已选定的镜头」失败，不如禁用 */}
+        <button
+          type="button"
+          onClick={() => void render()}
+          disabled={busy || lockedCount === 0}
+          title={lockedCount === 0 ? '先去选片页锁定镜头' : `把 ${lockedCount} 个已锁定镜头拼成母版`}
+          className="rounded-md px-3 py-1 text-[12px] font-medium disabled:opacity-40"
+          style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+        >
+          {busy ? '渲染中…' : `渲染成片 ${lockedCount}/${tree.shots.length}`}
         </button>
       </PageHeader>
 

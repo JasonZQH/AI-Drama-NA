@@ -5,7 +5,7 @@ import { createDb } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
 import { createConnection, createQueues } from '../queue/queues.js'
-import { MediaWorkerUnavailable } from '../pipeline/render.js'
+import { MediaWorkerUnavailable, renderEpisode } from '../pipeline/render.js'
 import { buildServer, type ServerDeps } from '../server.js'
 import { Storage, storageFromEnv } from '../storage/s3.js'
 import { resolveDependencies } from '../pipeline/batch.js'
@@ -154,6 +154,68 @@ afterAll(async () => {
  * CORS 简单请求，浏览器直接发，`no-cors` 下响应虽读不到但服务端已经执行完——
  * 收紧 origin 拦不住，只有「要求一个自定义头」才行。
  */
+// 两条用例各调一次，号写死就会撞 gj_shot_attempt_uq。区间 [800,900) 由 cleanup 兜底
+let fixtureAttempt = TEST_ATTEMPT_BASE + 70
+const makeRenderable = async (): Promise<void> => {
+  const [shot] = await db
+    .select({ id: s.shots.id })
+    .from(s.shots)
+    .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+    .where(eq(s.scenes.episodeId, episodeId))
+    .limit(1)
+  /*
+   * 集成测试必须能反复跑。两处残留都会让这条用例以 409 假失败：
+   * - 上一轮的 asset 撞 assets_storage_key_uq
+   * - 上一轮的 timeline 被 ensureTimeline 原样复用，而它的 clips 指向已被
+   *   清掉的 take ⇒ clips.length === 0 ⇒ renderEpisode 在调 media 之前就抛
+   *   「没有已选定的镜头」，那本来就是 409
+   */
+  const tls = await db
+    .select({ id: s.timelines.id })
+    .from(s.timelines)
+    .where(eq(s.timelines.episodeId, episodeId))
+  if (tls.length > 0) {
+    const tlIds = tls.map((t) => t.id)
+    await db.delete(s.renderJobs).where(inArray(s.renderJobs.timelineId, tlIds))
+    await db.delete(s.timelineClips).where(inArray(s.timelineClips.timelineId, tlIds))
+    await db.delete(s.timelines).where(inArray(s.timelines.id, tlIds))
+  }
+
+  const key = `test/render-503/${shot!.id}.mp4`
+  const stale = await db.select({ id: s.assets.id }).from(s.assets).where(eq(s.assets.storageKey, key))
+  if (stale.length > 0) {
+    const ids = stale.map((a) => a.id)
+    await db.delete(s.takes).where(inArray(s.takes.assetId, ids))
+    await db.delete(s.assets).where(inArray(s.assets.id, ids))
+  }
+
+  const [asset] = await db
+    .insert(s.assets)
+    .values({
+      projectId,
+      kind: 'video',
+      storageKey: key,
+      mime: 'video/mp4',
+      bytes: 1,
+      sha256: 'e'.repeat(64),
+      producedBy: 'generation',
+    })
+    .returning({ id: s.assets.id })
+  const jobId = await createGenerationJob(db, {
+    shotId: shot!.id,
+    attempt: fixtureAttempt++,
+    providerId: 'mock',
+    modelId: 'mock-v1',
+    mode: 't2v',
+    promptText: 'render-503 fixture',
+  })
+  const [take] = await db
+    .insert(s.takes)
+    .values({ shotId: shot!.id, jobId, assetId: asset!.id, status: 'selected' })
+    .returning({ id: s.takes.id })
+  await db.update(s.shots).set({ status: 'locked', selectedTakeId: take!.id }).where(eq(s.shots.id, shot!.id))
+}
+
 describe('写路径闸门：没有 x-api-key 就不能花钱', () => {
   it('无头无 body 的 generate-batch 回 401，且一行 job 都没建', async () => {
     const before = await db.select({ id: s.generationJobs.id }).from(s.generationJobs)
@@ -429,71 +491,6 @@ describe('依赖不可达 → 503，而不是 409', () => {
    * 抛出——那本来就该是 409，桩根本走不到，用例会假装自己在测映射。
    * （写这条时先踩了一次。）
    */
-  // 两条用例各调一次，号写死就会撞 gj_shot_attempt_uq。区间 [800,900) 由 cleanup 兜底
-  let fixtureAttempt = TEST_ATTEMPT_BASE + 70
-  const makeRenderable = async (): Promise<void> => {
-    const [shot] = await db
-      .select({ id: s.shots.id })
-      .from(s.shots)
-      .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
-      .where(eq(s.scenes.episodeId, episodeId))
-      .limit(1)
-    /*
-     * 集成测试必须能反复跑。两处残留都会让这条用例以 409 假失败：
-     * - 上一轮的 asset 撞 assets_storage_key_uq
-     * - 上一轮的 timeline 被 ensureTimeline 原样复用，而它的 clips 指向已被
-     *   清掉的 take ⇒ clips.length === 0 ⇒ renderEpisode 在调 media 之前就抛
-     *   「没有已选定的镜头」，那本来就是 409
-     */
-    const tls = await db
-      .select({ id: s.timelines.id })
-      .from(s.timelines)
-      .where(eq(s.timelines.episodeId, episodeId))
-    if (tls.length > 0) {
-      const tlIds = tls.map((t) => t.id)
-      await db.delete(s.renderJobs).where(inArray(s.renderJobs.timelineId, tlIds))
-      await db.delete(s.timelineClips).where(inArray(s.timelineClips.timelineId, tlIds))
-      await db.delete(s.timelines).where(inArray(s.timelines.id, tlIds))
-    }
-
-    const key = `test/render-503/${shot!.id}.mp4`
-    const stale = await db.select({ id: s.assets.id }).from(s.assets).where(eq(s.assets.storageKey, key))
-    if (stale.length > 0) {
-      const ids = stale.map((a) => a.id)
-      await db.delete(s.takes).where(inArray(s.takes.assetId, ids))
-      await db.delete(s.assets).where(inArray(s.assets.id, ids))
-    }
-
-    const [asset] = await db
-      .insert(s.assets)
-      .values({
-        projectId,
-        kind: 'video',
-        storageKey: key,
-        mime: 'video/mp4',
-        bytes: 1,
-        sha256: 'e'.repeat(64),
-        producedBy: 'generation',
-      })
-      .returning({ id: s.assets.id })
-    const jobId = await createGenerationJob(db, {
-      shotId: shot!.id,
-      attempt: fixtureAttempt++,
-      providerId: 'mock',
-      modelId: 'mock-v1',
-      mode: 't2v',
-      promptText: 'render-503 fixture',
-    })
-    const [take] = await db
-      .insert(s.takes)
-      .values({ shotId: shot!.id, jobId, assetId: asset!.id, status: 'selected' })
-      .returning({ id: s.takes.id })
-    await db
-      .update(s.shots)
-      .set({ status: 'locked', selectedTakeId: take!.id })
-      .where(eq(s.shots.id, shot!.id))
-  }
-
   it('media worker 连不上 → 503 DEPENDENCY_UNAVAILABLE，且消息指明是谁', async () => {
     await makeRenderable()
     const app = render({
@@ -532,5 +529,50 @@ describe('依赖不可达 → 503，而不是 409', () => {
     } finally {
       await app.close()
     }
+  })
+})
+
+/**
+ * 空 timeline 会把一集永久钉死在「渲染不了」。
+ *
+ * `ensureTimeline` 原来是「存在就返回」。在一个镜头都没锁定时调用过一次
+ * （面板加了渲染按钮之后，一次误点就够），就留下一个 0 clip 的 timeline，
+ * 此后每次渲染都复用它 → `clips.length === 0` → 一路抛「没有已选定的镜头」。
+ *
+ * 实测踩到：浏览器里 12 镜全锁定、按钮显示「渲染成片 12/12」，点下去仍然报
+ * 「没有已选定的镜头」。
+ */
+describe('空 timeline 要回填，不能永久复用', () => {
+  it('有锁定镜头但 timeline 是空的时候，渲染要回填而不是抛', async () => {
+    // 先有一个锁定镜头 + 它的 take（makeRenderable 顺带清掉 timelines）
+    await makeRenderable()
+
+    // 再手工造出「空 timeline」这个状态——它正是零锁定时误点渲染的产物
+    const [tl] = await db
+      .insert(s.timelines)
+      .values({ episodeId, version: 1, status: 'draft' })
+      .returning({ id: s.timelines.id })
+    const clipCount = async (): Promise<number> =>
+      (await db.select().from(s.timelineClips).where(eq(s.timelineClips.timelineId, tl!.id))).length
+    expect(await clipCount(), '前提没造对').toBe(0)
+
+    // 走到 media 就说明 clips 不为空了。原实现在这里抛「没有已选定的镜头」，
+    // 而且**每次都抛**——这一集被永久钉死
+    let reached = false
+    await renderEpisode(
+      {
+        db,
+        media: {
+          render: () => {
+            reached = true
+            return Promise.reject(new Error('media worker 500: 到这里就够了'))
+          },
+        },
+      },
+      episodeId,
+    ).catch(() => undefined)
+
+    expect(reached, '空 timeline 没回填——这一集被永久钉死了').toBe(true)
+    expect(await clipCount(), '回填后该有 clip').toBeGreaterThan(0)
   })
 })
