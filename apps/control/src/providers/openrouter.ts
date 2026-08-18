@@ -9,7 +9,13 @@ import type {
   ValidationResult,
   VideoProvider,
 } from '@ai-drama/contracts'
-import { findModel, pricePerSecond, snapDuration, type OpenRouterModel } from './openrouterModels.js'
+import {
+  estimateMicroUsd,
+  findModel,
+  pricingFamily,
+  snapDuration,
+  type OpenRouterModel,
+} from './openrouterModels.js'
 
 /**
  * OpenRouter 视频适配器（M1 P5）。
@@ -127,9 +133,18 @@ export class OpenRouterProvider implements VideoProvider {
        */
       serverSideContentFilter: true,
       maxConcurrent: 4,
+      /*
+       * 两族计价，`unit` 要如实写。路由器目前不读它，但 04 §2 的 CostModel 是
+       * 对外承诺的形状——写成 per_second 而实际按 token 收，是让下一个人踩坑。
+       *
+       * microUsdPerUnit 用一次「本项目标准档」（4s 720p 9:16）的总价除以秒数，
+       * 得到一个可比的每秒口径。真正算钱走 estimateMicroUsd，不走这里。
+       */
       costModel: {
-        unit: 'per_second',
-        microUsdPerUnit: Math.round((pricePerSecond(opts.model, '720p', GENERATE_AUDIO) ?? 0) * 1e6),
+        unit: pricingFamily(opts.model) === 'per_token' ? 'per_token' : 'per_second',
+        microUsdPerUnit: Math.round(
+          estimateMicroUsd(opts.model, referenceRequest(opts.model), GENERATE_AUDIO) / 4,
+        ),
       },
     }
   }
@@ -184,13 +199,8 @@ export class OpenRouterProvider implements VideoProvider {
    * 而预算闸门读的正是这个数——低估的直接后果是闸门放行了实际会超限的批量。
    */
   estimateCost(req: GenerationRequest): number {
-    const seconds = snapDuration(this.model, req.durationSec)
-    if (seconds === null) return 0 // validate 会先拒掉，走不到这里
-    // 与 submit 用同一个常量。分开写就是估算与账单按不同价目表键算
-    const perSec = pricePerSecond(this.model, req.resolution, GENERATE_AUDIO)
-    // 价目表里找不到对应键时不要静默按 0——记 0 会让预算闸门失效
-    if (perSec === null) throw new Error(`${this.modelId} 没有匹配 ${req.resolution} 的价目表条目`)
-    return Math.round(seconds * perSec * 1e6)
+    // 与 submit 用同一个音轨常量。分开写就是估算与账单按不同价目表键算
+    return estimateMicroUsd(this.model, req, GENERATE_AUDIO)
   }
 
   async submit(req: GenerationRequest): Promise<ProviderHandle> {
@@ -341,4 +351,27 @@ function mapFailure(raw: string): ProviderFailure['code'] {
   if (/(timeout|timed out|deadline)/.test(s)) return 'timeout'
   if (/(invalid|unsupported|bad request|validation)/.test(s)) return 'invalid_output'
   return 'provider_error'
+}
+
+/**
+ * 「本项目标准档」的一条参考请求：4 秒 720p 9:16。
+ *
+ * 只用来给 `capabilities.costModel.microUsdPerUnit` 折算一个可比的每秒口径——
+ * 按 token 计价的模型没有天然的「每秒单价」，而 04 §2 的 CostModel 要求给一个。
+ */
+function referenceRequest(model: OpenRouterModel): GenerationRequest {
+  return {
+    requestId: '00000000-0000-4000-8000-000000000000',
+    shotId: '00000000-0000-4000-8000-000000000000',
+    mode: 't2v',
+    prompt: '',
+    refImages: [],
+    durationSec: snapDuration(model, 4) ?? 4,
+    resolution: '720p',
+    aspectRatio: '9:16',
+    fps: 24,
+    safetyProfile: 'standard',
+    priority: 'normal',
+    providerParams: {},
+  }
 }

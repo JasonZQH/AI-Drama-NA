@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { makeRequest } from './contractSuite.js'
 import { OpenRouterProvider } from './openrouter.js'
-import { findModel, pricePerSecond, snapDuration } from './openrouterModels.js'
+import { estimateMicroUsd, findModel, pricingFamily, sizeFor, snapDuration } from './openrouterModels.js'
 import { buildProviderPool } from './registry.js'
 
 const VEO_LITE = findModel('google/veo-3.1-lite')!
 const WAN = findModel('alibaba/wan-2.7')!
+const SEEDANCE = findModel('bytedance/seedance-2.0')!
 
 const make = (model = VEO_LITE) => new OpenRouterProvider({ apiKey: 'test-key', model })
 
@@ -31,14 +32,22 @@ describe('OpenRouter 能力快照', () => {
     expect(snapDuration(WAN, 2.5)).toBe(3)
   })
 
-  it('价目表按 (分辨率, 有无音轨) 从具体退化到笼统', () => {
-    expect(pricePerSecond(VEO_LITE, '720p', false)).toBe(0.03)
-    expect(pricePerSecond(VEO_LITE, '720p', true)).toBe(0.05)
-    // 1080p 没有专门的键，退回不带分辨率的那条
-    expect(pricePerSecond(VEO_LITE, '1080p', false)).toBe(0.05)
-    // wan 只有一条笼统键
-    expect(pricePerSecond(WAN, '720p', false)).toBe(0.1)
-    expect(pricePerSecond(VEO_LITE, '8K', false)).toBe(0.05)
+  it('计价族按键名前缀判定', () => {
+    expect(pricingFamily(VEO_LITE)).toBe('per_second')
+    expect(pricingFamily(WAN)).toBe('per_second')
+    expect(pricingFamily(SEEDANCE)).toBe('per_token')
+  })
+
+  /**
+   * 尺寸直接决定按 token 计价的钱，猜错一档账单就差一倍。
+   * 所以从模型自己的 supported_sizes 里挑，不硬编码。
+   */
+  it('尺寸从 supported_sizes 里挑，竖屏不能挑成横屏', () => {
+    expect(sizeFor(SEEDANCE, '720p', '9:16')).toEqual({ width: 720, height: 1280 })
+    expect(sizeFor(SEEDANCE, '720p', '16:9')).toEqual({ width: 1280, height: 720 })
+    expect(sizeFor(SEEDANCE, '1080p', '9:16')).toEqual({ width: 1080, height: 1920 })
+    // veo / wan 线上就没给 supported_sizes，按短边推——它们按秒计价，尺寸不进公式
+    expect(sizeFor(VEO_LITE, '720p', '9:16')).toEqual({ width: 720, height: 1280 })
   })
 
   /**
@@ -53,6 +62,41 @@ describe('OpenRouter 能力快照', () => {
     expect(p.estimateCost(makeRequest({ durationSec: 2.5 }))).not.toBe(75_000)
     // wan 档位密，2.5s 只付 3s
     expect(make(WAN).estimateCost(makeRequest({ durationSec: 2.5 }))).toBe(300_000)
+  })
+
+  /**
+   * **按 token 计价用 ByteDance 公布的公式，不标定、不猜。**
+   *
+   *   tokens = 宽 × 高 × 时长 × fps / 1024
+   *
+   * 720×1280×4×24/1024 = 86,400 token，× $0.000007 = $0.605 一镜。
+   * 这条同时钉住三件事：公式、尺寸挑对了、fps 真的进了公式。
+   */
+  it('seedance 按 token 公式估价', () => {
+    const p = make(SEEDANCE)
+    expect(p.estimateCost(makeRequest({ durationSec: 4 }))).toBe(604_800)
+    // 2.5s 向上取到 4s（seedance 最低档就是 4），价钱不变
+    expect(p.estimateCost(makeRequest({ durationSec: 2.5 }))).toBe(604_800)
+    // 8 秒是 4 秒的两倍
+    expect(p.estimateCost(makeRequest({ durationSec: 8 }))).toBe(1_209_600)
+  })
+
+  it('fps 真的进了 token 公式——写死 24 会在 30fps 时低估 25%', () => {
+    const at24 = estimateMicroUsd(SEEDANCE, makeRequest({ durationSec: 4, fps: 24 }), false)
+    const at30 = estimateMicroUsd(SEEDANCE, makeRequest({ durationSec: 4, fps: 30 }), false)
+    expect(at30 / at24).toBeCloseTo(30 / 24, 5)
+  })
+
+  it('横屏比竖屏贵不了也便宜不了——像素数一样', () => {
+    const portrait = estimateMicroUsd(SEEDANCE, makeRequest({ aspectRatio: '9:16' }), false)
+    const landscape = estimateMicroUsd(SEEDANCE, makeRequest({ aspectRatio: '16:9' }), false)
+    expect(landscape).toBe(portrait)
+  })
+
+  /** 一集 12 镜比默认日预算（$5）还贵——闸门会拦，这不是 bug 是设计 */
+  it('seedance-2.0 一集 12 镜超过默认日预算', () => {
+    const perShot = make(SEEDANCE).estimateCost(makeRequest({ durationSec: 4 }))
+    expect(perShot * 12).toBeGreaterThan(5_000_000)
   })
 
   it('validate 零 IO，且拒绝超出档位的时长', () => {
