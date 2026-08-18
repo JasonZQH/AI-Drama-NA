@@ -98,6 +98,54 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
     return { episode: ep, scenes, shots }
   })
 
+  /**
+   * 编辑一集的文本层（06-api-spec.md §3 已设计的形状）。
+   *
+   * **`script_md` 此前是一列孤儿**：从第一版迁移（`0000_nice_marrow.sql:47`）起就
+   * 存在，零写入方、零读取方、seed 也留空。于是整条流水线的起点只有
+   * `title / logline / hook / cliffhanger` 四个短句，加起来不到 200 字——
+   * 在那上面做分镜等于让模型自己编情节，而人无处干预。
+   *
+   * **只更新显式给出的键。** 不传 = 不动，传 `''` = 清空（`.nullish()` 与
+   * `undefined` 的区别在这里是有意义的：前端清空输入框要能真的清掉）。
+   * 全空 body 是合法的 no-op，不该 400——PATCH 的语义就是「改我给的这些」。
+   */
+  app.patch('/api/episodes/:id', async (req) => {
+    const { id } = Uuid.parse(req.params)
+    const body = z
+      .object({
+        title: z.string().nullish(),
+        logline: z.string().nullish(),
+        hook: z.string().nullish(),
+        cliffhanger: z.string().nullish(),
+        scriptMd: z.string().nullish(),
+        targetDurationSec: z.number().int().min(10).max(600).optional(),
+      })
+      .parse(req.body ?? {})
+
+    // 空串落 NULL：库里 '' 和 NULL 混着存，后面每个读取方都要各写一遍兜底
+    const blank = (v: string | null | undefined): string | null | undefined =>
+      v === undefined || v === null ? (v as null | undefined) : v.trim() === '' ? null : v
+    const patch = {
+      ...(body.title === undefined ? {} : { title: blank(body.title) }),
+      ...(body.logline === undefined ? {} : { logline: blank(body.logline) }),
+      ...(body.hook === undefined ? {} : { hook: blank(body.hook) }),
+      ...(body.cliffhanger === undefined ? {} : { cliffhanger: blank(body.cliffhanger) }),
+      ...(body.scriptMd === undefined ? {} : { scriptMd: blank(body.scriptMd) }),
+      ...(body.targetDurationSec === undefined ? {} : { targetDurationSec: body.targetDurationSec }),
+    }
+
+    if (Object.keys(patch).length === 0) {
+      const [ep] = await db.select().from(s.episodes).where(eq(s.episodes.id, id))
+      if (!ep) throw new ApiError('NOT_FOUND', `episode ${id} 不存在`)
+      return { episode: ep }
+    }
+
+    const [ep] = await db.update(s.episodes).set(patch).where(eq(s.episodes.id, id)).returning()
+    if (!ep) throw new ApiError('NOT_FOUND', `episode ${id} 不存在`)
+    return { episode: ep }
+  })
+
   app.post('/api/shots/:id/generate', async (req, reply) => {
     const { id } = Uuid.parse(req.params)
     const r = await applyTransition(deps, id, { type: 'generate.requested' })

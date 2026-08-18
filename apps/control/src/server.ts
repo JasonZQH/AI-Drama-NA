@@ -67,8 +67,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * origin: true 让 GET 响应跨域可读，恶意页面能先枚举出 project/episode/shot
    * 的 UUID 再开火。设了 WEB_ORIGIN 就只剩猜 UUID，不可行。
    */
+  /*
+   * `methods` 必须显式列全。不给的话 @fastify/cors 的默认值实测只有
+   * `GET,HEAD,POST`——于是往这个 API 加任何别的方法，浏览器侧都是**静默坏的**：
+   * 预检 204 通过、`access-control-allow-methods` 里没有它、真实请求根本不发出，
+   * 服务端日志上一片干净，只有浏览器控制台里有一行 CORS 报错。
+   *
+   * P1 加 PATCH 时就踩了：端点写完、集成测试全绿（inject 不走 CORS）、
+   * 面板上点保存却什么都没发生。
+   */
   void app.register(cors, {
     origin: process.env['WEB_ORIGIN'] ?? true,
+    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['content-type', 'x-api-key'],
   })
   guardWrites(app, deps.apiKey)
