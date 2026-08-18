@@ -18,7 +18,7 @@ if (!KEY) {
 }
 
 const BASE = 'https://openrouter.ai/api/v1'
-const MODEL = process.env.PROBE_MODEL ?? 'google/veo-3.1-lite'
+const MODEL = process.env.PROBE_MODEL ?? 'bytedance/seedance-2.0'
 const H = { authorization: `Bearer ${KEY}`, 'content-type': 'application/json' }
 
 const log = (q, a) => console.log(`\n■ ${q}\n  → ${a}`)
@@ -105,6 +105,26 @@ if (url) {
       (bare.ok ? '\n  → 不需要鉴权，ingest 现状可用' : '\n  → 需要鉴权，ingest 的 materialize 必须能带头'),
   )
   log('content-length', bare.headers.get('content-length') ?? authed.headers.get('content-length') ?? '未给')
+}
+
+// ── 6. 校验我们的估价公式 ────────────────────────────────────
+//
+// seedance 按 token 计价，公式取自 ByteDance 公开口径：
+//   tokens = 宽 × 高 × 时长 × fps / 1024
+// 这一步用真实账单验它。差得多就说明公式或尺寸挑错了，而预算闸门读的正是它。
+if (last.usage?.cost !== undefined) {
+  const TOKEN_PRICE = { 'bytedance/seedance-2.0': 7e-6, 'bytedance/seedance-2.0-fast': 4.2e-6 }
+  const price = TOKEN_PRICE[MODEL]
+  if (price) {
+    const predicted = ((720 * 1280 * 4 * 24) / 1024) * price
+    const actual = last.usage.cost
+    const err = Math.abs(predicted - actual) / actual
+    log(
+      '我们的估价公式准不准（M1 验收第 2 条要求 <20%）',
+      `预测 $${predicted.toFixed(4)} · 实际 $${actual.toFixed(4)} · 误差 ${(err * 100).toFixed(1)}%` +
+        (err < 0.2 ? '\n  → 公式可用' : '\n  → 超过 20%，openrouterModels.ts 的公式要改'),
+    )
+  }
 }
 
 console.log('\n把上面的答案写回 apps/control/src/providers/openrouter.ts 的注释。')

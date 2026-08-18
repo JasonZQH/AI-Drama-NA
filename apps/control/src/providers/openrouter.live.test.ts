@@ -46,6 +46,15 @@ describe.runIf(CAN_REACH_NETWORK)('能力快照与线上一致（公开端点，
       )
       expect(l['seed'], `${snap.id} 的 seed 支持变了——重试换 seed 会静默失效`).toBe(snap.seed)
       /*
+       * supported_sizes 对按 token 计价的模型直接决定钱：像素数进公式。
+       * 线上少一档尺寸而我们还按老的算，账单就对不上。按秒计价的模型线上
+       * 没给这个字段（veo/wan 实测是 undefined），快照里存空数组。
+       */
+      expect(
+        sortStr((l['supported_sizes'] as string[] | undefined) ?? []),
+        `${snap.id} 尺寸档位漂了——按 token 计价时这直接是钱`,
+      ).toEqual(sortStr(snap.supportedSizes))
+      /*
        * 价目表漂了就是预算闸门在按过期单价拦人。这条断言故意做成全等而不是
        * 「只看我们用到的那条键」——多出来的键往往意味着计价维度变了。
        */
