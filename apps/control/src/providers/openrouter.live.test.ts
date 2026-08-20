@@ -59,6 +59,34 @@ describe.runIf(CAN_REACH_NETWORK)('能力快照与线上一致（公开端点，
        * 「只看我们用到的那条键」——多出来的键往往意味着计价维度变了。
        */
       expect(l['pricing_skus'], `${snap.id} 价目表漂了——预算闸门在按过期单价算`).toEqual(snap.pricingSkus)
+
+      /*
+       * 负向词的参数名。**写错不报错，只是静默丢弃**——那正是这个字段存在之前
+       * 的状态（`style_profiles.negative_prompt` 一路算到 `negative_text` 然后
+       * 在构造 body 那一行被扔掉）。所以它必须被线上核，不能靠记性。
+       */
+      const pass = (l['allowed_passthrough_parameters'] as string[] | undefined) ?? []
+      const liveNeg = pass.find((x) => /negative/i.test(x))
+      expect(liveNeg, `${snap.id} 的负向词参数名漂了——写错的话负向词被静默丢弃`).toBe(snap.negativeParam)
+    }
+  })
+
+  /**
+   * passthrough 是**按 provider slug 路由**的：官方原话「only the options for
+   * the matched provider are forwarded」。slug 写错 = 参数静默丢弃。
+   *
+   * 而快照里存单个 slug 这件事本身有个前提：**这些模型都只有一个端点**。哪天
+   * 多出第二家，「该用哪个 slug」就取决于实际路由到谁，这条断言会先撞上。
+   */
+  it('每个模型仍是单端点，且 slug 与快照一致', async () => {
+    for (const snap of OPENROUTER_MODELS) {
+      const res = await fetch(`https://openrouter.ai/api/v1/models/${snap.id}/endpoints`)
+      expect(res.ok, `${snap.id} endpoints HTTP ${res.status}`).toBe(true)
+      const eps = ((await res.json()) as { data: { endpoints: { tag: string }[] } }).data.endpoints
+      expect(eps.length, `${snap.id} 不再是单端点——slug 得按实际路由选，不能写死`).toBe(1)
+      expect(eps[0]?.tag, `${snap.id} 的 provider slug 漂了——passthrough 会被静默丢弃`).toBe(
+        snap.providerSlug,
+      )
     }
   })
 })

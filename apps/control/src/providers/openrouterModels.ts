@@ -39,11 +39,34 @@ export interface OpenRouterModel {
    * 不要提前转 number——转换只在算钱那一刻做。
    */
   readonly pricingSkus: Readonly<Record<string, string>>
+  /**
+   * 负向词在**统一请求体里没有字段**——只能走 passthrough，而 passthrough 的
+   * 参数名各家不同：veo 是驼峰 `negativePrompt`，wan/kling 是下划线
+   * `negative_prompt`，seedance 全系压根没有（只允许 `watermark, req_key`）。
+   *
+   * `undefined` = 这个模型不支持，`capabilities.supportsNegative` 直接读它。
+   *
+   * 值抄自 `GET /videos/models` 的 `allowed_passthrough_parameters`（公开端点，
+   * 不需要 key、不花钱）。RECORD=1 的漂移检查会核。
+   */
+  readonly negativeParam?: string
+  /**
+   * 上游 provider 的 slug。**passthrough 是按它路由的**——官方原文：「Options
+   * are keyed by provider slug, and **only the options for the matched
+   * provider are forwarded**」。写错不报错，参数被静默丢弃。
+   *
+   * 取自 `GET /models/:id/endpoints` 里每个端点的 `tag`。池里这 6 个模型当前
+   * 都是**单端点**，所以 slug 唯一确定；哪天某个模型多了第二家，这里就得跟着
+   * 变成「按实际路由到的端点选」——漂移检查会先撞上。
+   */
+  readonly providerSlug?: string
 }
 
 export const OPENROUTER_MODELS: readonly OpenRouterModel[] = [
   {
     id: 'google/veo-3.1-lite',
+    negativeParam: 'negativePrompt', // 驼峰，实测自 allowed_passthrough_parameters
+    providerSlug: 'google-vertex',
     supportedResolutions: ['720p', '1080p'],
     supportedAspectRatios: ['16:9', '9:16'],
     supportedDurations: [8, 4, 6],
@@ -60,6 +83,8 @@ export const OPENROUTER_MODELS: readonly OpenRouterModel[] = [
   },
   {
     id: 'google/veo-3.1',
+    negativeParam: 'negativePrompt', // 驼峰，实测自 allowed_passthrough_parameters
+    providerSlug: 'google-vertex',
     supportedResolutions: ['720p', '1080p', '4K'],
     supportedAspectRatios: ['16:9', '9:16'],
     supportedDurations: [4, 6, 8],
@@ -76,6 +101,8 @@ export const OPENROUTER_MODELS: readonly OpenRouterModel[] = [
   },
   {
     id: 'alibaba/wan-2.7',
+    negativeParam: 'negative_prompt', // 下划线，与 veo 不同
+    providerSlug: 'atlas-cloud',
     supportedResolutions: ['720p', '1080p'],
     supportedAspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
     supportedDurations: [2, 3, 4, 5, 6, 7, 8, 9, 10],
@@ -98,6 +125,8 @@ export const OPENROUTER_MODELS: readonly OpenRouterModel[] = [
   },
   {
     id: 'bytedance/seedance-2.0',
+    // 无 negativeParam：seedance 全系的 passthrough 只有 watermark, req_key
+    providerSlug: 'seed',
     supportedResolutions: ['480p', '720p', '1080p', '4K'],
     supportedAspectRatios: ['1:1', '3:4', '9:16', '4:3', '16:9', '21:9', '9:21'],
     supportedDurations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
@@ -143,6 +172,8 @@ export const OPENROUTER_MODELS: readonly OpenRouterModel[] = [
   },
   {
     id: 'bytedance/seedance-2.0-fast',
+    // 无 negativeParam：seedance 全系的 passthrough 只有 watermark, req_key
+    providerSlug: 'seed',
     supportedResolutions: ['480p', '720p'],
     supportedAspectRatios: ['1:1', '3:4', '9:16', '4:3', '16:9', '21:9', '9:21'],
     supportedDurations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
@@ -172,6 +203,8 @@ export const OPENROUTER_MODELS: readonly OpenRouterModel[] = [
   },
   {
     id: 'bytedance/seedance-1-5-pro',
+    // 无 negativeParam：seedance 全系的 passthrough 只有 watermark, req_key
+    providerSlug: 'seed',
     supportedResolutions: ['480p', '720p', '1080p'],
     supportedAspectRatios: ['1:1', '3:4', '9:16', '9:21', '4:3', '16:9', '21:9'],
     supportedDurations: [4, 5, 6, 7, 8, 9, 10, 11, 12],

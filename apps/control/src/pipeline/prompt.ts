@@ -33,12 +33,19 @@ const SHOT_TYPE_PROSE: Record<ShotType, string> = {
   pov: 'point-of-view shot',
 }
 
+/**
+ * **给方向，不加列。**
+ *
+ * `dolly` 和 `orbit` 不说方向，模型只能自己猜——同一批镜头里一半推近一半拉远。
+ * 但「往哪推」不值得为它加一个数据库列：短剧里推近是绝对多数（情绪递进），
+ * 真需要拉远的那几镜可以写进 `action`。默认值选多数派，代价是少数派要绕。
+ */
 const CAMERA_MOVE_PROSE: Record<CameraMove, string> = {
   static: 'static camera',
   pan: 'camera pans',
   tilt: 'camera tilts',
-  dolly: 'dolly move',
-  orbit: 'camera orbits',
+  dolly: 'slow dolly in',
+  orbit: 'arc shot',
   handheld: 'handheld camera',
 }
 
@@ -118,10 +125,16 @@ function traits(parts: readonly string[]): string[] {
   return dedupe(parts.flatMap((p) => p.split(',')))
 }
 
+/**
+ * 锚点是「跨镜头一致性」的载体（ADR-0008）：同一个角色在每一镜都带着同一串
+ * 视觉锚点进 prompt，模型才有机会画成同一个人。
+ *
+ * **同位语，不是冒号。** 冒号后接内容正是 Veo 的台词语法（`Lena: "You did."`
+ * 会被当成要说的话），拿它分隔角色描述，有把整串特征当台词烧进画面的风险。
+ * 两家官方例句里角色都是同位语形式。
+ */
 function characterClause(c: PromptCharacter): string {
-  // 锚点是「跨镜头一致性」的载体（ADR-0008）：同一个角色在每一镜都带着同一串
-  // 视觉锚点进 prompt，模型才有机会画成同一个人
-  return `${c.name}: ${traits([c.description, ...c.anchorTokens]).join(', ')}`
+  return `${c.name}, ${traits([c.description, ...c.anchorTokens]).join(', ')}`
 }
 
 /**
@@ -143,24 +156,49 @@ export function buildPrompt(intent: PromptIntent, assets: PromptAssets): BuiltPr
 
   const action = dedupe([intent.action, ...(intent.emotion ? [intent.emotion] : [])]).join(', ')
 
+  /*
+   * **景别 + 角色 + 动作合成一句，逗号相接。**
+   *
+   * 两家官方模板都是这个形状（`{景别} of {主体}, {动作}`）——主体与描述它的
+   * 镜头语言在同一个从句里，模型才知道「这个中景是在拍谁」。拆成三句之后
+   * 「medium shot.」自己成一句，没有主语。
+   *
+   * 其余（地点、时间、风格）保持句号分隔：它们是环境，不是主体。
+   */
+  const subject = [framing, ...assets.characters.map(characterClause), action]
+    .filter((x) => x.length > 0)
+    .join(', ')
+
+  const timeProse = intent.timeOfDay ? TIME_OF_DAY_PROSE[intent.timeOfDay] : null
+
+  /*
+   * 地点：**白描散文，不带标签前缀。**
+   *
+   * `Interior:` / `Exterior:` 是剧本 slugline 的约定，不是给模型的语言——两家
+   * 官方例句里没有任何标签前缀。改成介词从句。
+   *
+   * 时间词折进同一句：裸一句 `night.` 是个没有主语的片段。而 location 文本
+   * 本来就含该词时跳过——seed 的 Rooftop 写的就是 `city rooftop at night`，
+   * 不查的话会拼出「…at night. night.」。
+   */
+  const locationSentence = ((): string | null => {
+    if (!assets.location) return timeProse
+    const body = traits([assets.location.description, ...assets.location.anchorTokens]).join(', ')
+    const where = `${assets.location.interior ? 'indoors' : 'outdoors'}, ${body}`
+    if (!timeProse) return where
+    // 已经写了 night / dusk 之类就不再补一次
+    return new RegExp(`\\b${timeProse}\\b`, 'i').test(body) ? where : `${where}, ${timeProse}`
+  })()
+
   const sentences = [
-    framing,
-    action,
-    ...assets.characters.map(characterClause),
-    ...(assets.location
-      ? [
-          `${assets.location.interior ? 'Interior' : 'Exterior'}: ${traits([
-            assets.location.description,
-            ...assets.location.anchorTokens,
-          ]).join(', ')}`,
-        ]
-      : []),
-    ...(intent.timeOfDay ? [TIME_OF_DAY_PROSE[intent.timeOfDay]] : []),
-    ...(assets.style ? [`Style: ${assets.style.description}`] : []),
+    subject,
+    ...(locationSentence ? [locationSentence] : []),
+    // `Style:` 同理去标签。风格描述本身就是形容词短语，直接当一句
+    ...(assets.style ? [assets.style.description] : []),
   ]
 
   return {
-    prompt: sentences.filter((s) => s.length > 0).join('. ') + '.',
+    prompt: sentences.filter((x) => x.length > 0).join('. ') + '.',
     negativePrompt: assets.style?.negativePrompt ?? null,
   }
 }
