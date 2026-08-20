@@ -43,17 +43,24 @@ export interface LintContext {
   readonly targetDurationSec: number
 }
 
-/** 03 §S3：单集镜头数在 10–25 之间（60–90 秒 / 2–8 秒每镜，典型 18 镜 × 4 秒） */
-const SHOT_COUNT = { min: 10, max: 25 } as const
+/**
+ * 03 §S3：单集镜头数在 10–25 之间（60–90 秒 / 2–8 秒每镜，典型 18 镜 × 4 秒）。
+ *
+ * **导出是为了让提示词从这里取数。** 此前 `callShotlist.ts` 的 system prompt 里
+ * 另写了一遍 `'10 to 25 shots total'`，两份字面量互不相干：改大了 lint 放行而模型
+ * 不会去用（改了等于没改），改小了模型照新的产而 lint 判死（**每次生成白烧一轮
+ * 修复再失败**）。判据只该有一份。
+ */
+export const SHOT_COUNT = { min: 10, max: 25 } as const
 
-/** 03 §S3：镜头时长总和 ≈ 目标时长（±15%） */
-const DURATION_TOLERANCE = 0.15
+/** 03 §S3：镜头时长总和 ≈ 目标时长（±15%）。导出理由同 `SHOT_COUNT` */
+export const DURATION_TOLERANCE = 0.15
 
-/** 13 §4.5：「禁 3 人以上复杂互动」——「三人同时打斗」必然崩 */
-const MAX_CAST_PER_SHOT = 2
+/** 13 §4.5：「禁 3 人以上复杂互动」——「三人同时打斗」必然崩。导出理由同 `SHOT_COUNT` */
+export const MAX_CAST_PER_SHOT = 2
 
-/** 03 §S3：连续三个同景别会被校验器标黄 */
-const SAME_SHOT_TYPE_RUN = 3
+/** 03 §S3：连续三个同景别会被校验器标黄。导出理由同 `SHOT_COUNT` */
+export const SAME_SHOT_TYPE_RUN = 3
 
 /**
  * 13 §4.5 把这条列为「最贵的一条教训」：扩散模型主要识别正面内容，

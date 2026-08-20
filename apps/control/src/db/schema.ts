@@ -59,8 +59,14 @@ export const projects = pgTable('projects', {
   title: text('title').notNull(),
   synopsis: text('synopsis'),
   styleProfileId: uuid('style_profile_id'),
+  /**
+   * ⚠️ **当前不生效**：生成时画幅在三处各自硬编码 `'9:16'`
+   * （`applyTransition.ts` / `batch.ts` / `orchestrator.ts`）。
+   * 库里存的值到不了任何请求。要支持横屏得先接那三处，不是给它加写入口。
+   */
   aspectRatio: text('aspect_ratio').notNull().default('9:16'),
   // 北美 R 级为主市场（00-overview.md §2.5）
+  /** ⚠️ **当前零读取**：消费者是 M3 的 TTS，还不存在 */
   language: text('language').notNull().default('en-US'),
   rightsRef: jsonb('rights_ref').$type<RightsRef | null>(), // 预留：授权链
   ownerId: text('owner_id').notNull().default('local'), // 预留：多用户

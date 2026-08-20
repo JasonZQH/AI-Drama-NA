@@ -161,12 +161,24 @@ MOCK_SEED_DETERMINISTIC=0                       # 置 1：同 seed 返回同一�
 # SELFHOST_MODEL=wan2.2-ti2v-5b
 
 # ── LLM（剧本/分镜）──
-# ANTHROPIC_API_KEY=
-LLM_MODEL=claude-sonnet-4-5
+# 模型写死在代码里（apps/control/src/pipeline/callShotlist.ts 的 MODEL），
+# 不由 env 决定——换模型要连着改提示词与四层校验，那不是改一个字符串的事。
+# 曾经这里有一行 LLM_MODEL=claude-sonnet-4-5：全仓零读取，而且值也是错的
+# （实际用的是 google/gemini-3.7-flash）。一个改了没用、值还是错的开关，
+# 比没有更坏——照着它配的人会以为自己在用另一个模型。
+#
+# 密钥走 OPENROUTER_API_KEY（上面），或在面板的「密钥」页里存。
 
 # ── TTS ──
-TTS_PROVIDER=mock
+# M3 才接。TTS_PROVIDER=mock 同样是零读取的死配置，一并删掉——
+# 等真有第二个实现时再加，那时它才有意义。
 # ELEVENLABS_API_KEY=
+
+# ── 被代码读但此前没写在这儿的两个 ──
+# 补上是因为「有读者却没文档」与「有文档却没读者」是同一类问题的两面：
+# 前者让人不知道能调，后者让人以为能调。
+# LOG_LEVEL=info            # fastify 日志级别。集成测试会设成 silent
+# MOCK_LATENCY_SCALE=1      # mock provider 的假延迟倍率，0 = 立刻返回
 
 # ── 预算闸门（重要）──
 BUDGET_DAILY_MICRO_USD=5000000                  # $5/天，防误操作烧钱

@@ -246,7 +246,10 @@ const plan: Array<{
   {
     scene: 2,
     shotType: 'cu',
-    action: 'Lena answers without turning around',
+    // 原文是 `Lena answers without turning around`——`without` 命中
+    // `shotlist.ts` 的 NEGATION 正则，也直接违反 system prompt 自己写的
+    // 「只写正面描述、别写不存在的东西」。夹具进的是真实 prompt，不该带头违规
+    action: 'Lena answers with her back still turned, chin lifted',
     cast: ['Lena'],
     dialogue: 'You did.',
     dur: '3.0',

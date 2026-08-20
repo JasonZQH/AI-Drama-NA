@@ -1,5 +1,11 @@
 import { shotlistDraft, shotlistJsonSchema, type ShotlistDraft, type TimeOfDay } from '@ai-drama/contracts'
-import { lintShotlist } from './shotlist.js'
+import {
+  DURATION_TOLERANCE,
+  MAX_CAST_PER_SHOT,
+  SAME_SHOT_TYPE_RUN,
+  SHOT_COUNT,
+  lintShotlist,
+} from './shotlist.js'
 
 /**
  * 剧本 → 分镜表（`03-pipeline.md` S3）。**一个函数，一个实现。**
@@ -107,19 +113,33 @@ interface ChatResponse {
 /**
  * 硬规则与 `lintShotlist` 一一对应。写进提示词是为了**少触发**那一轮修复，
  * 不是替代它——提示词是建议，`lintShotlist` 才是判据。
+ *
+ * ## 四个数字从判据常量取，不再另写一遍
+ *
+ * 此前这里硬编码着 `'10 to 25 shots total'` / `'(within 15%)'` /
+ * `'At most 2 characters'` / `'three shots in a row'`，与 `shotlist.ts` 的
+ * `SHOT_COUNT` / `DURATION_TOLERANCE` / `MAX_CAST_PER_SHOT` /
+ * `SAME_SHOT_TYPE_RUN` **是两份互不相干的字面量**，没有任何机制保证同步：
+ *
+ * - 判据改大、提示词没改 → 模型仍按旧上限产，改了等于没改
+ * - 提示词改大、判据没改 → 模型照新的产、lint 判死，**每次生成白烧一轮修复再失败**
+ *
+ * 现在插值过来。**唯一还是字面量的是「2-8 seconds」**：那是 03 §S3 的建议区间，
+ * 与 schema 的硬上限（`durationSec.min(1).max(10)`，对齐 `shots_duration_ck`）
+ * 刻意不同——一个是「该怎么写」，一个是「不许越过」。合并它们会把建议变成硬限。
  */
-function systemPrompt(input: ShotlistInput): string {
+export function systemPrompt(input: ShotlistInput): string {
   return [
     'You are a storyboard supervisor for vertical short-form drama (9:16, mobile-first).',
     'Break the given script into shots. Return JSON matching the provided schema exactly.',
     '',
     'Hard rules:',
     `- Return exactly ${input.scenes.length} scene objects, in the same order as the input scenes. Do not add, drop, or merge scenes.`,
-    '- 10 to 25 shots total across all scenes. Typical is 18.',
-    `- Shot durations must sum to about ${input.targetDurationSec} seconds (within 15%). Each shot 2-8 seconds.`,
-    '- At most 2 characters per shot. Three or more interacting reliably breaks the video model.',
+    `- ${SHOT_COUNT.min} to ${SHOT_COUNT.max} shots total across all scenes. Typical is 18.`,
+    `- Shot durations must sum to about ${input.targetDurationSec} seconds (within ${DURATION_TOLERANCE * 100}%). Each shot 2-8 seconds.`,
+    `- At most ${MAX_CAST_PER_SHOT} characters per shot. More than that interacting reliably breaks the video model.`,
     '- Every shot with dialogue must list its speaker in characterNames.',
-    '- Vary shotType; never use the same one three shots in a row.',
+    `- Vary shotType; never use the same one ${SAME_SHOT_TYPE_RUN} shots in a row.`,
     '',
     'Writing style for `action` and `emotion`:',
     '- Describe only what the camera sees, in positive terms. Never write what is absent',
@@ -240,9 +260,23 @@ async function post(
     plugins: [{ id: 'response-healing' }],
   }
 
+  const referer = process.env['OPENROUTER_REFERER']
+  const title = process.env['OPENROUTER_TITLE']
   const res = await fetch(`${opts.baseUrl ?? BASE_URL}/chat/completions`, {
     method: 'POST',
-    headers: { authorization: `Bearer ${opts.apiKey}`, 'content-type': 'application/json' },
+    /*
+     * 归因头与视频链保持一致（`openrouter.ts` 建 headers 那几行）。
+     *
+     * 不带的话，OpenRouter 后台里**文本这条链的花费是没有归属的**——而这个项目
+     * 恰恰要按 provider/model 分摊成本。两条链走同一个账号、只有一条带归因，
+     * 报表就对不上。不影响计费，只影响能不能看清钱花在哪。
+     */
+    headers: {
+      authorization: `Bearer ${opts.apiKey}`,
+      'content-type': 'application/json',
+      ...(referer ? { 'http-referer': referer } : {}),
+      ...(title ? { 'x-title': title } : {}),
+    },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   })
