@@ -20,6 +20,16 @@ import type { ShotEvent } from '../pipeline/shotMachine.js'
 import type { Queues } from '../queue/queues.js'
 import type { Storage } from '../storage/s3.js'
 import { ApiError } from './errors.js'
+import { CredentialSecretMissing } from '../credentials/crypto.js'
+import { probeOpenRouter, type ProbeResult } from '../credentials/probe.js'
+import {
+  ENV_VAR,
+  resolveKey,
+  deleteCredential,
+  listCredentials,
+  upsertCredential,
+  type ProviderId,
+} from '../credentials/store.js'
 import type { VideoProvider } from '@ai-drama/contracts'
 
 export interface ApiDeps {
@@ -34,6 +44,12 @@ export interface ApiDeps {
    * OpenRouter 的话每跑一次 CI 就是一次真实计费。
    */
   readonly shotlist?: ShotlistFn
+  /**
+   * 密钥探测。同样是 seam：不注入的话 `POST /api/keys` 会真的打
+   * openrouter.ai，而「无效 key 直接拒收」正是这组端点最该被守住的行为，
+   * 不能因为出网被拦就测不到。
+   */
+  readonly probeKey?: (key: string) => Promise<ProbeResult>
 }
 
 export type ShotlistFn = (input: ShotlistInput) => Promise<ShotlistOutcome>
@@ -43,15 +59,17 @@ export type ShotlistFn = (input: ShotlistInput) => Promise<ShotlistOutcome>
  *
  * 同一类坑这个仓库踩过一次：media worker 没起时回的是 `409 CONFLICT: fetch
  * failed`——状态码和文案两条信息都是错的，看到的人不知道该去做什么。
+ *
+ * **密钥每次请求现取**（库优先、`.env` 回落），不是开机读一次。所以在面板的
+ * 「密钥」页存完一把 key，分镜生成**立刻**就能用，不需要重启。
+ *
+ * 视频那条链路不一样：`buildProviderPool()` 在 `server.ts` 与 `worker.ts` 里
+ * 各建一次、都在开机时，所以视频 provider 仍然要重启才认新 key。这个差异在
+ * `GET /api/keys` 的 `runtime.providers` 里能看出来，PR-E 再统一。
  */
-function shotlistFromEnv(env: NodeJS.ProcessEnv = process.env): ShotlistFn {
-  return (input) => {
-    const apiKey = env['OPENROUTER_API_KEY']
-    if (!apiKey)
-      throw new ApiError(
-        'DEPENDENCY_UNAVAILABLE',
-        '没有配 OPENROUTER_API_KEY，分镜生成用不了。在仓库根的 .env 里加上 OPENROUTER_API_KEY=sk-or-... 再重启控制面。',
-      )
+function shotlistFromDb(db: Db): ShotlistFn {
+  return async (input) => {
+    const apiKey = await resolveKeyOr503(db, 'openrouter')
     return callShotlist(input, { apiKey })
   }
 }
@@ -158,6 +176,22 @@ const scenePatch = (b: z.infer<typeof sceneBody>): Record<string, unknown> => ({
   ...(b.timeOfDay === undefined ? {} : { timeOfDay: b.timeOfDay ?? null }),
   ...(b.locationId === undefined ? {} : { locationId: b.locationId ?? null }),
 })
+
+/**
+ * 取密钥明文，没有就给可行动的 503。
+ *
+ * 报错文案与分镜端点那条保持同一个形状：说清缺什么、去哪儿加、加完做什么。
+ * 「没配 key」不是入参错误，是这套部署当前做不到——所以是 503 不是 4xx。
+ */
+async function resolveKeyOr503(db: Db, provider: ProviderId): Promise<string> {
+  const key = await resolveKey(db, provider)
+  if (!key)
+    throw new ApiError(
+      'DEPENDENCY_UNAVAILABLE',
+      `没有 ${provider} 的密钥。在面板的「密钥」页存一把，或在仓库根的 .env 里加上 ${ENV_VAR[provider]}=... 再重启控制面。`,
+    )
+  return key
+}
 
 export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
   const { db } = deps
@@ -308,6 +342,128 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
     return reply.status(204).send()
   })
 
+  /*
+   * ── provider 凭据（PR-D）──────────────────────────────────────────────
+   *
+   * 在这之前配 key 的流程是：编辑 `.env` → 重启**两个**进程（`server.ts` 与
+   * `worker.ts` 各建一次 provider 池）→ 点一次**真实计费**的生成来确认它对不对。
+   *
+   * ## 三条安全约束，它们决定了这组端点长什么样
+   *
+   * 1. **`GET` 是不设防的**（`guardWrites` 只守非 GET），所以 `GET /api/keys`
+   *    只回掩码信息，明文一个字符都不出库。
+   * 2. **明文不落库**：AES-256-GCM，密钥来自 `CREDENTIAL_SECRET`。没配就**拒绝
+   *    存**，不静默降级成明文。
+   * 3. **存之前先验**：无效的 key 直接拒收，而不是存下来等下一次花钱时才发现。
+   *
+   * ## 这一版不是热更新，页面上要说清楚
+   *
+   * provider 池是开机建的。所以 `GET /api/keys` 同时回 `runtime.providers`
+   * ——跑着的进程实际加载了什么。库里存了 key 而 runtime 里没有 openrouter，
+   * 就是「还没重启」，这个差异直接摆出来，不让人猜。
+   */
+  const PROVIDERS: readonly ProviderId[] = ['openrouter']
+  const asProvider = (v: string): ProviderId => {
+    if (!PROVIDERS.includes(v as ProviderId))
+      throw new ApiError('VALIDATION_FAILED', `不认识的 provider「${v}」，目前只支持 ${PROVIDERS.join('、')}`)
+    return v as ProviderId
+  }
+
+  app.get('/api/keys', async () => {
+    const rows = await listCredentials(db)
+    const byProvider = new Map(rows.map((r) => [r.provider, r]))
+    return {
+      credentials: PROVIDERS.map((p) => {
+        const row = byProvider.get(p)
+        return {
+          provider: p,
+          envVar: ENV_VAR[p],
+          /** 'db' = 面板里存过；'env' = 只有 .env 里有；'none' = 两处都没有 */
+          source: row ? 'db' : process.env[ENV_VAR[p]] ? 'env' : 'none',
+          label: row?.label ?? null,
+          last4: row?.last4 ?? null,
+          verifiedAt: row?.verifiedAt ?? null,
+          updatedAt: row?.updatedAt ?? null,
+        }
+      }),
+      runtime: {
+        /*
+         * 跑着的进程实际加载了哪些 (provider, model)。与上面的 credentials
+         * 对照就能看出「存了但还没重启」——这一版不是热更新，差异要能一眼看见。
+         */
+        providers: deps.providers.map((x) => x.id),
+        credentialSecretConfigured: Boolean(process.env['CREDENTIAL_SECRET']?.trim()),
+      },
+    }
+  })
+
+  /**
+   * 存一把 key。**先验后存**：
+   *
+   * - key 不对（401/403）→ 422 拒收。存一把用不了的 key 只会把发现问题的时机
+   *   推迟到下一次花钱。
+   * - 连不上 OpenRouter → 503 而不是 422。这两种混成一种的话，OpenRouter 抽风
+   *   时会让人把一把好 key 删掉重配。
+   * - `force: true` 可以跳过「连不上」那道（离线先存着），但**跳不过「key 不对」**。
+   */
+  app.post('/api/keys', async (req, reply) => {
+    const body = z
+      .object({
+        provider: z.string(),
+        key: z.string().trim().min(8, 'key 太短，不像是一把真的密钥'),
+        label: z.string().trim().optional(),
+        force: z.boolean().default(false),
+      })
+      .parse(req.body ?? {})
+    const provider = asProvider(body.provider)
+
+    const probe = await (deps.probeKey ?? probeOpenRouter)(body.key)
+    if (!probe.ok && probe.kind === 'invalid')
+      throw new ApiError('VALIDATION_FAILED', probe.detail, { kind: 'invalid' })
+    if (!probe.ok && !body.force)
+      throw new ApiError(
+        'DEPENDENCY_UNAVAILABLE',
+        `${probe.detail}。确认这把 key 没问题的话，可以带 force 强制保存。`,
+        {
+          kind: probe.kind,
+        },
+      )
+
+    try {
+      const row = await upsertCredential(db, {
+        provider,
+        key: body.key,
+        label: body.label ?? null,
+        verified: probe.ok,
+      })
+      return reply.status(201).send({ credential: row, probe })
+    } catch (e) {
+      // 没配 CREDENTIAL_SECRET 是配置问题，不是入参问题——422 会让人去改 body
+      if (e instanceof CredentialSecretMissing) throw new ApiError('DEPENDENCY_UNAVAILABLE', e.message)
+      throw e
+    }
+  })
+
+  /** 重新探测已存的那把。用来回答「我的额度还剩多少」 */
+  app.post('/api/keys/:provider/probe', async (req) => {
+    const provider = asProvider(z.object({ provider: z.string() }).parse(req.params).provider)
+    const key = await resolveKeyOr503(db, provider)
+    const probe = await (deps.probeKey ?? probeOpenRouter)(key)
+    if (probe.ok)
+      await db
+        .update(s.providerCredentials)
+        .set({ verifiedAt: new Date() })
+        .where(eq(s.providerCredentials.provider, provider))
+    return { probe }
+  })
+
+  app.delete('/api/keys/:provider', async (req, reply) => {
+    const provider = asProvider(z.object({ provider: z.string() }).parse(req.params).provider)
+    if (!(await deleteCredential(db, provider)))
+      throw new ApiError('NOT_FOUND', `没有存过 ${provider} 的凭据`)
+    return reply.status(204).send()
+  })
+
   app.get('/api/episodes/:id', async (req) => {
     const { id } = Uuid.parse(req.params)
     const [ep] = await db.select().from(s.episodes).where(eq(s.episodes.id, id))
@@ -446,7 +602,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       .from(s.characters)
       .where(eq(s.characters.projectId, ep.projectId))
 
-    const run = deps.shotlist ?? shotlistFromEnv()
+    const run = deps.shotlist ?? shotlistFromDb(db)
     let out: ShotlistOutcome
     try {
       out = await run({

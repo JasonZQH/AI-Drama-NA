@@ -107,6 +107,45 @@ export const scenes = pgTable(
   (t) => [unique('scenes_episode_index_uq').on(t.episodeId, t.index)],
 )
 
+/**
+ * provider 凭据。
+ *
+ * ## 为什么落库而不是只留在 `.env`
+ *
+ * `.env` 是进程启动时读一次的，改完要重启**两个**进程（`server.ts` 与
+ * `worker.ts` 各建一次 provider 池），而且没有任何反馈告诉你这把 key 是不是
+ * 好的。落库之后面板能存、能验、能看到「库里存了什么」与「跑着的进程加载了
+ * 什么」的差异。
+ *
+ * ## `ciphertext` 里是 AES-256-GCM，不是明文
+ *
+ * 明文落库意味着任何一份 `pg_dump` 就是一次泄露。见 `credentials/crypto.ts`。
+ *
+ * ## 一个 provider 一行
+ *
+ * 不做多 key 轮换：没有这个需求，而 `unique(provider)` 让「换一把」变成一次
+ * upsert，比维护 active 标志简单。真要轮换时再加。
+ */
+export const providerCredentials = pgTable(
+  'provider_credentials',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** 目前只有 `'openrouter'`。留成 text 而不是枚举——加一家不该要一次迁移 */
+    provider: text('provider').notNull(),
+    /** 人给的备注，比如「个人账号」「团队额度」 */
+    label: text('label'),
+    /** `base64(iv | tag | ciphertext)`，AES-256-GCM */
+    ciphertext: text('ciphertext').notNull(),
+    /** 展示用。明文一个字符都不出库，见 crypto.ts 的 mask() */
+    last4: text('last4').notNull(),
+    /** 最近一次探测成功的时间。null = 存进来之后就没验过 */
+    verifiedAt: timestamp('verified_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [unique('provider_credentials_provider_uq').on(t.provider)],
+)
+
 /** 全系统最重要的表 */
 export const shots = pgTable(
   'shots',
