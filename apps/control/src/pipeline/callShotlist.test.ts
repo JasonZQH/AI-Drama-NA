@@ -1,7 +1,8 @@
 import { createServer, type Server } from 'node:http'
 import { shotlistJsonSchema } from '@ai-drama/contracts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { ShotlistRejected, callShotlist, type ShotlistInput } from './callShotlist.js'
+import { ShotlistRejected, callShotlist, systemPrompt, type ShotlistInput } from './callShotlist.js'
+import { DURATION_TOLERANCE, MAX_CAST_PER_SHOT, SAME_SHOT_TYPE_RUN, SHOT_COUNT } from './shotlist.js'
 
 /**
  * 打桩用 **loopback server，不用 `vi.stubGlobal('fetch')`**。
@@ -149,6 +150,70 @@ describe('callShotlist', () => {
     const schema = JSON.stringify(bodies[0]!['response_format'])
     expect(schema).toContain('"Lena"')
     expect(schema).toContain('"Marcus"')
+  })
+})
+
+/**
+ * 提示词里的硬规则数字必须与 `lintShotlist` 的判据**同源**。
+ *
+ * 这组断言守的不是「数字是多少」（那会是重言式——两边同一个来源），守的是
+ * **「有人把它改回硬编码」**。
+ *
+ * ## 覆盖边界（实测过，写出来免得下一个人以为它守得更多）
+ *
+ * 用**相同的值**退回字面量（把插值换成 `'10 to 25'`），这组断言**不会红**——
+ * 输出一模一样，从输出看不出来源。但那是良性的：它在常量分叉的那一刻才变成
+ * bug，而那时把 `SHOT_COUNT.max` 改成 30 会让这里立刻红（实测每条常量改动都
+ * 红 2 个用例）。
+ *
+ * 换句话说：**同值硬编码是潜伏的，而它从潜伏变成有害的那一刻正好被抓住。**
+ * 要更强的保证只能靠 lint 规则（禁止这个文件出现裸数字），那不值当。
+ *
+ * 为什么值得守：两份不同步的后果是不对称的。判据改大而提示词没改 = 改了等于
+ * 没改（模型仍按旧上限产）；提示词改大而判据没改 = 模型照新的产、lint 判死，
+ * **每次生成白烧一轮修复再失败**，而日志里看不出是这个原因。
+ */
+describe('systemPrompt 的硬规则与判据同源', () => {
+  const p = systemPrompt({
+    scriptMd: 'x',
+    synopsis: null,
+    targetDurationSec: 72,
+    scenes: [
+      { summary: null, timeOfDay: null },
+      { summary: null, timeOfDay: null },
+    ],
+    characters: [],
+  })
+
+  it('镜头数区间取自 SHOT_COUNT', () => {
+    expect(p).toContain(`${SHOT_COUNT.min} to ${SHOT_COUNT.max} shots total`)
+  })
+
+  it('时长容差取自 DURATION_TOLERANCE，且是百分数不是小数', () => {
+    expect(p).toContain(`within ${DURATION_TOLERANCE * 100}%`)
+    expect(p, '别把 0.15 直接印出去').not.toContain('within 0.15')
+  })
+
+  it('同框人数取自 MAX_CAST_PER_SHOT', () => {
+    expect(p).toContain(`At most ${MAX_CAST_PER_SHOT} characters per shot`)
+  })
+
+  it('连续同景别取自 SAME_SHOT_TYPE_RUN', () => {
+    expect(p).toContain(`the same one ${SAME_SHOT_TYPE_RUN} shots in a row`)
+  })
+
+  it('场次数用的是输入的实际场数', () => {
+    expect(p).toContain('Return exactly 2 scene objects')
+  })
+
+  /**
+   * 单镜 2–8 秒是 03 §S3 的**建议**，与 schema 的硬上限（1–10，对齐
+   * `shots_duration_ck`）刻意不同：一个是「该怎么写」，一个是「不许越过」。
+   * 这条钉住这个区别，免得下一个人"顺手统一"成 1-10。
+   */
+  it('单镜时长仍是建议区间 2-8，不是 schema 的硬上限 1-10', () => {
+    expect(p).toContain('Each shot 2-8 seconds')
+    expect(p).not.toContain('1-10 seconds')
   })
 })
 

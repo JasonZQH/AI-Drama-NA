@@ -257,12 +257,22 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
    * 重编号是另一件事。现在删了重建即可。
    */
   app.post('/api/projects', async (req, reply) => {
+    /*
+     * **只收 title 与 synopsis。**
+     *
+     * P0-A 这里还收过 `aspectRatio` 与 `language`——两个都能写进库、都出现在
+     * API 出参里，而**没有任何东西读它们**：画幅在 `applyTransition.ts:133`、
+     * `batch.ts:151`、`orchestrator.ts:217` 三处各自硬编码 `'9:16'`；语言的
+     * 消费者是 M3 的 TTS，还不存在。
+     *
+     * 收一个存了不生效的参数，比不收更坏：它看起来是个开关。列保留（有默认值，
+     * 删它要一次迁移换不来任何东西），等真的要支持横屏或多语言时，那时接的是
+     * 「读它的那条路径」，不是「写它的这个入口」。
+     */
     const body = z
       .object({
         title: z.string().trim().min(1, '项目要有名字'),
         synopsis: z.string().trim().optional(),
-        aspectRatio: z.string().optional(),
-        language: z.string().optional(),
       })
       .parse(req.body ?? {})
 
@@ -271,8 +281,6 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       .values({
         title: body.title,
         ...(body.synopsis ? { synopsis: body.synopsis } : {}),
-        ...(body.aspectRatio ? { aspectRatio: body.aspectRatio } : {}),
-        ...(body.language ? { language: body.language } : {}),
       })
       .returning()
     return reply.status(201).send({ project: row })
