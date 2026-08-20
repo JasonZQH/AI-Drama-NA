@@ -23,7 +23,7 @@ import type { CameraMove, ShotType, TimeOfDay } from '@ai-drama/contracts'
  */
 
 /** 景别缩写对模型没有意义，要展开成人话 */
-const SHOT_TYPE_PROSE: Record<ShotType, string> = {
+export const SHOT_TYPE_PROSE: Record<ShotType, string> = {
   establishing: 'establishing shot',
   ws: 'wide shot',
   ms: 'medium shot',
@@ -40,7 +40,7 @@ const SHOT_TYPE_PROSE: Record<ShotType, string> = {
  * 但「往哪推」不值得为它加一个数据库列：短剧里推近是绝对多数（情绪递进），
  * 真需要拉远的那几镜可以写进 `action`。默认值选多数派，代价是少数派要绕。
  */
-const CAMERA_MOVE_PROSE: Record<CameraMove, string> = {
+export const CAMERA_MOVE_PROSE: Record<CameraMove, string> = {
   static: 'static camera',
   pan: 'camera pans',
   tilt: 'camera tilts',
@@ -49,7 +49,7 @@ const CAMERA_MOVE_PROSE: Record<CameraMove, string> = {
   handheld: 'handheld camera',
 }
 
-const TIME_OF_DAY_PROSE: Record<TimeOfDay, string> = {
+export const TIME_OF_DAY_PROSE: Record<TimeOfDay, string> = {
   day: 'daytime',
   night: 'night',
   dawn: 'dawn light',

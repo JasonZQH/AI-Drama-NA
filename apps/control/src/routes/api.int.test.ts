@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { and, eq, gte, inArray, lt } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
@@ -16,6 +16,7 @@ import { ShotlistRejected } from '../pipeline/callShotlist.js'
 import { probeOpenRouter, type ProbeResult } from '../credentials/probe.js'
 import { deleteCredential, resolveKey, upsertCredential } from '../credentials/store.js'
 import { LivePool, publishProvidersChanged, subscribeProviderChanges } from '../providers/pool.js'
+import { DURATION_TOLERANCE, SHOT_COUNT } from '../pipeline/shotlist.js'
 import type { ShotlistFn } from './api.js'
 
 /**
@@ -1771,6 +1772,112 @@ describe('密钥探测（打桩，不打真实 OpenRouter）', () => {
       expect(r.kind).toBe('unreachable')
       expect(r.detail, 'happy-eyeballs 会把真原因藏进 AggregateError').toMatch(/ECONNREFUSED/)
     }
+  })
+})
+
+/**
+ * 提示词检视（PR-K）。
+ *
+ * 最要紧的一条是**预览与真实生成同源**：两者都走 `resolvePrompt`。另写一份
+ * 取数逻辑就是 PR-J 修掉的那类 bug 的翻版——两份会漂，而漂了之后预览显示的和
+ * 真实发出去的不是一回事，那比没有预览更坏（人会照着一份假的去调措辞）。
+ */
+describe('提示词检视', () => {
+  it('GET /api/prompts 回底座，且标出该改哪个文件', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/prompts' })
+    expect(r.statusCode).toBe(200)
+    const b = r.json() as {
+      shotlist: { model: string; source: string; system: string; criteria: Record<string, unknown> }
+      video: { prose: Record<string, Record<string, string>>; assembly: string[] }
+    }
+    expect(b.shotlist.model).toBe('google/gemini-3.7-flash')
+    expect(b.shotlist.source, '要告诉人去哪儿改').toContain('callShotlist.ts')
+    expect(b.shotlist.system).toContain('storyboard supervisor')
+    // 判据数字取自常量，与提示词同源（PR-J）
+    expect(b.shotlist.criteria['shotCount']).toEqual({ min: SHOT_COUNT.min, max: SHOT_COUNT.max })
+    expect(b.shotlist.criteria['durationTolerancePct']).toBe(DURATION_TOLERANCE * 100)
+    // 三张散文表都在，且是真的那三张
+    expect(b.video.prose['shotType']?.['cu']).toBe('close-up')
+    expect(b.video.prose['cameraMove']?.['dolly']).toBe('slow dolly in')
+    expect(b.video.assembly.length).toBeGreaterThan(0)
+  })
+
+  it('底座里不该出现任何密钥', async () => {
+    const raw = (await app.inject({ method: 'GET', url: '/api/prompts' })).body
+    expect(raw).not.toMatch(/sk-or-|Bearer|apiKey/)
+  })
+
+  /** **这条是这一组的核心。** 预览必须与真实入队时构建的那份逐字相同 */
+  it('预览与真实生成逐字一致', async () => {
+    const preview = await app.inject({
+      method: 'POST',
+      url: '/api/ai/prompt-preview',
+      headers: WRITE_HEADERS,
+      payload: { shotId },
+    })
+    expect(preview.statusCode).toBe(200)
+    const p = preview.json() as { prompt: string; negativePrompt: string | null; overridden: boolean }
+    expect(p.overridden).toBe(false)
+    expect(p.prompt.length).toBeGreaterThan(20)
+
+    // 真跑一次生成，比对落库的 prompt_text
+    await db.update(s.shots).set({ status: 'ready', selectedTakeId: null }).where(eq(s.shots.id, shotId))
+    const gen = await app.inject({
+      method: 'POST',
+      url: `/api/shots/${shotId}/generate`,
+      headers: WRITE_HEADERS,
+    })
+    expect(gen.statusCode).toBe(202)
+    const [job] = await db
+      .select({ promptText: s.generationJobs.promptText, negativeText: s.generationJobs.negativeText })
+      .from(s.generationJobs)
+      .where(eq(s.generationJobs.shotId, shotId))
+      .orderBy(desc(s.generationJobs.attempt))
+      .limit(1)
+    expect(job!.promptText, '预览与真实发出去的不是同一份——两者已经漂了').toBe(p.prompt)
+    expect(job!.negativeText).toBe(p.negativePrompt)
+  })
+
+  /** 人工旁路：写了 prompt_override 就整段原样发，拼装被完全跳过 */
+  it('prompt_override 会被如实标出来', async () => {
+    await db.update(s.shots).set({ promptOverride: '手写的 prompt，不要动它' }).where(eq(s.shots.id, shotId))
+    try {
+      const r = await app.inject({
+        method: 'POST',
+        url: '/api/ai/prompt-preview',
+        headers: WRITE_HEADERS,
+        payload: { shotId },
+      })
+      const p = r.json() as { prompt: string; overridden: boolean }
+      expect(p.overridden, '走旁路时必须标出来，否则人以为拼装规则变了').toBe(true)
+      expect(p.prompt).toBe('手写的 prompt，不要动它')
+    } finally {
+      await db.update(s.shots).set({ promptOverride: null }).where(eq(s.shots.id, shotId))
+    }
+  })
+
+  it('预览带回取到的资产，供解释「为什么长这样」', async () => {
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/ai/prompt-preview',
+      headers: WRITE_HEADERS,
+      payload: { shotId },
+    })
+    const p = r.json() as {
+      inputs: { style: { description: string } | null; location: unknown; characters: unknown[] }
+    }
+    // seed 的项目挂了风格，所以这里必须取得到——取不到说明 styleProfileId 那一跳断了
+    expect(p.inputs.style?.description).toContain('cinematic')
+  })
+
+  it('不存在的 shot 回 404', async () => {
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/ai/prompt-preview',
+      headers: WRITE_HEADERS,
+      payload: { shotId: '00000000-0000-4000-8000-000000000000' },
+    })
+    expect(r.statusCode).toBe(404)
   })
 })
 

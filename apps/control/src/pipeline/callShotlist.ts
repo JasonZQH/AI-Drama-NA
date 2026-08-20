@@ -48,7 +48,7 @@ import {
  * 便宜得多」。**warnings 不触发重试。**
  */
 
-const MODEL = 'google/gemini-3.7-flash'
+export const MODEL = 'google/gemini-3.7-flash'
 const BASE_URL = 'https://openrouter.ai/api/v1'
 
 /**
