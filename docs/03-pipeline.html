@@ -123,13 +123,22 @@ CHEN MO: 我等你三个小时了。
 <li><strong>剧情信息与尺度画面永不同镜。</strong> 承载对白、关键动作、道具揭示的镜头，不得同时包含需要降级的画面。违反这条，L1 版本会剧情断裂，只能重新生成——成本翻倍。</li>
 <li><strong>每个「热点 beat」规划三个覆盖镜头</strong>：<code>L2</code> 完整 → <code>L1</code> 同机位但遮蔽/换装/更早切出 → <code>L0</code> 反应镜头或特写脸部。AI 生成的边际成本优势正在于此：<strong>多生成两个镜头远比重剪一场戏便宜</strong>，增量成本约为 L2 的 10–20%；而"分开生成两版"是 80–100%。</li>
 </ol>
-<p><strong>完成判据</strong>（⏳ <strong>三条都还没有校验器</strong>——目前是写给人看的验收口径，不是系统闸门；
-唯一落地的是单镜时长，两层：zod <code>ShotIntent.durationSec</code> 的软边界与数据库
-<code>shots_duration_ck</code> 的硬约束。S1–S4 是 LLM 驱动的创作链路，仓里目前一行 LLM 代码都没有，
-M0 的分镜数据来自 <code>db/seed.ts</code> 的 12 镜夹具）：
-- 每场的镜头时长总和 ≈ 场次目标时长（±15%）。
+<p><strong>完成判据</strong>（✅ 已有校验器：<code>apps/control/src/pipeline/shotlist.ts</code> 的
+<code>lintShotlist()</code>，纯函数零 IO。四层校验里的第二层——L0 是 <code>strict</code> json_schema
+的转向、L1 是 <code>shotlistDraft().safeParse</code> 的闸门、L3 是数据库 <code>shots_duration_ck</code>
+的硬底）：
+- 镜头时长总和 ≈ 目标时长（±15%）。<strong>落集级不落场级</strong>：<code>scenes</code> 表没有
+  target_duration 列，加一列等于让 S2 决定每场配多少秒，那不是 S3 的事；而
+  <code>callShotlist()</code> 本来就是一次生成整集，这三条判据全是集级量。取
+  <code>episodes.target_duration_sec</code>。
 - 单集镜头数在 10–25 之间（60–90 秒 / 2–8 秒每镜，典型 18 镜 × 4 秒）。
-- 景别有变化：连续三个同景别会被校验器标黄。</p>
+- 景别有变化：连续三个同景别标黄（<strong>warning，不触发重试</strong>——原文就是「标黄」）。
+  跨场次也算：观众看到的是连续画面流，一场的末镜与下一场的首镜在成片里是相邻的。</p>
+<p>另有四条同层校验：场次数与输入不符、有台词但无说话人（S6 的 TTS 取不到
+<code>voiceId</code>）、单镜 ≥3 个角色（<code>13 §4.5</code>「必然崩」）、否定式画面描述（同上，
+「最贵的一条教训」，warning）。</p>
+<p><code>db/seed.ts</code> 的 12 镜夹具<strong>过不了这里的时长判据</strong>（42.5 秒 vs 75 秒，−43%）
+——那是刻意的，它自称「最小夹具，不是规模口径」。<strong>lint 只校验 LLM 的输出。</strong></p>
 <h3 id="s4-assets">S4 · ASSETS<a aria-label="链接到此节" class="anchor" href="#s4-assets">#</a></h3>
 <p><strong>输入</strong>：剧本里出现的角色名与场景名。
 <strong>动作</strong>：为每个角色生成三视图/立绘参考图集，为每个场景生成环境参考图，确认后锁定。

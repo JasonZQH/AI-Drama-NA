@@ -239,8 +239,12 @@ DELETE /api/scenes/:id
 POST /api/ai/script           { episodeId, styleNotes? }
      → { scriptMd, scenes: [{ index, summary, locationName, timeOfDay, stateIn, stateOut }] }
 
-POST /api/ai/shotlist         { sceneId, targetDurationSec? }
-     → { shots: ShotIntent[] }         // 见 03-pipeline.md §S3 的 schema
+POST /api/episodes/:id/shotlist                              // 已实现
+     → 201 { shots, scenes, repaired, warnings, costUsd }
+     // 整集一次生成，不按场。E2/E3/W1 全是集级量，逐场必须把累计秒数喂回去
+     // ——那是手搓一个整集上下文只是分了 N 次付钱，而整集重来只要 $0.003。
+     // 输入全部从库里取（script_md + project.synopsis + scenes + characters），
+     // 没有请求体。前置：有剧本、有场次、还没有镜头、目标时长可达。
 
 POST /api/ai/prompt-preview   { shotId, providerId? }
      → { prompt, negativePrompt, refImages: [{ role, assetId }] }

@@ -24,8 +24,8 @@ import type { ShotlistDraft } from '@ai-drama/contracts'
  *
  * ## 它不跑在 seed 上
  *
- * `db/seed.ts` 的 12 镜夹具**过不了 E2/E3**（12 镜 42.5 秒，而 `targetDurationSec`
- * 是 75 秒，偏差 −43%）。那不是 bug：`seed.ts` 自己写着「12 镜是刻意的最小夹具，
+ * `db/seed.ts` 的 12 镜夹具**过不了 E3**（42.5 秒 vs `targetDurationSec` 75 秒，
+ * 偏差 −43%）。**只有 E3**：12 落在 `[10, 25]` 内，镜头数其实是合法的。那不是 bug：`seed.ts` 自己写着「12 镜是刻意的最小夹具，
  * 不是规模口径」。**本函数只校验 LLM 的输出。** 写在这里免得下一个人以为 lint 坏了。
  */
 
@@ -58,9 +58,41 @@ const SAME_SHOT_TYPE_RUN = 3
 /**
  * 13 §4.5 把这条列为「最贵的一条教训」：扩散模型主要识别正面内容，
  * 否定词经常反向生效——写「No held object」，模型偏偏塞给角色一把武器。
- * Google 官方 prompt guide 也逐字写着 "avoid saying 'no' or 'don't'"。
+ * （同口径也见于 Google 对外的 Veo prompt guide，那是仓外出处，不在 docs/ 里。）
+ *
+ * **两处刻意收窄，都是实测撞出来的：**
+ *
+ * - 英文全部带 `\b` 词边界。不加的话 `Nolan`、`another`、`notebook` 全中。
+ * - 中文的「无」不能裸用：它会打中「无奈」「无声」，尤其是**「无人机」**——
+ *   而「无人机航拍」正是 `13 §机位词汇表` 的标准词，一个航拍镜头吃一条误报。
+ *   收成 `无人(?!机)`。
  */
-const NEGATION = /(\bno\b|\bnot\b|\bwithout\b|\bavoid\b|\bdon't\b|不要|没有|无人|避免)/i
+const NEGATION = /(\bno\b|\bnot\b|\bwithout\b|\bavoid\b|\bdon't\b|不要|没有|无人(?!机)|避免)/i
+
+/**
+ * 目标时长本身可不可能被满足。
+ *
+ * E2 封顶 25 镜、单镜封顶 10 秒 → 总时长上限 250 秒；E3 要求总时长 ≥ 目标 ×
+ * (1 − 15%)。所以目标超过 **294 秒**时，**不存在任何能同时通过 E2 与 E3 的
+ * 分镜表**——模型怎么改都不可能过，两轮 LLM 的钱白花，而人看到的报错是
+ * 「总时长不对」，读不出真正的原因是这一集的目标时长本身就不可满足。
+ *
+ * 所以在调模型**之前**问一次。要支持长集得让 `SHOT_COUNT` 从目标时长推出来
+ * 而不是硬编码，那是另一件事。
+ *
+ * @returns 不可达时返回可行动的说明；可达返回 null
+ */
+export function targetOutOfReach(targetDurationSec: number): string | null {
+  const max = SHOT_COUNT.max * 10 // 单镜上限见 contracts 的 draftShot.durationSec
+  const min = SHOT_COUNT.min * 1
+  const lo = targetDurationSec * (1 - DURATION_TOLERANCE)
+  const hi = targetDurationSec * (1 + DURATION_TOLERANCE)
+  if (lo > max)
+    return `目标时长 ${targetDurationSec} 秒不可能达成：最多 ${SHOT_COUNT.max} 镜 × 单镜 10 秒 = ${max} 秒，而 ±${DURATION_TOLERANCE * 100}% 要求至少 ${lo.toFixed(1)} 秒。把 targetDurationSec 调到 ${Math.floor(max / (1 - DURATION_TOLERANCE))} 秒以内（03 §S3 的口径是 60–90 秒一集）。`
+  if (hi < min)
+    return `目标时长 ${targetDurationSec} 秒不可能达成：至少 ${SHOT_COUNT.min} 镜 × 单镜 1 秒 = ${min} 秒，而 ±${DURATION_TOLERANCE * 100}% 只允许到 ${hi.toFixed(1)} 秒。`
+  return null
+}
 
 interface Located {
   readonly scene: number

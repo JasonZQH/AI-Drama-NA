@@ -96,16 +96,27 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
   })
 
   it('E2 镜头数越界，且提示方向相反', () => {
-    expect(lintShotlist(draft(9, 3, { durationSec: 8 }), ctx).errors.join()).toMatch(/把长镜头拆开/)
-    expect(lintShotlist(draft(26, 3, { durationSec: 2.77 }), ctx).errors.join()).toMatch(/合并相邻的同类镜头/)
+    // 断言到数字：印成场数（3）或把区间印反（25–10）都还是会匹配 /把长镜头拆开/
+    expect(lintShotlist(draft(9, 3, { durationSec: 8 }), ctx).errors.join()).toMatch(
+      /镜头总数 9 不在 10–25 之间。目标是 72 秒一集[^]*把长镜头拆开/,
+    )
+    expect(lintShotlist(draft(26, 3, { durationSec: 2.77 }), ctx).errors.join()).toMatch(
+      /镜头总数 26 不在 10–25 之间[^]*合并相邻的同类镜头/,
+    )
     // 边界 10 与 25 是合法的，不能是开区间
     expect(lintShotlist(draft(10, 3, { durationSec: 7.2 }), ctx).errors.join()).not.toMatch(/镜头总数/)
     expect(lintShotlist(draft(25, 3, { durationSec: 2.88 }), ctx).errors.join()).not.toMatch(/镜头总数/)
   })
 
   it('E3 总时长偏离 >±15%，两个方向的提示不一样', () => {
-    expect(lintShotlist(draft(18, 3, { durationSec: 6 }), ctx).errors.join()).toMatch(/缩短镜头/)
-    expect(lintShotlist(draft(18, 3, { durationSec: 2 }), ctx).errors.join()).toMatch(/加长镜头/)
+    // 建议区间必须断言全：把 (1+TOL) 与 (1−TOL) 写反会印成「落进 82.8–61.2 秒」，
+    // 模型照着改就是往反方向调，而只匹配 /缩短镜头/ 的断言看不出来
+    expect(lintShotlist(draft(18, 3, { durationSec: 6 }), ctx).errors.join()).toMatch(
+      /总时长 108\.0 秒，偏离目标 72 秒 50%[^]*缩短镜头[^]*落进 61\.2–82\.8 秒/,
+    )
+    expect(lintShotlist(draft(18, 3, { durationSec: 2 }), ctx).errors.join()).toMatch(
+      /总时长 36\.0 秒，偏离目标 72 秒 -50%[^]*加长镜头[^]*落进 61\.2–82\.8 秒/,
+    )
   })
 
   /**
@@ -130,15 +141,24 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
     const d = draft(18)
     d.scenes[0]!.shots[0] = shot({ dialogue: '还是那把椅子。', characterNames: [] })
     const r = lintShotlist(d, ctx)
-    expect(r.errors.join()).toMatch(/有台词.*characterNames 是空的/)
+    // 台词原文要回显，否则模型定位不到是哪一句
+    expect(r.errors.join()).toMatch(/有台词「还是那把椅子。」但 characterNames 是空的/)
     // 报错要指到具体位置，模型才改得准
     expect(r.errors.join()).toMatch(/第 1 场第 1 镜（全集第 1 镜）/)
   })
 
-  it('E5 三人以上同框', () => {
+  it('E5 三人以上同框，并回显是哪三个', () => {
     const d = draft(18)
-    d.scenes[0]!.shots[0] = shot({ characterNames: ['Lena', 'Marcus', 'Ray'] })
-    expect(lintShotlist(d, ctx).errors.join()).toMatch(/3 个角色同框/)
+    /*
+     * 放在第 3 场第 4 镜（全集第 16 镜）而不是 (1,1,1)。
+     *
+     * `at()` 印的三个数在第一镜上**全都等于 1**，于是把场号镜号对调、或者把
+     * 全集号印成场内序号，断言照样绿。三个数互不相等的位置才分辨得出来。
+     */
+    d.scenes[2]!.shots[3] = shot({ characterNames: ['Lena', 'Marcus', 'Ray'] })
+    expect(lintShotlist(d, ctx).errors.join()).toMatch(
+      /第 3 场第 4 镜（全集第 16 镜） 有 3 个角色同框（Lena、Marcus、Ray）/,
+    )
     // 两人是允许的
     const two = draft(18)
     two.scenes[0]!.shots[0] = shot({ characterNames: ['Lena', 'Marcus'] })
@@ -161,7 +181,8 @@ describe('lintShotlist · warnings（只标黄，不重试）', () => {
       ],
     }
     const r = lintShotlist(d, ctx)
-    expect(r.warnings.join(), '跨场次的连续同景别没被抓到').toMatch(/连续 3 个 cu/)
+    // 区间起止也要断言：起点写成 shots[i-1] 会印成「第 3–4 镜连续 3 个」，自相矛盾
+    expect(r.warnings.join(), '跨场次的连续同景别没被抓到').toMatch(/全集第 2–4 镜连续 3 个 cu/)
     expect(r.errors, 'W1 是 warning，不该触发重试').toEqual([])
   })
 
@@ -182,17 +203,55 @@ describe('lintShotlist · warnings（只标黄，不重试）', () => {
     clean.scenes[0]!.shots[0] = shot({ action: 'Nolan turns to another notebook' })
     expect(lintShotlist(clean, ctx).warnings.join()).not.toMatch(/否定式/)
   })
+
+  it('W2 也查 emotion，也查中文', () => {
+    const emo = draft(18)
+    emo.scenes[1]!.shots[0] = shot({ emotion: 'avoid eye contact' })
+    expect(lintShotlist(emo, ctx).warnings.join(), 'emotion 分支没生效').toMatch(
+      /第 2 场第 1 镜[^]*avoid eye contact/,
+    )
+    const zh = draft(18)
+    zh.scenes[0]!.shots[0] = shot({ action: '她不要那把椅子' })
+    expect(lintShotlist(zh, ctx).warnings.join(), '中文分支没生效').toMatch(/否定式描述（她不要那把椅子）/)
+  })
+
+  /** `shotlist.ts` 花七行论证「不查 dialogue」——那个决定本身得有守卫 */
+  it('W2 刻意不查 dialogue：「我没有拿枪」是合法台词', () => {
+    const d = draft(18)
+    d.scenes[0]!.shots[0] = shot({ dialogue: '我没有拿枪', characterNames: ['Lena'] })
+    expect(lintShotlist(d, ctx).warnings).toEqual([])
+  })
+
+  /** 「无」裸用会打中「无人机」，而「无人机航拍」是 13 机位词汇表的标准词 */
+  it('W2 不把无人机当否定式', () => {
+    const d = draft(18)
+    d.scenes[0]!.shots[0] = shot({ action: '无人机航拍城市夜景，从 8 米推到 4 米' })
+    expect(lintShotlist(d, ctx).warnings).toEqual([])
+    // 但「无人的走廊」仍该告警——收窄的是 `无人机`，不是整条中文分支
+    const empty = draft(18)
+    empty.scenes[0]!.shots[0] = shot({ action: '无人的走廊' })
+    expect(lintShotlist(empty, ctx).warnings.join()).toMatch(/否定式/)
+  })
+
+  it('多条 error 齐发，互不吞噬也不重复', () => {
+    const d = draft(30, 5, { durationSec: 9 })
+    d.scenes[0]!.shots[0] = shot({ dialogue: '谁在那', characterNames: [] })
+    d.scenes[0]!.shots[1] = shot({ characterNames: ['Lena', 'Marcus', 'Ray'] })
+    // E1 场数 + E2 镜数 + E3 时长 + E4 空镜说话 + E5 三人同框，各一条
+    expect(lintShotlist(d, ctx).errors).toHaveLength(5)
+  })
 })
 
 /**
- * seed 的 12 镜夹具**过不了** E2/E3——这是刻意的，不是 bug。
+ * seed 的 12 镜夹具**过不了 E3**——这是刻意的，不是 bug。（只有 E3：12 落在
+ * [10, 25] 内，镜头数其实合法。）
  *
  * `seed.ts` 自己写着「12 镜是刻意的最小夹具，不是规模口径」。lint 只校验 LLM
  * 的输出，不跑在 seed 上。这条用例是那句话的活文档：哪天有人把 lint 接到 seed
  * 上，它会立刻提醒为什么不该那么做。
  */
-describe('seed 的 12 镜夹具是刻意的最小规模，过不了集级判据', () => {
-  it('12 镜 42.5 秒 vs 目标 75 秒 → E2 与 E3 都触发', () => {
+describe('seed 的 12 镜夹具是刻意的最小规模，过不了 E3', () => {
+  it('12 镜 42.5 秒 vs 目标 75 秒 → 只触发 E3，镜头数是合法的', () => {
     const durs = [4, 3, 4, 3.5, 4, 3, 2.5, 4, 4, 3.5, 4, 3]
     const kinds = [
       'establishing',
