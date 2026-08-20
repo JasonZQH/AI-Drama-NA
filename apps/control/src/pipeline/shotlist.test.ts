@@ -86,9 +86,13 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
     expect(r.warnings).toEqual([])
   })
 
-  it('E1 场次数对不上', () => {
-    const r = lintShotlist(draft(18, 2), ctx)
-    expect(r.errors.join()).toMatch(/场次数不对/)
+  it('E1 场次数对不上，多给少给都算，且两个数字不能对调', () => {
+    // 少给一场。断言到具体数字：这段原文要回灌给模型照着改，把 ctx.sceneCount
+    // 与 draft.scenes.length 在模板里对调会让模型往反方向改，而只匹配
+    // /场次数不对/ 的断言看不出来
+    expect(lintShotlist(draft(18, 2), ctx).errors.join()).toMatch(/输入有 3 场，你返回了 2 场/)
+    // 多给一场——实现写成 `<` 而不是 `!==` 的话这条才会红
+    expect(lintShotlist(draft(18, 4), ctx).errors.join()).toMatch(/输入有 3 场，你返回了 4 场/)
   })
 
   it('E2 镜头数越界，且提示方向相反', () => {
