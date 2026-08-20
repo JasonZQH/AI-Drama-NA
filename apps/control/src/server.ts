@@ -2,7 +2,7 @@ import cors from '@fastify/cors'
 import type IORedis from 'ioredis'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { createDb } from './db/client.js'
-import { buildProviderPool } from './providers/registry.js'
+import { LivePool, publishProvidersChanged, subscribeProviderChanges } from './providers/pool.js'
 import { registerApi, type ApiDeps } from './routes/api.js'
 import { registerErrorHandler } from './routes/errors.js'
 import { registerSse } from './routes/sse.js'
@@ -119,8 +119,15 @@ export async function main(): Promise<void> {
   const { db, client } = createDb(dbUrl)
   const queues = createQueues({ url: redisUrl })
   const storage = new Storage(storageFromEnv())
-  const providers = buildProviderPool()
   const redis = createConnection(redisUrl)
+
+  /*
+   * 密钥在库里（PR-D），所以池子要按库里的内容建，而不是只看 `.env`。
+   * `providers` 这个数组引用**从头到尾不变**，refresh 只换内容——见 pool.ts。
+   */
+  const pool = new LivePool(db)
+  await pool.refresh()
+  const providers = pool.providers
 
   const app = buildServer({
     db,
@@ -132,7 +139,24 @@ export async function main(): Promise<void> {
     healthProbe: () => client`SELECT 1`,
     makeSubscriber: () => createConnection(redisUrl),
     apiKey,
+    /*
+     * 存/删密钥之后：先重建自己的池子，再广播给 worker。
+     * 顺序是有意的——本进程先就绪，页面刷新时看到的 runtime 就已经是新的。
+     */
+    onCredentialsChanged: async () => {
+      const ids = await pool.refresh()
+      await publishProvidersChanged(redis)
+      app.log.info({ providers: ids }, 'provider 池已重建')
+    },
   })
+
+  // 别的进程改了密钥时，本进程也要跟着重建
+  await subscribeProviderChanges(
+    createConnection(redisUrl),
+    pool,
+    (ids) => app.log.info({ providers: ids }, '收到凭据变更，provider 池已重建'),
+    (e) => app.log.error({ err: e }, '收到凭据变更但重建失败'),
+  )
 
   // 重启时把非终态任务捞回来（05 §8）。幂等是这套逻辑成立的前提
   const r = await reconcileOnBoot({ db, redis, queues, providers, maxAttempts: 4 })

@@ -17,12 +17,13 @@ import { useCallback, useEffect, useState } from 'react'
  * :4000 的东西都读得到它。服务端只回 `last4`，这一页也只显示 `last4`。
  * 输入框里敲进去的那一次是明文唯一存在的时刻，提交完就丢。
  *
- * ## 这一版不是热更新，所以差异要摆出来
+ * ## 存完两条链路都立刻生效（PR-E）
  *
- * 分镜（LLM）那条链路**每次请求现取密钥**，存完立刻生效。
- * 视频那条不是——`buildProviderPool()` 在控制面与 worker 里各建一次、都在开机时。
- * 所以「库里存了 openrouter，但 runtime 里没有它」= 还没重启，这一页直接说出来，
- * 不让人自己猜。
+ * 分镜（LLM）那条**每次请求现取密钥**；视频那条靠 `LivePool`——控制面存完先重建
+ * 自己的池子，再经 Redis 广播给 worker，两个进程都不用重启。
+ *
+ * 但**重建可能失败**（Redis 挂了、库读不到），那时密钥已经存下了、池子却是旧的。
+ * 服务端如实回报 `reload.ok`，这一页据此提示要不要手工重启——不假装总是成功。
  */
 
 interface Credential {
@@ -47,6 +48,11 @@ interface Probe {
   isFreeTier?: boolean
 }
 
+interface Reload {
+  ok: boolean
+  detail?: string
+}
+
 interface KeysResponse {
   credentials: Credential[]
   runtime: { providers: string[]; credentialSecretConfigured: boolean }
@@ -62,6 +68,7 @@ export function KeysView(): React.ReactElement {
   const [label, setLabel] = useState('')
   const [busy, setBusy] = useState(false)
   const [probe, setProbe] = useState<Probe | null>(null)
+  const [reload, setReload] = useState<Reload | null>(null)
 
   const load = useCallback(async () => {
     setErr(null)
@@ -81,15 +88,20 @@ export function KeysView(): React.ReactElement {
 
   const or = data?.credentials.find((c) => c.provider === 'openrouter') ?? null
   const loadedInRuntime = data?.runtime.providers.some((p) => p.startsWith('openrouter:')) ?? false
-  /** 存了 key 但跑着的进程没加载它 = 视频链路还没重启 */
-  const needsRestart = or?.source === 'db' && !loadedInRuntime
+  /**
+   * 有密钥、但跑着的进程里没有这一家。
+   *
+   * PR-E 之后正常情况下不该出现——存完会自动重建。还出现就是**重建失败**
+   * （Redis 挂了、或这个进程根本没接热更新），那时确实要手工重启。
+   */
+  const stale = or !== null && or.source !== 'none' && !loadedInRuntime
 
   async function save(force = false): Promise<void> {
     setBusy(true)
     setErr(null)
     setProbe(null)
     try {
-      const r = await api<{ probe: Probe }>('/api/keys', {
+      const r = await api<{ probe: Probe; reload: Reload }>('/api/keys', {
         method: 'POST',
         body: JSON.stringify({
           provider: 'openrouter',
@@ -99,6 +111,7 @@ export function KeysView(): React.ReactElement {
         }),
       })
       setProbe(r.probe)
+      setReload(r.reload)
       setDraft('') // 明文在内存里多留一秒都没有必要
       await load()
     } catch (e) {
@@ -181,12 +194,21 @@ export function KeysView(): React.ReactElement {
           </Note>
         )}
 
-        {needsRestart && (
+        {reload && !reload.ok && (
           <Note tone="warn">
-            ⚠ 密钥已存进库，但<strong>跑着的进程还没加载它</strong>。
+            ⚠ 密钥已存好，但<strong>池子没能自动重建</strong>
+            {reload.detail ? `：${reload.detail}` : ''}。
             <span className="ml-1" style={{ color: 'var(--text-muted)' }}>
-              分镜生成已经能用了（它每次请求现取密钥）；视频生成要重启控制面与 worker 才认——provider
-              池是开机建的。
+              分镜生成不受影响（它每次请求现取密钥）；视频生成要手工重启控制面与 worker。
+            </span>
+          </Note>
+        )}
+
+        {stale && (
+          <Note tone="warn">
+            ⚠ 有密钥，但<strong>跑着的进程里没有这一家</strong>。
+            <span className="ml-1" style={{ color: 'var(--text-muted)' }}>
+              正常情况下存完会自动重建；还是这样说明重建没成功，或这个进程没接热更新——重启控制面与 worker。
             </span>
           </Note>
         )}
@@ -319,7 +341,8 @@ export function KeysView(): React.ReactElement {
             <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
               保存前会用 OpenRouter 的 <code className="font-mono">GET /api/v1/key</code> 验一次—— 它只回这把
               key 自己的额度与用量，<strong>不产生任何费用</strong>。 无效的 key 直接拒收，
-              而不是存下来等下一次花钱时才发现。
+              而不是存下来等下一次花钱时才发现。 存好之后<strong>两条链路都立刻生效</strong>，控制面与 worker
+              都不用重启。
             </p>
           </div>
         </Card>
