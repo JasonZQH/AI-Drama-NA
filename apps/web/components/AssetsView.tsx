@@ -2,6 +2,7 @@
 
 import { StatusPill, statusColor } from '@/components/StatusPill'
 import { PageHeader } from '@/components/Shell'
+import { AssetEditor, type AssetKind, type AssetRow } from '@/components/AssetEditor'
 import { api, type ProjectAssets } from '@/lib/api'
 import { useCallback, useEffect, useState } from 'react'
 
@@ -25,10 +26,23 @@ function missingTracks(c: Character): string[] {
   return miss
 }
 
-/** 资产页。本轮只读——编辑与锁定的交互见 issue #16 */
+/**
+ * 资产页。
+ *
+ * PR-G 之前这里是**只读**的——0 个按钮、0 个输入框，而 `characters` /
+ * `locations` / `style_profiles` 三张表的唯一写入方是 `db/seed.ts`。于是
+ * 「调提示词」在面板上根本做不到，尽管这三张表的内容正是每一条 prompt 的主体。
+ *
+ * 现在可写的是**真正进 prompt 的那些字段**。参考图那一路（faceSet/bodyRef/
+ * referenceAssetIds）仍然只读——「要不要参考图、要几张、怎么绑」是 P6 的
+ * U1–U3 要买的答案，而且它们是文件上传不是文本框。锁定（issue #16）同理：
+ * 文档说 lockedAt 是批量生成的闸门，但零代码执行它，现在加按钮就是加一个
+ * 什么都不做的按钮。
+ */
 export function AssetsView({ projectId }: { projectId: string }): React.ReactElement {
   const [assets, setAssets] = useState<ProjectAssets | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [editing, setEditing] = useState<{ kind: AssetKind; row: AssetRow } | null>(null)
 
   const load = useCallback(async () => {
     setErr(null)
@@ -53,7 +67,29 @@ export function AssetsView({ projectId }: { projectId: string }): React.ReactEle
 
   return (
     <>
-      <PageHeader title="资产" subtitle={assets ? `${total} 项 · 本轮只读` : ''} />
+      <PageHeader title="资产" subtitle={assets ? `${total} 项 · 改这里就是改每一条 prompt` : ''}>
+        <button
+          type="button"
+          onClick={() => void load()}
+          className="rounded-md px-2 py-1 text-[12px]"
+          style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+        >
+          刷新
+        </button>
+      </PageHeader>
+
+      {editing && (
+        <AssetEditor
+          kind={editing.kind}
+          projectId={projectId}
+          initial={editing.row}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null)
+            void load()
+          }}
+        />
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {err ? (
@@ -96,15 +132,35 @@ export function AssetsView({ projectId }: { projectId: string }): React.ReactEle
               title="角色"
               count={chars.length}
               emptyHint="角色是一致性的锚点——先建角色并锁定三路参考图，再批量生成，否则每一镜都会长得不一样。"
+              onNew={() => setEditing({ kind: 'character', row: {} })}
             >
               {chars.map((c) => (
-                <CharacterCard key={c.id} c={c} />
+                <CharacterCard
+                  key={c.id}
+                  c={c}
+                  onEdit={() =>
+                    setEditing({
+                      kind: 'character',
+                      row: {
+                        id: c.id,
+                        name: c.name,
+                        description: c.description,
+                        anchorTokens: c.anchorTokens,
+                        voiceId: c.voiceId,
+                        wardrobe: (c.wardrobe as { id: string; name: string; description?: string }[]).map(
+                          (o) => ({ id: o.id, name: o.name, description: o.description ?? '' }),
+                        ),
+                      },
+                    })
+                  }
+                />
               ))}
             </Group>
 
             <Group
               title="场景"
               count={assets.locations.length}
+              onNew={() => setEditing({ kind: 'location', row: {} })}
               emptyHint="场景决定同一地点跨镜头的光线与陈设是否对得上，缺了就只能靠 prompt 复述。"
             >
               {assets.locations.map((l) => (
@@ -114,6 +170,18 @@ export function AssetsView({ projectId }: { projectId: string }): React.ReactEle
                   description={l.description}
                   meta={l.interior ? '内景' : '外景'}
                   locked={l.lockedAt !== null}
+                  onEdit={() =>
+                    setEditing({
+                      kind: 'location',
+                      row: {
+                        id: l.id,
+                        name: l.name,
+                        description: l.description,
+                        interior: l.interior,
+                        anchorTokens: (l as { anchorTokens?: string[] }).anchorTokens ?? [],
+                      },
+                    })
+                  }
                 />
               ))}
             </Group>
@@ -121,6 +189,7 @@ export function AssetsView({ projectId }: { projectId: string }): React.ReactEle
             <Group
               title="风格"
               count={assets.styles.length}
+              onNew={() => setEditing({ kind: 'style', row: {} })}
               emptyHint="风格档案统一整部剧的影调与负向词，没有它每次生成都会各走各的。"
             >
               {assets.styles.map((st) => (
@@ -129,6 +198,17 @@ export function AssetsView({ projectId }: { projectId: string }): React.ReactEle
                   name={st.name}
                   description={st.description}
                   {...(st.negativePrompt ? { footer: `负向 ${st.negativePrompt}` } : {})}
+                  onEdit={() =>
+                    setEditing({
+                      kind: 'style',
+                      row: {
+                        id: st.id,
+                        name: st.name,
+                        description: st.description,
+                        negativePrompt: st.negativePrompt,
+                      },
+                    })
+                  }
                 />
               ))}
             </Group>
@@ -145,17 +225,29 @@ function Group({
   title,
   count,
   emptyHint,
+  onNew,
   children,
 }: {
   title: string
   count: number
   emptyHint: string
+  onNew: () => void
   children: React.ReactNode
 }): React.ReactElement {
   return (
     <div>
-      <div className="mb-1.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-        {title} <span className="tnum">{count}</span>
+      <div className="mb-1.5 flex items-center gap-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+        <span>
+          {title} <span className="tnum">{count}</span>
+        </span>
+        <button
+          type="button"
+          onClick={onNew}
+          className="rounded-sm px-1.5 py-0.5"
+          style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+        >
+          + 新建
+        </button>
       </div>
       {count === 0 ? (
         <div className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
@@ -168,11 +260,16 @@ function Group({
   )
 }
 
-function CharacterCard({ c }: { c: Character }): React.ReactElement {
+function CharacterCard({ c, onEdit }: { c: Character; onEdit: () => void }): React.ReactElement {
   const miss = missingTracks(c)
   return (
     <article
-      className="rounded-md p-2.5"
+      role="button"
+      tabIndex={0}
+      onClick={onEdit}
+      onKeyDown={(e) => e.key === 'Enter' && onEdit()}
+      title="点开编辑"
+      className="cursor-pointer rounded-md p-2.5"
       style={{
         background: 'var(--bg-surface)',
         border: '1px solid var(--border)',
@@ -222,6 +319,7 @@ function Card({
   meta,
   footer,
   locked,
+  onEdit,
 }: {
   name: string
   description: string
@@ -229,10 +327,16 @@ function Card({
   meta?: string
   footer?: string
   locked?: boolean
+  onEdit: () => void
 }): React.ReactElement {
   return (
     <article
-      className="rounded-md p-2.5"
+      role="button"
+      tabIndex={0}
+      onClick={onEdit}
+      onKeyDown={(e) => e.key === 'Enter' && onEdit()}
+      title="点开编辑"
+      className="cursor-pointer rounded-md p-2.5"
       style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
     >
       <div className="flex items-center gap-2">
