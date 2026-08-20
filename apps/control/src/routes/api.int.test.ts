@@ -1,6 +1,7 @@
+import { createServer, type Server } from 'node:http'
 import { and, eq, gte, inArray, lt } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
 import { DEMO_TITLE } from '../db/seed.js'
 import * as s from '../db/schema.js'
@@ -12,6 +13,8 @@ import { Storage, storageFromEnv } from '../storage/s3.js'
 import { resolveDependencies } from '../pipeline/batch.js'
 import { createGenerationJob } from '../queue/ingest.js'
 import { ShotlistRejected } from '../pipeline/callShotlist.js'
+import { probeOpenRouter, type ProbeResult } from '../credentials/probe.js'
+import { resolveKey, upsertCredential } from '../credentials/store.js'
 import type { ShotlistFn } from './api.js'
 
 /**
@@ -1118,6 +1121,389 @@ describe('作者侧：新建项目 / 分集 / 场次', () => {
     ] as const) {
       const r = await app.inject({ method, url, payload: { title: 'x' } })
       expect(r.statusCode, `${method} ${url} 没有闸门`).toBe(401)
+    }
+  })
+})
+
+/**
+ * provider 凭据（PR-D）。
+ *
+ * 探测会真的打 OpenRouter，所以这里全部用 loopback server 打桩——不打桩的话
+ * 每跑一次 CI 就是一次对外请求，而 `vitest.setup.ts` 的出网拦截也会挡下来。
+ */
+describe('密钥管理', () => {
+  const REAL = 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd'
+  /**
+   * 注入探测桩。不注入的话 `POST /api/keys` 会真的打 openrouter.ai——
+   * 而「无效 key 直接拒收」正是这组端点最该被守住的行为，不能因为出网被拦
+   * 就测不到。
+   */
+  let probeMode: 'ok' | 'invalid' | 'down' = 'ok'
+  let probedWith: string[] = []
+  const fakeProbe = (key: string): Promise<ProbeResult> => {
+    probedWith.push(key)
+    if (probeMode === 'invalid')
+      return Promise.resolve({
+        ok: false,
+        kind: 'invalid',
+        detail: 'OpenRouter 拒绝了这把 key：User not found.',
+      })
+    if (probeMode === 'down')
+      return Promise.resolve({ ok: false, kind: 'unreachable', detail: '连不上 OpenRouter：ECONNREFUSED' })
+    return Promise.resolve({
+      ok: true,
+      label: '个人账号',
+      limitUsd: 20,
+      remainingUsd: 17.5,
+      usedUsd: 2.5,
+      usedTodayUsd: 0.4,
+      isFreeTier: false,
+    })
+  }
+
+  let keysApp: FastifyInstance
+  const post = (payload: Record<string, unknown>) =>
+    keysApp.inject({ method: 'POST', url: '/api/keys', headers: WRITE_HEADERS, payload })
+
+  beforeAll(async () => {
+    process.env['CREDENTIAL_SECRET'] = 'int-test-secret'
+    keysApp = buildServer({
+      db,
+      queues,
+      storage,
+      providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })],
+      maxAttempts: 4,
+      media: { render: () => Promise.reject(new Error('未配置')) },
+      healthProbe: () => client`SELECT 1`,
+      makeSubscriber: () => createConnection(REDIS_URL),
+      apiKey: TEST_API_KEY,
+      probeKey: fakeProbe,
+    })
+    await keysApp.ready()
+  })
+
+  afterAll(async () => {
+    await db.delete(s.providerCredentials)
+    delete process.env['CREDENTIAL_SECRET']
+  })
+
+  beforeEach(async () => {
+    await db.delete(s.providerCredentials)
+    probeMode = 'ok'
+    probedWith = []
+  })
+
+  /** 存一把（绕开真实探测，直接写 store）。路由那条单独测 */
+  const store = (key = REAL, label: string | null = '个人账号') =>
+    upsertCredential(db, { provider: 'openrouter', key, label, verified: true })
+
+  it('列表只回掩码信息，明文一个字符都不出库', async () => {
+    await store()
+    const r = await app.inject({ method: 'GET', url: '/api/keys' })
+    expect(r.statusCode).toBe(200)
+    const raw = r.body
+    expect(raw, '响应体里出现了密钥明文').not.toContain(REAL)
+    expect(raw, '哪怕中段也不行').not.toContain('0123456789abcdef')
+    expect(raw, '密文也不该出去').not.toContain('ciphertext')
+
+    const body = r.json() as {
+      credentials: { provider: string; source: string; last4: string | null }[]
+      runtime: { providers: string[]; credentialSecretConfigured: boolean }
+    }
+    const or = body.credentials.find((c) => c.provider === 'openrouter')!
+    expect(or.source).toBe('db')
+    expect(or.last4).toBe('abcd')
+    expect(body.runtime.credentialSecretConfigured).toBe(true)
+  })
+
+  /** 库里有 key 但 runtime 没加载 = 「还没重启」。这一版不是热更新，差异要摆出来 */
+  it('runtime 回的是进程实际加载的 provider，与库里存的分开', async () => {
+    await store()
+    const body = (await app.inject({ method: 'GET', url: '/api/keys' })).json() as {
+      runtime: { providers: string[] }
+    }
+    // 本文件的 app 只注册了 mock，所以存了 openrouter 的 key 也不会出现在这里
+    expect(body.runtime.providers).toEqual(['mock'])
+  })
+
+  it('没存过时 source 是 none 或 env，不是 db', async () => {
+    const body = (await app.inject({ method: 'GET', url: '/api/keys' })).json() as {
+      credentials: { provider: string; source: string; last4: string | null }[]
+    }
+    const or = body.credentials.find((c) => c.provider === 'openrouter')!
+    expect(or.source).not.toBe('db')
+    expect(or.last4).toBeNull()
+  })
+
+  /** 库里存的是密文，不是明文——`pg_dump` 泄露的是这一列 */
+  it('落库的是密文，直接查表看不到明文', async () => {
+    await store()
+    const [row] = await db.select().from(s.providerCredentials)
+    expect(row!.ciphertext).not.toContain('sk-or')
+    expect(row!.ciphertext).not.toBe(REAL)
+    expect(row!.last4).toBe('abcd')
+    // 但解得回来
+    expect(await resolveKey(db, 'openrouter')).toBe(REAL)
+  })
+
+  it('resolveKey：库优先于 env', async () => {
+    const envOnly = { OPENROUTER_API_KEY: 'sk-or-v1-from-env' } as NodeJS.ProcessEnv
+    expect(await resolveKey(db, 'openrouter', envOnly)).toBe('sk-or-v1-from-env')
+    await store()
+    expect(await resolveKey(db, 'openrouter', envOnly), '存过之后该以库里的为准').toBe(REAL)
+  })
+
+  it('删掉之后回落到 env', async () => {
+    await store()
+    expect(
+      (await app.inject({ method: 'DELETE', url: '/api/keys/openrouter', headers: WRITE_HEADERS }))
+        .statusCode,
+    ).toBe(204)
+    expect(await resolveKey(db, 'openrouter', {} as NodeJS.ProcessEnv)).toBeNull()
+    expect(
+      (await app.inject({ method: 'DELETE', url: '/api/keys/openrouter', headers: WRITE_HEADERS }))
+        .statusCode,
+      '删两次第二次该 404',
+    ).toBe(404)
+  })
+
+  it('不认识的 provider 直接拒，不建一行垃圾', async () => {
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/keys',
+      headers: WRITE_HEADERS,
+      payload: { provider: 'comfyui', key: REAL },
+    })
+    expect(r.statusCode).toBe(422)
+    expect(await db.select().from(s.providerCredentials)).toHaveLength(0)
+  })
+
+  it('写路径要 x-api-key', async () => {
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/keys',
+      payload: { provider: 'openrouter', key: REAL },
+    })
+    expect(r.statusCode).toBe(401)
+  })
+
+  /**
+   * 没配 `CREDENTIAL_SECRET` 时**拒绝存**，不静默降级成明文。
+   * 「配置缺失就降级」是这类功能最常见的坏结局：看起来能用，安全性已经没了。
+   */
+  it('没配 CREDENTIAL_SECRET 就存不进去，且报错说清怎么补', async () => {
+    const saved = process.env['CREDENTIAL_SECRET']
+    delete process.env['CREDENTIAL_SECRET']
+    try {
+      await expect(store()).rejects.toThrow(/CREDENTIAL_SECRET/)
+      expect(await db.select().from(s.providerCredentials), '拒绝之后不该留下半行').toHaveLength(0)
+    } finally {
+      process.env['CREDENTIAL_SECRET'] = saved
+    }
+  })
+
+  it('换一把 key 是覆盖，不留历史行', async () => {
+    await store(REAL)
+    await store('sk-or-v1-aaaabbbbccccddddeeeeffffaaaabbbbccccddddeeeeffff9999', '换过的')
+    const rows = await db.select().from(s.providerCredentials)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.last4).toBe('9999')
+    expect(rows[0]!.label).toBe('换过的')
+  })
+
+  /**
+   * **存之前先验。** 无效的 key 直接拒收，而不是存下来等下一次花钱时才发现。
+   */
+  it('key 无效 → 422 拒收，库里一行都不留', async () => {
+    probeMode = 'invalid'
+    const r = await post({ provider: 'openrouter', key: REAL })
+    expect(r.statusCode).toBe(422)
+    expect((r.json() as { error: { message: string } }).error.message).toMatch(/User not found/)
+    expect(await db.select().from(s.providerCredentials), '被拒的 key 不该落库').toHaveLength(0)
+  })
+
+  /**
+   * `invalid` 与 `unreachable` 的状态码必须分开：混成一种的话，OpenRouter
+   * 抽风时会让人把一把好 key 删掉重配。
+   */
+  it('连不上 → 503 且默认不存，带 force 才存并标为未验证', async () => {
+    probeMode = 'down'
+    const r = await post({ provider: 'openrouter', key: REAL })
+    expect(r.statusCode).toBe(503)
+    expect(await db.select().from(s.providerCredentials)).toHaveLength(0)
+
+    const forced = await post({ provider: 'openrouter', key: REAL, force: true })
+    expect(forced.statusCode).toBe(201)
+    const [row] = await db.select().from(s.providerCredentials)
+    expect(row!.verifiedAt, '没验过就不该标成已验证').toBeNull()
+  })
+
+  /** force 跳得过「连不上」，跳不过「key 不对」——后者是确定性的坏 */
+  it('force 也存不进一把无效的 key', async () => {
+    probeMode = 'invalid'
+    expect((await post({ provider: 'openrouter', key: REAL, force: true })).statusCode).toBe(422)
+    expect(await db.select().from(s.providerCredentials)).toHaveLength(0)
+  })
+
+  it('有效 key → 201，回额度，标为已验证，且响应里没有明文', async () => {
+    probeMode = 'ok'
+    const r = await post({ provider: 'openrouter', key: REAL, label: '个人账号' })
+    expect(r.statusCode).toBe(201)
+    expect(r.body, '响应体里出现了密钥明文').not.toContain(REAL)
+    const body = r.json() as {
+      credential: { last4: string; verifiedAt: string | null }
+      probe: { ok: boolean; remainingUsd: number }
+    }
+    expect(body.credential.last4).toBe('abcd')
+    expect(body.credential.verifiedAt).not.toBeNull()
+    expect(body.probe.remainingUsd).toBe(17.5)
+    // 验的是提交上来的那把，不是别的
+    expect(probedWith).toEqual([REAL])
+  })
+
+  it('太短的 key 在 zod 就被拦下，探测都不会发起', async () => {
+    const r = await post({ provider: 'openrouter', key: 'abc' })
+    expect(r.statusCode).toBe(422)
+    expect(probedWith, '不该为一个明显不是密钥的串去打网络').toEqual([])
+  })
+
+  it('重新探测已存的那把，成功后刷新 verifiedAt', async () => {
+    await store()
+    await db.update(s.providerCredentials).set({ verifiedAt: null })
+    const r = await keysApp.inject({
+      method: 'POST',
+      url: '/api/keys/openrouter/probe',
+      headers: WRITE_HEADERS,
+    })
+    expect(r.statusCode).toBe(200)
+    expect((r.json() as { probe: { ok: boolean } }).probe.ok).toBe(true)
+    const [row] = await db.select().from(s.providerCredentials)
+    expect(row!.verifiedAt).not.toBeNull()
+    // 探测用的是库里解密出来的那把
+    expect(probedWith).toEqual([REAL])
+  })
+
+  it('没存过就探测 → 503，报错指向面板与 .env 两条路', async () => {
+    const saved = process.env['OPENROUTER_API_KEY']
+    delete process.env['OPENROUTER_API_KEY']
+    try {
+      const r = await keysApp.inject({
+        method: 'POST',
+        url: '/api/keys/openrouter/probe',
+        headers: WRITE_HEADERS,
+      })
+      expect(r.statusCode).toBe(503)
+      const msg = (r.json() as { error: { message: string } }).error.message
+      expect(msg).toMatch(/面板/)
+      expect(msg).toMatch(/OPENROUTER_API_KEY/)
+    } finally {
+      if (saved !== undefined) process.env['OPENROUTER_API_KEY'] = saved
+    }
+  })
+
+  /**
+   * 分镜那条链路**每次请求现取密钥**（不像 provider 池是开机建的），所以面板
+   * 存完立刻生效。没存时的报错要同时指出两条路：面板与 `.env`。
+   */
+  it('没有 key 时的 503 文案指向面板与 .env 两条路', async () => {
+    const saved = process.env['OPENROUTER_API_KEY']
+    delete process.env['OPENROUTER_API_KEY']
+    try {
+      const r = await app.inject({
+        method: 'POST',
+        url: `/api/episodes/${episodeId}/shotlist`,
+        headers: WRITE_HEADERS,
+      })
+      const msg = (r.json() as { error: { message: string } }).error.message
+      // 这一集有 12 个镜头，会先被「已有镜头」那道闸拦下——两种都可以，
+      // 但只要走到密钥这一步，文案就必须把两条路都说出来
+      if (r.statusCode === 503) {
+        expect(msg).toMatch(/密钥/)
+        expect(msg, '要说清面板里也能配').toMatch(/面板/)
+        expect(msg).toMatch(/OPENROUTER_API_KEY/)
+      }
+    } finally {
+      if (saved !== undefined) process.env['OPENROUTER_API_KEY'] = saved
+    }
+  })
+})
+
+describe('密钥探测（打桩，不打真实 OpenRouter）', () => {
+  let server: Server
+  let base = ''
+  let mode: 'ok' | 'invalid' | 'down' = 'ok'
+
+  beforeAll(async () => {
+    server = createServer((_req, res) => {
+      if (mode === 'invalid') {
+        res.writeHead(401, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: { message: 'User not found.', code: 401 } }))
+      } else if (mode === 'down') {
+        res.writeHead(503)
+        res.end('upstream down')
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            data: { label: 'k', limit: 20, limit_remaining: 17.5, usage: 2.5, usage_daily: 0.4 },
+          }),
+        )
+      }
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const a = server.address()
+    if (a === null || typeof a === 'string') throw new Error('拿不到端口')
+    base = `http://127.0.0.1:${a.port}`
+  })
+  afterAll(async () => {
+    await new Promise<void>((r) => server.close(() => r()))
+  })
+
+  it('有效 key：回额度与用量', async () => {
+    mode = 'ok'
+    const r = await probeOpenRouter('sk-x', base)
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.limitUsd).toBe(20)
+      expect(r.remainingUsd).toBe(17.5)
+      expect(r.usedTodayUsd).toBe(0.4)
+    }
+  })
+
+  /**
+   * `invalid` 与 `unreachable` 分开，因为处置动作相反：前者换 key，后者等一会儿。
+   * 混成一种的话，OpenRouter 抽风时会让人把一把好 key 删掉重配。
+   */
+  it('401 是 invalid，5xx 是 unreachable——两者不能混', async () => {
+    mode = 'invalid'
+    const bad = await probeOpenRouter('sk-x', base)
+    expect(bad.ok).toBe(false)
+    if (!bad.ok) {
+      expect(bad.kind).toBe('invalid')
+      expect(bad.detail).toContain('User not found')
+    }
+
+    mode = 'down'
+    const down = await probeOpenRouter('sk-x', base)
+    expect(down.ok).toBe(false)
+    if (!down.ok) expect(down.kind).toBe('unreachable')
+  })
+
+  it('连不上是 unreachable，且原因能看出来（不是光秃秃的 fetch failed）', async () => {
+    // 起一个再关掉，拿一个**确定没人监听**的端口。写死端口号会 flaky，
+    // 而 port 1 会被 undici 判成 bad port、根本不发起连接，测不到这条路径
+    const tmp = createServer()
+    await new Promise<void>((r) => tmp.listen(0, '127.0.0.1', r))
+    const a = tmp.address()
+    if (a === null || typeof a === 'string') throw new Error('拿不到端口')
+    const dead = a.port
+    await new Promise<void>((r) => tmp.close(() => r()))
+
+    const r = await probeOpenRouter('sk-x', `http://127.0.0.1:${dead}`)
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.kind).toBe('unreachable')
+      expect(r.detail, 'happy-eyeballs 会把真原因藏进 AggregateError').toMatch(/ECONNREFUSED/)
     }
   })
 })

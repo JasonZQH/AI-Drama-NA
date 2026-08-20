@@ -48,6 +48,7 @@ function Sidebar({ children }: { children?: React.ReactNode }): React.ReactEleme
     >
       <SideGroup title="全局">
         <SideLink href="/" label="工作台" glyph="▤" />
+        <SideLink href="/keys" label="密钥" glyph="⚿" />
       </SideGroup>
       {children}
       <div className="mt-auto px-3 pt-4">
