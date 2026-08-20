@@ -1,6 +1,7 @@
 'use client'
 
 import { MockChip } from '@/components/Mock'
+import { PromptPreview } from '@/components/PromptPreview'
 import { StatusPill, statusColor } from '@/components/StatusPill'
 import { api, assetUrl, usd, type JobRow, type TakeRow } from '@/lib/api'
 import { useEffect, useRef, useState } from 'react'
@@ -243,6 +244,14 @@ function Panel({
           {shot && <Intent shot={shot} />}
 
           <Section title="Prompt 检视器" hint={jobs ? `${jobs.length} 次尝试 · 合计 ${usd(spent)}` : ''}>
+            {/*
+              先给「下一次会发出去什么」，再给历史。
+              此前这一格在零尝试时只说「没有 prompt 可看」——而恰恰是没生成过的
+              时候最需要看：花钱之前。见 06-api-spec.md 的 prompt-preview。
+            */}
+            <div className="mb-3">
+              <PromptPreview shotId={shotId} />
+            </div>
             {err ? (
               /* R3：失败要说明是什么、以及下一步 */
               <div
@@ -266,8 +275,8 @@ function Panel({
               <Skeleton lines={3} label="正在读取生成记录…" />
             ) : jobs.length === 0 ? (
               <Empty
-                text="这个镜头还没有任何生成尝试，所以没有 prompt 可看。"
-                next="回到镜头网格，对本镜点「生成」——确认弹窗会先告诉你要花多少钱。"
+                text="还没有生成尝试，所以下面没有历史。"
+                next="上面那段就是点「生成」会发出去的内容。确认弹窗会先告诉你要花多少钱。"
               />
             ) : (
               /* 倒序：诊断失败时最新一次尝试才是现场，历史是佐证 */

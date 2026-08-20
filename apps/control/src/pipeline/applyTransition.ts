@@ -1,12 +1,12 @@
 import type { GenerationRequest, VideoProvider } from '@ai-drama/contracts'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { routeProvider } from '../providers/route.js'
 import { createGenerationJob } from '../queue/ingest.js'
 import type { Queues } from '../queue/queues.js'
 import { budgetFromEnv, spentTodayForShot, type BudgetPolicy, type BudgetСheckResult } from './batch.js'
-import { buildPrompt, type PromptCharacter } from './prompt.js'
+import { resolvePrompt } from './resolvePrompt.js'
 import { transition, type ShotEvent } from './shotMachine.js'
 
 /**
@@ -141,66 +141,14 @@ export async function applyShotTransition(
            * 2. probe 与真实请求用同一个 prompt，路由才不是在对一个假请求做能力
            *    判断。此前 probe 的 prompt 恒为 ''，两者从一开始就不是一回事。
            */
-          const [ctx] = await tx
-            .select({
-              timeOfDay: s.scenes.timeOfDay,
-              locDescription: s.locations.description,
-              locInterior: s.locations.interior,
-              locAnchors: s.locations.anchorTokens,
-              styleDescription: s.styleProfiles.description,
-              styleNegative: s.styleProfiles.negativePrompt,
-            })
-            .from(s.shots)
-            .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
-            .innerJoin(s.episodes, eq(s.scenes.episodeId, s.episodes.id))
-            .innerJoin(s.projects, eq(s.episodes.projectId, s.projects.id))
-            .leftJoin(s.locations, eq(s.scenes.locationId, s.locations.id))
-            .leftJoin(s.styleProfiles, eq(s.projects.styleProfileId, s.styleProfiles.id))
-            .where(eq(s.shots.id, e.shotId))
-
-          // 本镜出场的角色。锚点是跨镜头一致性的载体（ADR-0008）——同一个角色
-          // 每一镜都带着同一串视觉锚点进 prompt，模型才有机会画成同一个人
-          const cast: PromptCharacter[] =
-            row.characterIds.length === 0
-              ? []
-              : await tx
-                  .select({
-                    name: s.characters.name,
-                    description: s.characters.description,
-                    anchorTokens: s.characters.anchorTokens,
-                  })
-                  .from(s.characters)
-                  .where(inArray(s.characters.id, row.characterIds))
-
-          const style =
-            ctx?.styleDescription === undefined || ctx.styleDescription === null
-              ? null
-              : { description: ctx.styleDescription, negativePrompt: ctx.styleNegative }
-
-          // promptOverride 是人工旁路：写了就原样用，不再拼装（当前无写入方）
-          const built = row.promptOverride
-            ? { prompt: row.promptOverride, negativePrompt: style?.negativePrompt ?? null }
-            : buildPrompt(
-                {
-                  shotType: row.shotType,
-                  action: row.action,
-                  cameraMove: row.cameraMove,
-                  emotion: row.emotion,
-                  timeOfDay: ctx?.timeOfDay ?? null,
-                },
-                {
-                  characters: cast,
-                  location:
-                    ctx?.locDescription === undefined || ctx.locDescription === null
-                      ? null
-                      : {
-                          description: ctx.locDescription,
-                          interior: ctx.locInterior ?? true,
-                          anchorTokens: ctx.locAnchors ?? [],
-                        },
-                  style,
-                },
-              )
+          /*
+           * 取数 + 拼装抽到了 `resolvePrompt`——`POST /api/ai/prompt-preview`
+           * 要回答的是同一个问题（花钱之前先看清将要发出去的是什么）。预览另写
+           * 一份就是 PR-J 修掉的那类 bug 的翻版：两份会漂，而漂了之后预览显示的
+           * 和真实发出去的不是一回事，那比没有预览更坏。
+           */
+          const built = await resolvePrompt(tx, e.shotId)
+          if (!built) throw new Error(`shot ${e.shotId} 在事务里消失了`)
 
           const probe: GenerationRequest = {
             requestId: '00000000-0000-4000-8000-000000000000',

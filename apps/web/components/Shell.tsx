@@ -48,6 +48,7 @@ function Sidebar({ children }: { children?: React.ReactNode }): React.ReactEleme
     >
       <SideGroup title="全局">
         <SideLink href="/" label="工作台" glyph="▤" />
+        <SideLink href="/prompts" label="提示词" glyph="✎" />
         <SideLink href="/keys" label="密钥" glyph="⚿" />
       </SideGroup>
       {children}

@@ -8,13 +8,23 @@ import * as s from '../db/schema.js'
 import { budgetFromEnv, planBatch } from '../pipeline/batch.js'
 import { MediaWorkerUnavailable, renderEpisode, type MediaWorkerClient } from '../pipeline/render.js'
 import {
+  MODEL as SHOTLIST_MODEL,
   ShotlistRejected,
   callShotlist,
+  systemPrompt,
   type ShotlistInput,
   type ShotlistOutcome,
 } from '../pipeline/callShotlist.js'
 import { toIntent } from '@ai-drama/contracts'
-import { targetOutOfReach } from '../pipeline/shotlist.js'
+import {
+  DURATION_TOLERANCE,
+  MAX_CAST_PER_SHOT,
+  SAME_SHOT_TYPE_RUN,
+  SHOT_COUNT,
+  targetOutOfReach,
+} from '../pipeline/shotlist.js'
+import { resolvePrompt } from '../pipeline/resolvePrompt.js'
+import { CAMERA_MOVE_PROSE, SHOT_TYPE_PROSE, TIME_OF_DAY_PROSE } from '../pipeline/prompt.js'
 import { applyShotTransition } from '../pipeline/applyTransition.js'
 import type { ShotEvent } from '../pipeline/shotMachine.js'
 import type { Queues } from '../queue/queues.js'
@@ -523,6 +533,80 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       throw new ApiError('NOT_FOUND', `没有存过 ${provider} 的凭据`)
     await reloadProviders(deps, req)
     return reply.status(204).send()
+  })
+
+  /**
+   * ── 提示词检视（PR-K）──────────────────────────────────────────────────
+   *
+   * 「基础 prompt 在哪里配置」的答案目前是「在代码里」。这一组不改变那件事，
+   * 但让它**看得见**——不用读 TypeScript 就知道系统到底发出去什么。
+   *
+   * 两个端点分别对应两条链路：
+   * - `GET /api/prompts` —— 底座：分镜的 system prompt、视频 prompt 的三张散文
+   *   映射表与装配规则、以及判据常量。全部标注「改它要动哪个文件」。
+   * - `POST /api/ai/prompt-preview` —— 单镜实际会发出去的那一份。这是
+   *   `06-api-spec.md:108` 设计好但一直没实现的那个「调试利器」：**花钱之前
+   *   先看清将要发出去的 prompt 长什么样**。
+   *
+   * 预览与真实生成**走同一行代码**（`resolvePrompt`）。另写一份取数逻辑就是
+   * PR-J 刚修掉的那类 bug 的翻版：两份会漂，而漂了之后预览显示的和真实发出去的
+   * 不是一回事，那比没有预览更坏——人会照着一份假的去调措辞。
+   */
+  app.get('/api/prompts', async () => {
+    /*
+     * system prompt 是输入的函数（场次数、目标时长会插进去）。所以要么给一组
+     * 有代表性的默认值，要么用真实的一集。这里给默认值并**如实标出来**，
+     * 免得人以为看到的就是他那一集会发出去的东西。
+     */
+    const sample = { scenes: 3, targetDurationSec: 75 }
+    return {
+      shotlist: {
+        model: SHOTLIST_MODEL,
+        source: 'apps/control/src/pipeline/callShotlist.ts · systemPrompt()',
+        renderedWith: sample,
+        system: systemPrompt({
+          scriptMd: '',
+          synopsis: null,
+          targetDurationSec: sample.targetDurationSec,
+          scenes: Array.from({ length: sample.scenes }, () => ({ summary: null, timeOfDay: null })),
+          characters: [],
+        }),
+        /** 硬规则里的数字全部取自这里，不再另写一遍（PR-J） */
+        criteria: {
+          source: 'apps/control/src/pipeline/shotlist.ts',
+          shotCount: SHOT_COUNT,
+          durationTolerancePct: DURATION_TOLERANCE * 100,
+          maxCastPerShot: MAX_CAST_PER_SHOT,
+          sameShotTypeRun: SAME_SHOT_TYPE_RUN,
+        },
+      },
+      video: {
+        source: 'apps/control/src/pipeline/prompt.ts · buildPrompt()',
+        /** 景别/运镜/时段的缩写对模型不是词，要展开成散文 */
+        prose: { shotType: SHOT_TYPE_PROSE, cameraMove: CAMERA_MOVE_PROSE, timeOfDay: TIME_OF_DAY_PROSE },
+        assembly: [
+          '第一句：景别, 运镜, 角色（同位语，不用冒号——冒号是 Veo 的台词语法）, 动作, 情绪',
+          '第二句：indoors/outdoors, 地点描述 + 锚点, 时段（地点文本已含该词则跳过）',
+          '第三句：风格描述',
+          'dialogue 刻意不进 prompt——它驱动 TTS，带引号的台词会诱导模型把字 render 进画面',
+        ],
+        /** 负向词不在统一请求体里，各家参数名不同，见 openrouterModels 的快照 */
+        negativeFrom: 'style_profiles.negative_prompt',
+      },
+    }
+  })
+
+  /**
+   * 单镜预览。**不花钱、不入队、不写任何东西。**
+   *
+   * `overridden: true` 表示这一镜走了 `shots.prompt_override` 的人工旁路，
+   * 拼装被完全跳过——那时 `inputs` 里的资产是查出来的，但没有一个进了 prompt。
+   */
+  app.post('/api/ai/prompt-preview', async (req) => {
+    const { shotId } = z.object({ shotId: z.string().uuid() }).parse(req.body ?? {})
+    const r = await resolvePrompt(db, shotId)
+    if (!r) throw new ApiError('NOT_FOUND', `shot ${shotId} 不存在`)
+    return r
   })
 
   app.get('/api/episodes/:id', async (req) => {
