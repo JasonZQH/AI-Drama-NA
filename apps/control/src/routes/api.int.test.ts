@@ -576,3 +576,123 @@ describe('空 timeline 要回填，不能永久复用', () => {
     expect(await clipCount(), '回填后该有 clip').toBeGreaterThan(0)
   })
 })
+
+/**
+ * 一集的文本层编辑。
+ *
+ * `script_md` 此前是一列孤儿——从第一版迁移起就存在，零写入方零读取方。
+ * 补上写入口之后，分镜才有真剧本可读，而不是在 200 字的 hook+logline 上
+ * 让模型自己编情节。
+ */
+describe('PATCH /api/episodes/:id', () => {
+  const patch = (body: Record<string, unknown>) =>
+    app.inject({
+      method: 'PATCH',
+      url: `/api/episodes/${episodeId}`,
+      headers: { 'x-api-key': TEST_API_KEY },
+      payload: body,
+    })
+
+  const readBack = async () => (await db.select().from(s.episodes).where(eq(s.episodes.id, episodeId)))[0]!
+
+  it('写 script_md 并能读回', async () => {
+    const md = '# 第一场\n\nLena 推门进来，铃响。\n\n> 还是那把椅子。'
+    const res = await patch({ scriptMd: md })
+    expect(res.statusCode).toBe(200)
+    expect((await readBack()).scriptMd).toBe(md)
+    // GET 也要能读到——分镜端点靠它取输入
+    const got = await app.inject({ method: 'GET', url: `/api/episodes/${episodeId}` })
+    expect((got.json() as { episode: { scriptMd: string } }).episode.scriptMd).toBe(md)
+  })
+
+  /** PATCH 的语义是「改我给的这些」。不传就动了别的字段，是这类端点最常见的坑 */
+  it('不传的字段一个都不动', async () => {
+    await patch({ scriptMd: '剧本正文', title: '原标题', hook: '原钩子' })
+    await patch({ scriptMd: '换过的正文' })
+    const ep = await readBack()
+    expect(ep.scriptMd).toBe('换过的正文')
+    expect(ep.title, 'title 没传却被清掉了').toBe('原标题')
+    expect(ep.hook, 'hook 没传却被清掉了').toBe('原钩子')
+  })
+
+  // 库里 '' 和 NULL 混着存的话，后面每个读取方都要各写一遍兜底
+  it('空串落 NULL，不是空字符串', async () => {
+    await patch({ hook: '有钩子' })
+    await patch({ hook: '   ' })
+    expect((await readBack()).hook).toBeNull()
+  })
+
+  it('空 body 是合法 no-op，不该 400', async () => {
+    await patch({ title: '标题还在' })
+    const res = await patch({})
+    expect(res.statusCode).toBe(200)
+    expect((await readBack()).title).toBe('标题还在')
+  })
+
+  it('写路径要 x-api-key', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/episodes/${episodeId}`,
+      payload: { title: 'x' },
+    })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('不存在的 episode 回 404 而不是静默成功', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/episodes/00000000-0000-4000-8000-000000000000`,
+      headers: { 'x-api-key': TEST_API_KEY },
+      payload: { title: 'x' },
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  afterAll(async () => {
+    // 还原 seed 的原值，别让后面的用例读到测试写进去的文本
+    await db
+      .update(s.episodes)
+      .set({
+        title: 'The Return',
+        logline: 'Lena walks back into the life that discarded her.',
+        hook: 'She was declared dead three years ago. She just ordered coffee.',
+        cliffhanger: 'Marcus recognises the pendant — and reaches for his phone.',
+        scriptMd: null,
+      })
+      .where(eq(s.episodes.id, episodeId))
+  })
+})
+
+/**
+ * CORS 预检必须放行我们真的用到的方法。
+ *
+ * `app.inject()` **不走 CORS**，所以端点的集成测试全绿也证明不了浏览器能调它。
+ * P1 就踩了这个：PATCH 端点写完、6 条 int 测全过，面板上点保存却什么都没发生，
+ * 服务端日志一片干净——请求压根没发出去。
+ */
+describe('CORS 预检放行实际用到的方法', () => {
+  const preflight = (method: string) =>
+    app.inject({
+      method: 'OPTIONS',
+      url: `/api/episodes/${episodeId}`,
+      headers: {
+        origin: 'http://localhost:3000',
+        'access-control-request-method': method,
+        'access-control-request-headers': 'content-type,x-api-key',
+      },
+    })
+
+  it('GET / POST / PATCH 都在 allow-methods 里', async () => {
+    const res = await preflight('PATCH')
+    expect(res.statusCode).toBe(204)
+    const allowed = String(res.headers['access-control-allow-methods'] ?? '')
+    for (const m of ['GET', 'POST', 'PATCH']) {
+      expect(allowed, `${m} 不在 allow-methods 里，浏览器会静默不发请求`).toContain(m)
+    }
+  })
+
+  it('x-api-key 在 allow-headers 里——没有它写路径全部发不出去', async () => {
+    const res = await preflight('POST')
+    expect(String(res.headers['access-control-allow-headers'] ?? '')).toContain('x-api-key')
+  })
+})

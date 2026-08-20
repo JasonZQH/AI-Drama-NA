@@ -7,6 +7,7 @@ import { statusColor } from '@/components/StatusPill'
 import { api, type DryRunPlan, type EpisodeTree } from '@/lib/api'
 import { useStudioEvent } from '@/lib/events'
 import { ProjectShell } from '@/components/ProjectShell'
+import { ScriptEditor } from '@/components/ScriptEditor'
 import { PageHeader, Shell } from '@/components/Shell'
 import { useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -46,6 +47,7 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [progress, setProgress] = useState<Record<string, ShotProgress>>({})
+  const [scriptOpen, setScriptOpen] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -233,6 +235,15 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
         >
           刷新
         </button>
+        {/* 剧本是分镜的输入。字数直接摆出来——空的时候要一眼看得见 */}
+        <button
+          type="button"
+          onClick={() => setScriptOpen(true)}
+          className="tnum rounded-md px-2 py-1 text-[12px]"
+          style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+        >
+          剧本 {tree.episode.scriptMd ? `${tree.episode.scriptMd.length} 字` : '未填'}
+        </button>
         <button
           type="button"
           onClick={() => void openConfirm()}
@@ -253,6 +264,15 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
           {busy ? '渲染中…' : `渲染成片 ${lockedCount}/${tree.shots.length}`}
         </button>
       </PageHeader>
+
+      {scriptOpen && (
+        <ScriptEditor
+          episodeId={episodeId}
+          initial={tree.episode.scriptMd ?? ''}
+          onSaved={(md) => setTree((t) => (t ? { ...t, episode: { ...t.episode, scriptMd: md } } : t))}
+          onClose={() => setScriptOpen(false)}
+        />
+      )}
 
       <div className="flex shrink-0 flex-wrap items-center gap-1.5 px-3 py-1.5">
         {FILTERS.map((f) => {

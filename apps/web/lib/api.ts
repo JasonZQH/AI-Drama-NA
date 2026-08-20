@@ -93,6 +93,8 @@ export interface EpisodeTree {
     id: string
     index: number
     title: string | null
+    /** 分镜的输入。列一直有，写入口到 P1 才补上 */
+    scriptMd: string | null
     targetDurationSec: number
     /** 端点一直在返回整行，页面要靠它渲染项目侧边栏 */
     projectId: string
