@@ -174,6 +174,34 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
   }
 
   /**
+   * 剧本 → 分镜。`POST /api/episodes/:id/shotlist`（#68）在面板上没有入口，
+   * 而它是整条链路的**起点**——没有它，`shots` 的唯一来源仍是 `db/seed.ts`。
+   *
+   * 端点自己会查四个前置条件并给可行动的报错。这里只把「必然失败」的两种在
+   * 按钮上先说清楚（没剧本、已有镜头），剩下的（没场次、没 key）由报错承担
+   * ——它们在面板上看不出来，猜不如问。
+   */
+  async function makeShotlist(): Promise<void> {
+    setBusy(true)
+    setErr(null)
+    try {
+      const r = await api<{ shots: number; repaired: boolean; warnings: string[] }>(
+        `/api/episodes/${episodeId}/shotlist`,
+        { method: 'POST', body: JSON.stringify({}) },
+      )
+      // warnings 不触发重试，但人该看到——尤其是否定式描述那条
+      if (r.warnings.length > 0)
+        setErr(`生成了 ${r.shots} 镜，${r.warnings.length} 条告警：\n${r.warnings.join('\n')}`)
+      await load()
+    } catch (e) {
+      // 没配 key 时这里是 503，消息里直说去 .env 加哪个变量
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
    * 渲染成片。
    *
    * `POST /api/episodes/:id/render` 一直都在，但面板上没有任何入口——12 镜全锁定
@@ -243,6 +271,23 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
           style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
         >
           剧本 {tree.episode.scriptMd ? `${tree.episode.scriptMd.length} 字` : '未填'}
+        </button>
+        {/* 分镜是「生成整集」的前置。已经有镜头就禁掉——端点会拒，但按钮先说 */}
+        <button
+          type="button"
+          onClick={() => void makeShotlist()}
+          disabled={busy || !tree.episode.scriptMd || tree.shots.length > 0}
+          title={
+            tree.shots.length > 0
+              ? '这一集已经有镜头了。重新生成会让已计费的产物失效——要重来请先删掉'
+              : !tree.episode.scriptMd
+                ? '先填剧本'
+                : '按剧本切分镜头，写入 shots'
+          }
+          className="rounded-md px-3 py-1 text-[12px] disabled:opacity-40"
+          style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+        >
+          {busy ? '生成中…' : '生成分镜'}
         </button>
         <button
           type="button"
