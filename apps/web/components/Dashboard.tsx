@@ -4,6 +4,7 @@ import { Progress, StatusPill } from '@/components/StatusPill'
 import { TrendChart } from '@/components/TrendChart'
 import { Cost, MockChip, mockLevel } from '@/components/Mock'
 import { PageHeader, SideGroup, SideLink } from '@/components/Shell'
+import { CreateDialog } from '@/components/CreateDialog'
 import {
   api,
   usd,
@@ -147,6 +148,7 @@ export function Dashboard(): React.ReactElement {
   const failed = attention?.filter((a) => a.status === 'failed') ?? []
   const review = attention?.filter((a) => a.status === 'review') ?? []
   const mock = ov ? mockLevel(ov.totals.costMicroUsd, ov.totals.mockCostMicroUsd) : 'none'
+  const [creating, setCreating] = useState(false)
 
   return (
     <>
@@ -159,7 +161,47 @@ export function Dashboard(): React.ReactElement {
         >
           刷新
         </button>
+        {/*
+          在此之前 `projects` 表的唯一写入方是 `db/seed.ts`——面板能跑一部剧，
+          但造不出第二部。08 §8 的空态表本来就写着「创建第一个项目」。
+        */}
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          className="rounded-md px-3 py-1 text-[12px] font-medium"
+          style={{ background: 'var(--accent)', color: '#fff' }}
+        >
+          新建项目
+        </button>
       </PageHeader>
+
+      {creating && (
+        <CreateDialog
+          title="新建项目"
+          fields={[
+            { key: 'title', label: '剧名', required: true, placeholder: 'Ashes of the Alpha' },
+            {
+              key: 'synopsis',
+              label: '梗概',
+              kind: 'textarea',
+              placeholder: '一两句话说清这部剧讲什么',
+              hint: '会作为 SERIES SYNOPSIS 进分镜提示词，留空则模型只能看单集的信息',
+            },
+          ]}
+          onClose={() => setCreating(false)}
+          onSubmit={async (v) => {
+            const r = await api<{ project: { id: string } }>('/api/projects', {
+              method: 'POST',
+              body: JSON.stringify({
+                title: v['title'],
+                ...(v['synopsis']?.trim() ? { synopsis: v['synopsis'] } : {}),
+              }),
+            })
+            // 直接跳进新项目：建完停在工作台还要自己找一遍
+            window.location.href = `/projects/${r.project.id}`
+          }}
+        />
+      )}
 
       {/* 三行：快照 auto、趋势 auto、下方两列吃掉剩余高度并各自内滚 */}
       <div ref={root} className="grid min-h-0 flex-1 grid-rows-[auto_auto_minmax(0,1fr)] gap-3 p-3">
@@ -242,7 +284,7 @@ export function Dashboard(): React.ReactElement {
                 text={
                   projects && projects.length > 0
                     ? '没有失败，也没有待选的片子。'
-                    : '还没有项目，自然也没有待办。跑 pnpm db:seed 载入示例剧集就有东西可处理了。'
+                    : '还没有项目，自然也没有待办。右上角「新建项目」开一部，或跑 pnpm db:seed 载入示例剧集。'
                 }
               />
             ) : (
@@ -259,7 +301,7 @@ export function Dashboard(): React.ReactElement {
             ) : projects.length === 0 ? (
               <Empty
                 text="还没有项目。"
-                hint="运行 pnpm db:seed 载入示例项目（1 集 / 12 镜 / mock provider），第一分钟就能看到完整流程。"
+                hint="点右上角「新建项目」开一部新剧，或运行 pnpm db:seed 载入示例项目（1 集 / 12 镜 / mock provider）。"
               />
             ) : (
               <ul className="flex flex-col gap-1.5">

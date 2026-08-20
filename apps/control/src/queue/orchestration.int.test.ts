@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
+import { DEMO_TITLE } from '../db/seed.js'
 import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
 import { Storage, s3Key, storageFromEnv } from '../storage/s3.js'
@@ -74,8 +75,12 @@ beforeAll(async () => {
   const [shot] = await db.select({ id: s.shots.id }).from(s.shots).orderBy(desc(s.shots.index)).limit(1)
   if (!shot) throw new Error('库里没有 shot，先跑 pnpm db:seed')
   shotId = shot.id
-  const [p] = await db.select({ id: s.projects.id }).from(s.projects).limit(1)
-  projectId = p!.id
+  // 按 seed 的固定标题定位，不用无序的 limit(1)——开发机上随手建的项目会被随机
+  // 挑中，症状是「预算闸门读到 0 花费」这种看起来像记账坏了的失败。理由同
+  // api.int.test.ts 顶部那条注释
+  const [p] = await db.select({ id: s.projects.id }).from(s.projects).where(eq(s.projects.title, DEMO_TITLE))
+  if (!p) throw new Error(`库里没有夹具项目「${DEMO_TITLE}」，先跑 pnpm db:seed`)
+  projectId = p.id
   await reset(redis, 'mock')
 
   // 清掉上一轮的残留。集成测试必须可重复运行——否则第二次跑就会撞

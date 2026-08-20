@@ -1,4 +1,4 @@
-import { ShotStatus } from '@ai-drama/contracts'
+import { ShotStatus, TimeOfDay } from '@ai-drama/contracts'
 import { and, desc, eq, sql } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
@@ -89,6 +89,76 @@ async function applyTransition(deps: ApiDeps, shotId: string, event: ShotEvent):
   return { next: r.next }
 }
 
+/** 空串落 NULL：库里 '' 和 NULL 混着存，后面每个读取方都要各写一遍兜底 */
+const blankToNull = (v: string | null | undefined): string | null | undefined =>
+  v === undefined || v === null ? (v as null | undefined) : v.trim() === '' ? null : v.trim()
+
+/**
+ * 下一个编号 = `max(index) + 1`。
+ *
+ * 不让人手填：`episodes_project_index_uq` / `scenes_episode_index_uq` 都是唯一
+ * 约束，手填就是把撞号变成用户的问题。两个并发创建会算出同一个数——那由唯一
+ * 约束兜底，比让人自己数靠谱。
+ */
+async function nextEpisodeIndex(db: Db, projectId: string): Promise<number> {
+  const [r] = await db
+    .select({ max: sql<number>`coalesce(max(${s.episodes.index}), 0)::int` })
+    .from(s.episodes)
+    .where(eq(s.episodes.projectId, projectId))
+  return (r?.max ?? 0) + 1
+}
+
+async function nextSceneIndex(db: Db, episodeId: string): Promise<number> {
+  const [r] = await db
+    .select({ max: sql<number>`coalesce(max(${s.scenes.index}), 0)::int` })
+    .from(s.scenes)
+    .where(eq(s.scenes.episodeId, episodeId))
+  return (r?.max ?? 0) + 1
+}
+
+/**
+ * 花过钱的东西不给删。
+ *
+ * `projects → episodes → scenes → shots` 全链路 cascade，一条 DELETE 能把已经
+ * 生成、已经计费的 takes 与 assets 一起带走，而系统的规矩是**永不自动销毁字节**
+ * （03 §7）。所以闸门是「这棵子树下有没有过 generation_jobs」，错误里带上金额。
+ *
+ * 只挡「花过钱」不挡「有镜头」：分镜生歪了想重来是正常操作，那时还没花钱。
+ */
+async function refuseIfSpent(db: Db, scope: { projectId?: string; episodeId?: string }): Promise<void> {
+  const where = scope.projectId
+    ? eq(s.episodes.projectId, scope.projectId)
+    : eq(s.episodes.id, scope.episodeId!)
+  const [r] = await db
+    .select({
+      jobs: sql<number>`count(*)::int`,
+      spent: sql<number>`coalesce(sum(${s.generationJobs.costMicroUsd}), 0)::bigint`,
+    })
+    .from(s.generationJobs)
+    .innerJoin(s.shots, eq(s.generationJobs.shotId, s.shots.id))
+    .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+    .innerJoin(s.episodes, eq(s.scenes.episodeId, s.episodes.id))
+    .where(where)
+  if ((r?.jobs ?? 0) > 0)
+    throw new ApiError(
+      'CONFLICT',
+      `这里已经产生过 ${r?.jobs} 次生成（累计 $${((Number(r?.spent) || 0) / 1_000_000).toFixed(2)}）。删除会连同已计费的 take 与产物一起销毁，本系统不自动销毁字节。要真的删，先手工清掉这些 generation_jobs。`,
+      { jobs: r?.jobs, spentMicroUsd: Number(r?.spent) || 0 },
+    )
+}
+
+const sceneBody = z.object({
+  summary: z.string().nullish(),
+  timeOfDay: TimeOfDay.nullish(),
+  locationId: z.string().uuid().nullish(),
+})
+
+const scenePatch = (b: z.infer<typeof sceneBody>): Record<string, unknown> => ({
+  ...(b.summary === undefined ? {} : { summary: blankToNull(b.summary) }),
+  ...(b.timeOfDay === undefined ? {} : { timeOfDay: b.timeOfDay ?? null }),
+  ...(b.locationId === undefined ? {} : { locationId: b.locationId ?? null }),
+})
+
 export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
   const { db } = deps
 
@@ -109,6 +179,135 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
   })
 
   /** 分镜页的数据源：一集的场次 + 镜头 + 每镜的 take 数（08 §2） */
+  /**
+   * ── 作者侧写入路径（P0）────────────────────────────────────────────────
+   *
+   * 在这之前 `projects` / `scenes` / `characters` / `locations` /
+   * `style_profiles` **五张表的唯一写入方都是 `db/seed.ts`**——系统能跑一部剧，
+   * 但造不出一部剧。规律是「机器产出的表都有写入方，人要创作的表都没有」。
+   *
+   * 这一组补上「开一部新剧」需要的三张：project → episode → scene。
+   *
+   * ## 编号一律自动分配，不让人手填
+   *
+   * `episodes_project_index_uq` / `scenes_episode_index_uq` 都是唯一约束，手填
+   * 就是把撞号变成用户的问题。取 `max(index) + 1`，在事务里算——两个并发创建
+   * 会算出同一个数，靠唯一约束兜底比靠运气好。
+   *
+   * **不做重排。** 场次顺序即叙事顺序，改序要动一整段编号，而拖拽 UI 与批量
+   * 重编号是另一件事。现在删了重建即可。
+   */
+  app.post('/api/projects', async (req, reply) => {
+    const body = z
+      .object({
+        title: z.string().trim().min(1, '项目要有名字'),
+        synopsis: z.string().trim().optional(),
+        aspectRatio: z.string().optional(),
+        language: z.string().optional(),
+      })
+      .parse(req.body ?? {})
+
+    const [row] = await db
+      .insert(s.projects)
+      .values({
+        title: body.title,
+        ...(body.synopsis ? { synopsis: body.synopsis } : {}),
+        ...(body.aspectRatio ? { aspectRatio: body.aspectRatio } : {}),
+        ...(body.language ? { language: body.language } : {}),
+      })
+      .returning()
+    return reply.status(201).send({ project: row })
+  })
+
+  /**
+   * `styleProfileId` 在这里可写：风格要进 prompt，靠的是
+   * `projects.style_profile_id` 这一跳（`applyTransition.ts` 的 leftJoin）。
+   * 不回填的话风格建了也不会出现在任何一条 prompt 里——seed 就是用第二条
+   * UPDATE 补的这一步。
+   */
+  app.patch('/api/projects/:id', async (req) => {
+    const { id } = Uuid.parse(req.params)
+    const body = z
+      .object({
+        title: z.string().trim().min(1).optional(),
+        synopsis: z.string().nullish(),
+        styleProfileId: z.string().uuid().nullish(),
+      })
+      .parse(req.body ?? {})
+
+    const patch = {
+      ...(body.title === undefined ? {} : { title: body.title }),
+      ...(body.synopsis === undefined ? {} : { synopsis: blankToNull(body.synopsis) }),
+      ...(body.styleProfileId === undefined ? {} : { styleProfileId: body.styleProfileId ?? null }),
+    }
+    if (Object.keys(patch).length === 0) {
+      const [row] = await db.select().from(s.projects).where(eq(s.projects.id, id))
+      if (!row) throw new ApiError('NOT_FOUND', `project ${id} 不存在`)
+      return { project: row }
+    }
+    const [row] = await db.update(s.projects).set(patch).where(eq(s.projects.id, id)).returning()
+    if (!row) throw new ApiError('NOT_FOUND', `project ${id} 不存在`)
+    return { project: row }
+  })
+
+  app.post('/api/projects/:id/episodes', async (req, reply) => {
+    const { id } = Uuid.parse(req.params)
+    const body = z
+      .object({
+        title: z.string().trim().optional(),
+        logline: z.string().trim().optional(),
+        hook: z.string().trim().optional(),
+        cliffhanger: z.string().trim().optional(),
+        scriptMd: z.string().optional(),
+        targetDurationSec: z.number().int().min(10).max(600).optional(),
+      })
+      .parse(req.body ?? {})
+
+    const [proj] = await db.select({ id: s.projects.id }).from(s.projects).where(eq(s.projects.id, id))
+    if (!proj) throw new ApiError('NOT_FOUND', `project ${id} 不存在`)
+
+    const [row] = await db
+      .insert(s.episodes)
+      .values({
+        projectId: id,
+        index: await nextEpisodeIndex(db, id),
+        ...(body.title ? { title: body.title } : {}),
+        ...(body.logline ? { logline: body.logline } : {}),
+        ...(body.hook ? { hook: body.hook } : {}),
+        ...(body.cliffhanger ? { cliffhanger: body.cliffhanger } : {}),
+        ...(body.scriptMd ? { scriptMd: body.scriptMd } : {}),
+        ...(body.targetDurationSec ? { targetDurationSec: body.targetDurationSec } : {}),
+      })
+      .returning()
+    return reply.status(201).send({ episode: row })
+  })
+
+  /**
+   * 删除。**花过钱的东西不给删。**
+   *
+   * `projects → episodes → scenes → shots` 全链路 cascade，一条 DELETE 能把
+   * 已经生成、已经计费的 takes 和 assets 一起带走。而系统的规矩是永不自动销毁
+   * 字节（03 §7）——所以闸门放在这里：**只要这棵子树下有过 generation_jobs，
+   * 就拒绝**，错误里带上花了多少钱。
+   *
+   * 只挡「花过钱」不挡「有镜头」：分镜生歪了想重来是正常操作，那时还没花钱。
+   */
+  app.delete('/api/projects/:id', async (req, reply) => {
+    const { id } = Uuid.parse(req.params)
+    await refuseIfSpent(db, { projectId: id })
+    const [row] = await db.delete(s.projects).where(eq(s.projects.id, id)).returning({ id: s.projects.id })
+    if (!row) throw new ApiError('NOT_FOUND', `project ${id} 不存在`)
+    return reply.status(204).send()
+  })
+
+  app.delete('/api/episodes/:id', async (req, reply) => {
+    const { id } = Uuid.parse(req.params)
+    await refuseIfSpent(db, { episodeId: id })
+    const [row] = await db.delete(s.episodes).where(eq(s.episodes.id, id)).returning({ id: s.episodes.id })
+    if (!row) throw new ApiError('NOT_FOUND', `episode ${id} 不存在`)
+    return reply.status(204).send()
+  })
+
   app.get('/api/episodes/:id', async (req) => {
     const { id } = Uuid.parse(req.params)
     const [ep] = await db.select().from(s.episodes).where(eq(s.episodes.id, id))
@@ -305,6 +504,66 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       warnings: out.warnings,
       costUsd: out.costUsd,
     })
+  })
+
+  /**
+   * 场次。**分镜的输入**——`POST /api/episodes/:id/shotlist` 第一件事就是查它，
+   * 没有场次直接 409（分镜是按场次切的，模型不该自己发明结构）。
+   *
+   * 在这之前 `scenes` 表只有 `db/seed.ts` 在写，所以「新建一部剧然后生成分镜」
+   * 这条路是断的。
+   */
+  app.post('/api/episodes/:id/scenes', async (req, reply) => {
+    const { id } = Uuid.parse(req.params)
+    const body = sceneBody.parse(req.body ?? {})
+
+    const [ep] = await db.select({ id: s.episodes.id }).from(s.episodes).where(eq(s.episodes.id, id))
+    if (!ep) throw new ApiError('NOT_FOUND', `episode ${id} 不存在`)
+
+    const [row] = await db
+      .insert(s.scenes)
+      .values({
+        episodeId: id,
+        index: await nextSceneIndex(db, id),
+        ...scenePatch(body),
+      })
+      .returning()
+    return reply.status(201).send({ scene: row })
+  })
+
+  app.patch('/api/scenes/:id', async (req) => {
+    const { id } = Uuid.parse(req.params)
+    const patch = scenePatch(sceneBody.parse(req.body ?? {}))
+    if (Object.keys(patch).length === 0) {
+      const [row] = await db.select().from(s.scenes).where(eq(s.scenes.id, id))
+      if (!row) throw new ApiError('NOT_FOUND', `scene ${id} 不存在`)
+      return { scene: row }
+    }
+    const [row] = await db.update(s.scenes).set(patch).where(eq(s.scenes.id, id)).returning()
+    if (!row) throw new ApiError('NOT_FOUND', `scene ${id} 不存在`)
+    return { scene: row }
+  })
+
+  /**
+   * 删场次会 cascade 掉它下面的镜头。有镜头就拒——分镜是整集一次生成的，
+   * 删掉中间一场会让剩下的镜头编号出现空洞，而 `orderBy(shots.index)` 正是
+   * 剪辑时间线的拼接顺序。要改结构就整集重来。
+   */
+  app.delete('/api/scenes/:id', async (req, reply) => {
+    const { id } = Uuid.parse(req.params)
+    const [n] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(s.shots)
+      .where(eq(s.shots.sceneId, id))
+    if ((n?.n ?? 0) > 0)
+      throw new ApiError(
+        'CONFLICT',
+        `这一场下面有 ${n?.n} 个镜头，删掉会连它们一起删，并让全集镜号出现空洞。要改结构请先删掉这一集的全部镜头再重新分镜。`,
+        { shots: n?.n },
+      )
+    const [row] = await db.delete(s.scenes).where(eq(s.scenes.id, id)).returning({ id: s.scenes.id })
+    if (!row) throw new ApiError('NOT_FOUND', `scene ${id} 不存在`)
+    return reply.status(204).send()
   })
 
   app.post('/api/shots/:id/generate', async (req, reply) => {

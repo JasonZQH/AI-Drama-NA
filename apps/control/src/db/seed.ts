@@ -11,7 +11,8 @@ import * as s from './schema.js'
  * 幂等：重复跑先清掉同名 demo 项目，级联删除全部下游。
  */
 
-const DEMO_TITLE = 'DEMO · Ashes of the Alpha'
+/** 导出：集成测试要按它定位夹具项目，两边共用同一个真相而不是各写一份字面量 */
+export const DEMO_TITLE = 'DEMO · Ashes of the Alpha'
 
 const url = process.env['DATABASE_URL']
 if (!url) throw new Error('DATABASE_URL 未设置')
