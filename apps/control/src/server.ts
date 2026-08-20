@@ -78,7 +78,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    */
   void app.register(cors, {
     origin: process.env['WEB_ORIGIN'] ?? true,
-    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'OPTIONS'],
+    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['content-type', 'x-api-key'],
   })
   guardWrites(app, deps.apiKey)

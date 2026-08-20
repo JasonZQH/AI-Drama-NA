@@ -3,6 +3,7 @@
 import { Progress, StatusPill, statusColor } from '@/components/StatusPill'
 import { Cost } from '@/components/Mock'
 import { PageHeader } from '@/components/Shell'
+import { CreateDialog } from '@/components/CreateDialog'
 import { api, usd, type EpisodeSummary, type ProjectSummary } from '@/lib/api'
 import { useCallback, useEffect, useState } from 'react'
 
@@ -17,6 +18,7 @@ import { useCallback, useEffect, useState } from 'react'
  */
 export function ProjectView({ projectId }: { projectId: string }): React.ReactElement {
   const [project, setProject] = useState<ProjectSummary | null>(null)
+  const [creating, setCreating] = useState(false)
   const [episodes, setEpisodes] = useState<EpisodeSummary[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
@@ -71,7 +73,50 @@ export function ProjectView({ projectId }: { projectId: string }): React.ReactEl
         {...(project?.synopsis ? { subtitle: project.synopsis } : {})}
       >
         {project && <StatusPill status={project.status} kind="project" />}
+        {/* `episodes` 有写入方（PATCH），但没有创建入口——只能靠 seed */}
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          className="rounded-md px-3 py-1 text-[12px] font-medium"
+          style={{ background: 'var(--accent)', color: '#fff' }}
+        >
+          新建分集
+        </button>
       </PageHeader>
+
+      {creating && (
+        <CreateDialog
+          title="新建分集"
+          fields={[
+            { key: 'title', label: '标题', placeholder: 'The Return' },
+            {
+              key: 'logline',
+              label: 'Logline',
+              placeholder: '一句话说清这一集发生了什么',
+            },
+            {
+              key: 'targetDurationSec',
+              label: '目标时长（秒）',
+              kind: 'number',
+              initial: '75',
+              hint: '分镜的判据：镜头时长总和要落在它的 ±15% 内。03 §S3 的口径是 60–90 秒一集',
+            },
+          ]}
+          onClose={() => setCreating(false)}
+          onSubmit={async (v) => {
+            const dur = Number(v['targetDurationSec'])
+            const r = await api<{ episode: { id: string } }>(`/api/projects/${projectId}/episodes`, {
+              method: 'POST',
+              body: JSON.stringify({
+                ...(v['title']?.trim() ? { title: v['title'] } : {}),
+                ...(v['logline']?.trim() ? { logline: v['logline'] } : {}),
+                ...(Number.isFinite(dur) && dur > 0 ? { targetDurationSec: Math.round(dur) } : {}),
+              }),
+            })
+            window.location.href = `/episodes/${r.episode.id}`
+          }}
+        />
+      )}
 
       <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-3 p-3">
         <section className="grid grid-cols-4 gap-2">
@@ -113,7 +158,7 @@ export function ProjectView({ projectId }: { projectId: string }): React.ReactEl
               <div className="p-4" style={{ color: 'var(--text-secondary)' }}>
                 <p>这个项目还没有分集。</p>
                 <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                  分集来自剧本阶段（剧本页在 M1+ 才做）。本地开发想先看到画面，跑{' '}
+                  点右上角「新建分集」建一集，然后在分集页粘剧本、生成分镜。想直接看完整流程，跑{' '}
                   <code className="font-mono">pnpm db:seed</code> 灌入示例剧集。
                 </p>
               </div>

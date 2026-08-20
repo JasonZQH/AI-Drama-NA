@@ -2,6 +2,7 @@ import { and, eq, gte, inArray, lt } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
+import { DEMO_TITLE } from '../db/seed.js'
 import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
 import { createConnection, createQueues } from '../queue/queues.js'
@@ -72,8 +73,19 @@ beforeAll(async () => {
   })
   await app.ready()
 
-  const [p] = await db.select().from(s.projects).limit(1)
-  if (!p) throw new Error('库里没有 project，先跑 pnpm db:seed')
+  /*
+   * **按 seed 的固定标题定位，不能 `.limit(1)`。**
+   *
+   * `db:seed` 只重建它自己那个项目，不动库里别的——这是对的（不该销毁别人的
+   * 数据），但意味着开发机上随手建的项目会一直在。而无序的 `.limit(1)` 会随机
+   * 挑中它们，于是整个文件跑在一个 0 镜的项目上，症状是「GET /api/episodes/:id
+   * 返回 0 个镜头」这种看起来像读取路由坏了的失败。
+   *
+   * 实测撞到过：面板演示时手工建的一个项目留在库里，八条用例当场变红。
+   * 按标题挑 = 与 `seed.ts` 共用同一个定位方式（它也是按 DEMO_TITLE 找的）。
+   */
+  const [p] = await db.select().from(s.projects).where(eq(s.projects.title, DEMO_TITLE))
+  if (!p) throw new Error(`库里没有夹具项目「${DEMO_TITLE}」，先跑 pnpm db:seed`)
   projectId = p.id
   /*
    * **必须 ORDER BY**，理由与下面挑 shot 的那条一样，但后果更隐蔽：任何用例
@@ -916,6 +928,201 @@ describe('shots.index 的唯一约束真的存在', () => {
 })
 
 /**
+ * 作者侧写入路径（P0）。
+ *
+ * 在这之前 `projects` / `scenes` / `characters` / `locations` / `style_profiles`
+ * 五张表的**唯一写入方都是 `db/seed.ts`**——系统能跑一部剧，但造不出一部剧。
+ */
+describe('作者侧：新建项目 / 分集 / 场次', () => {
+  const created: string[] = []
+  const write = (method: 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown) =>
+    app.inject({ method, url, headers: WRITE_HEADERS, ...(payload ? { payload } : {}) })
+
+  afterAll(async () => {
+    for (const id of created) await db.delete(s.projects).where(eq(s.projects.id, id))
+  })
+
+  const newProject = async (title = '作者侧用例') => {
+    const r = await write('POST', '/api/projects', { title })
+    const p = (r.json() as { project: { id: string } }).project
+    created.push(p.id)
+    return p
+  }
+
+  it('新建项目：201 + 能被列表读回', async () => {
+    const r = await write('POST', '/api/projects', { title: '新剧', synopsis: '一句话梗概' })
+    expect(r.statusCode).toBe(201)
+    const p = (r.json() as { project: { id: string; title: string; synopsis: string } }).project
+    created.push(p.id)
+    expect(p.title).toBe('新剧')
+    expect(p.synopsis).toBe('一句话梗概')
+
+    const list = await app.inject({ method: 'GET', url: '/api/projects' })
+    expect((list.json() as { projects: { id: string }[] }).projects.map((x) => x.id)).toContain(p.id)
+  })
+
+  it('没名字的项目拒收——列表里一行「未命名」谁都认不出来', async () => {
+    expect((await write('POST', '/api/projects', { title: '   ' })).statusCode).toBe(422)
+    expect((await write('POST', '/api/projects', {})).statusCode).toBe(422)
+  })
+
+  /**
+   * 编号自动分配。手填就是把撞唯一约束变成用户的问题，而
+   * `episodes_project_index_uq` / `scenes_episode_index_uq` 都是真的在那儿。
+   */
+  it('分集编号自动 +1，第一集是 1', async () => {
+    const p = await newProject()
+    const a = await write('POST', `/api/projects/${p.id}/episodes`, { title: '第一集' })
+    const b = await write('POST', `/api/projects/${p.id}/episodes`, { title: '第二集' })
+    expect(a.statusCode).toBe(201)
+    expect((a.json() as { episode: { index: number } }).episode.index).toBe(1)
+    expect((b.json() as { episode: { index: number } }).episode.index).toBe(2)
+  })
+
+  it('场次编号自动 +1，且能被分镜端点读到', async () => {
+    const p = await newProject()
+    const ep = (
+      (await write('POST', `/api/projects/${p.id}/episodes`, {})).json() as { episode: { id: string } }
+    ).episode
+    for (const summary of ['第一场', '第二场']) {
+      const r = await write('POST', `/api/episodes/${ep.id}/scenes`, { summary, timeOfDay: 'night' })
+      expect(r.statusCode).toBe(201)
+    }
+    const rows = await db.select().from(s.scenes).where(eq(s.scenes.episodeId, ep.id)).orderBy(s.scenes.index)
+    expect(rows.map((r) => r.index)).toEqual([1, 2])
+    expect(rows[0]!.timeOfDay).toBe('night')
+
+    // 场次是分镜的输入：有了它，那道「没有场次 → 409」的闸就不该再响
+    await write('PATCH', `/api/episodes/${ep.id}`, { scriptMd: '有剧本了' })
+    const r = await write('POST', `/api/episodes/${ep.id}/shotlist`)
+    expect(r.statusCode, '有剧本有场次之后不该再被前置条件拦下').not.toBe(409)
+  })
+
+  it('PATCH 场次改摘要与时段，空串落 NULL', async () => {
+    const p = await newProject()
+    const ep = (
+      (await write('POST', `/api/projects/${p.id}/episodes`, {})).json() as { episode: { id: string } }
+    ).episode
+    const sc = (
+      (await write('POST', `/api/episodes/${ep.id}/scenes`, { summary: '原摘要' })).json() as {
+        scene: { id: string }
+      }
+    ).scene
+    await write('PATCH', `/api/scenes/${sc.id}`, { summary: '改过的' })
+    let [row] = await db.select().from(s.scenes).where(eq(s.scenes.id, sc.id))
+    expect(row!.summary).toBe('改过的')
+    await write('PATCH', `/api/scenes/${sc.id}`, { summary: '  ' })
+    ;[row] = await db.select().from(s.scenes).where(eq(s.scenes.id, sc.id))
+    expect(row!.summary).toBeNull()
+  })
+
+  /** `projects.style_profile_id` 不回填，风格建了也进不了任何一条 prompt */
+  it('PATCH 项目能回填 styleProfileId——风格进 prompt 靠这一跳', async () => {
+    const p = await newProject()
+    const [style] = await db
+      .insert(s.styleProfiles)
+      .values({ projectId: p.id, name: '测试风格', description: 'cinematic' })
+      .returning()
+    const r = await write('PATCH', `/api/projects/${p.id}`, { styleProfileId: style!.id })
+    expect(r.statusCode).toBe(200)
+    const [row] = await db.select().from(s.projects).where(eq(s.projects.id, p.id))
+    expect(row!.styleProfileId).toBe(style!.id)
+  })
+
+  it('删空项目可以，删不存在的回 404', async () => {
+    const p = await newProject()
+    expect((await write('DELETE', `/api/projects/${p.id}`)).statusCode).toBe(204)
+    expect(await db.select().from(s.projects).where(eq(s.projects.id, p.id))).toHaveLength(0)
+    created.splice(created.indexOf(p.id), 1)
+    expect((await write('DELETE', `/api/projects/${p.id}`)).statusCode).toBe(404)
+  })
+
+  /**
+   * **这条是这一组里最要紧的。**
+   *
+   * `projects → episodes → scenes → shots` 全链路 cascade，一条 DELETE 能把
+   * 已经生成、已经计费的 take 与 asset 一起带走，而系统的规矩是永不自动销毁
+   * 字节（03 §7）。
+   */
+  it('花过钱的不给删，报错里带上金额', async () => {
+    const p = await newProject()
+    const ep = (
+      (await write('POST', `/api/projects/${p.id}/episodes`, {})).json() as { episode: { id: string } }
+    ).episode
+    const sc = (
+      (await write('POST', `/api/episodes/${ep.id}/scenes`, {})).json() as { scene: { id: string } }
+    ).scene
+    const [shot] = await db
+      .insert(s.shots)
+      .values({ sceneId: sc.id, index: 1, shotType: 'ms', action: 'x' })
+      .returning()
+
+    // 还没花钱：删得掉（这里只验闸没响，随后回滚）
+    expect((await write('DELETE', `/api/episodes/${ep.id}`)).statusCode).toBe(204)
+
+    // 重建一份，这次记一笔账
+    const ep2 = (
+      (await write('POST', `/api/projects/${p.id}/episodes`, {})).json() as { episode: { id: string } }
+    ).episode
+    const sc2 = (
+      (await write('POST', `/api/episodes/${ep2.id}/scenes`, {})).json() as { scene: { id: string } }
+    ).scene
+    const [shot2] = await db
+      .insert(s.shots)
+      .values({ sceneId: sc2.id, index: 1, shotType: 'ms', action: 'x' })
+      .returning()
+    await db.insert(s.generationJobs).values({
+      shotId: shot2!.id,
+      attempt: 1,
+      providerId: 'mock',
+      modelId: 'mock-v1',
+      mode: 't2v',
+      promptText: 'x',
+      params: {},
+      costMicroUsd: 1_230_000,
+    })
+    void shot
+
+    for (const url of [`/api/episodes/${ep2.id}`, `/api/projects/${p.id}`]) {
+      const r = await write('DELETE', url)
+      expect(r.statusCode, `${url} 应该被闸门拦下`).toBe(409)
+      const msg = (r.json() as { error: { message: string } }).error.message
+      expect(msg, '报错要说清花了多少钱').toMatch(/\$1\.23/)
+      expect(msg).toMatch(/1 次生成/)
+    }
+    // 还在库里，没被删掉
+    expect(await db.select().from(s.shots).where(eq(s.shots.id, shot2!.id))).toHaveLength(1)
+  })
+
+  it('删场次：有镜头就拒，空的可以', async () => {
+    const p = await newProject()
+    const ep = (
+      (await write('POST', `/api/projects/${p.id}/episodes`, {})).json() as { episode: { id: string } }
+    ).episode
+    const sc = (
+      (await write('POST', `/api/episodes/${ep.id}/scenes`, {})).json() as { scene: { id: string } }
+    ).scene
+    await db.insert(s.shots).values({ sceneId: sc.id, index: 1, shotType: 'ms', action: 'x' })
+    const bad = await write('DELETE', `/api/scenes/${sc.id}`)
+    expect(bad.statusCode).toBe(409)
+    expect((bad.json() as { error: { message: string } }).error.message).toMatch(/1 个镜头/)
+
+    await db.delete(s.shots).where(eq(s.shots.sceneId, sc.id))
+    expect((await write('DELETE', `/api/scenes/${sc.id}`)).statusCode).toBe(204)
+  })
+
+  it('写路径全都要 x-api-key', async () => {
+    for (const [method, url] of [
+      ['POST', '/api/projects'],
+      ['DELETE', `/api/projects/00000000-0000-4000-8000-000000000000`],
+    ] as const) {
+      const r = await app.inject({ method, url, payload: { title: 'x' } })
+      expect(r.statusCode, `${method} ${url} 没有闸门`).toBe(401)
+    }
+  })
+})
+
+/**
  * CORS 预检必须放行我们真的用到的方法。
  *
  * `app.inject()` **不走 CORS**，所以端点的集成测试全绿也证明不了浏览器能调它。
@@ -934,11 +1141,11 @@ describe('CORS 预检放行实际用到的方法', () => {
       },
     })
 
-  it('GET / POST / PATCH 都在 allow-methods 里', async () => {
+  it('GET / POST / PATCH / DELETE 都在 allow-methods 里', async () => {
     const res = await preflight('PATCH')
     expect(res.statusCode).toBe(204)
     const allowed = String(res.headers['access-control-allow-methods'] ?? '')
-    for (const m of ['GET', 'POST', 'PATCH']) {
+    for (const m of ['GET', 'POST', 'PATCH', 'DELETE']) {
       expect(allowed, `${m} 不在 allow-methods 里，浏览器会静默不发请求`).toContain(m)
     }
   })
