@@ -14,7 +14,8 @@ import { resolveDependencies } from '../pipeline/batch.js'
 import { createGenerationJob } from '../queue/ingest.js'
 import { ShotlistRejected } from '../pipeline/callShotlist.js'
 import { probeOpenRouter, type ProbeResult } from '../credentials/probe.js'
-import { resolveKey, upsertCredential } from '../credentials/store.js'
+import { deleteCredential, resolveKey, upsertCredential } from '../credentials/store.js'
+import { LivePool, publishProvidersChanged, subscribeProviderChanges } from '../providers/pool.js'
 import type { ShotlistFn } from './api.js'
 
 /**
@@ -1425,6 +1426,271 @@ describe('密钥管理', () => {
     } finally {
       if (saved !== undefined) process.env['OPENROUTER_API_KEY'] = saved
     }
+  })
+})
+
+/**
+ * provider 池热更新（PR-E）。
+ *
+ * PR-D 把密钥搬进了库，但 `buildProviderPool()` 在控制面与 worker 里各建一次、
+ * 都在开机时——所以存完 key 视频链路要重启两个进程才认。这一组验它不用了。
+ */
+describe('provider 池热更新', () => {
+  const REAL = 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd'
+  /** 只放一个模型，断言时数量才算得清 */
+  const ENV = { OPENROUTER_VIDEO_MODELS: 'google/veo-3.1-lite' } as NodeJS.ProcessEnv
+
+  beforeAll(() => {
+    process.env['CREDENTIAL_SECRET'] = 'int-test-secret'
+  })
+  afterAll(async () => {
+    await db.delete(s.providerCredentials)
+    delete process.env['CREDENTIAL_SECRET']
+  })
+  beforeEach(async () => {
+    await db.delete(s.providerCredentials)
+  })
+
+  it('库里没有密钥时池里只有 mock', async () => {
+    const pool = new LivePool(db, ENV)
+    expect(await pool.refresh()).toEqual(['mock'])
+  })
+
+  it('存进一把之后 refresh 就把 openrouter 拉进来了', async () => {
+    const pool = new LivePool(db, ENV)
+    await pool.refresh()
+    await upsertCredential(db, { provider: 'openrouter', key: REAL, label: null, verified: true })
+    expect(await pool.refresh()).toEqual(['mock', 'openrouter:google/veo-3.1-lite'])
+  })
+
+  /**
+   * **数组引用不变**是这套设计成立的前提：三个 Deps 接口和全部调用点都是
+   * 「用的时候才读 `deps.providers`」，引用一换它们就全看不到新内容了。
+   */
+  it('refresh 换的是内容不是引用', async () => {
+    const pool = new LivePool(db, ENV)
+    const handle = pool.providers // 模拟 deps 里存下来的那一份
+    await pool.refresh()
+    expect(handle).toHaveLength(1)
+    await upsertCredential(db, { provider: 'openrouter', key: REAL, label: null, verified: true })
+    await pool.refresh()
+    expect(handle, '拿着旧引用的调用方必须看得到新内容').toHaveLength(2)
+    expect(handle).toBe(pool.providers)
+  })
+
+  /**
+   * 删掉库里那把之后**回落到 `.env`**，两处都没有才真的空掉。
+   *
+   * 这是设计如此不是漏洞：`.env` 的语义是「还没用过面板时的初始值」，
+   * 删掉面板里存的那把就等于回到初始值。
+   */
+  it('删掉库里的之后回落到 .env，两处都没有才空', async () => {
+    const envWithKey = { ...ENV, OPENROUTER_API_KEY: 'sk-or-v1-stale-from-env' } as NodeJS.ProcessEnv
+    const pool = new LivePool(db, envWithKey)
+    await upsertCredential(db, { provider: 'openrouter', key: REAL, label: null, verified: true })
+    expect(await pool.refresh()).toHaveLength(2)
+
+    await deleteCredential(db, 'openrouter')
+    // resolveKey 会回落到 env，所以这里仍然是 2——这是**设计如此**：
+    // .env 是「还没用过面板时的初始值」，删库里的那把等于回到初始值
+    expect(await pool.refresh(), '回落到 .env 的那把').toHaveLength(2)
+
+    // 而 .env 里也没有时，必须真的空掉
+    const bare = new LivePool(db, ENV)
+    expect(await bare.refresh()).toEqual(['mock'])
+  })
+
+  /** 跨进程：一个 LivePool 广播，另一个收到后自己重建 */
+  it('Redis 广播能让另一个进程的池子跟着变', async () => {
+    const a = new LivePool(db, ENV) // 扮演控制面
+    const b = new LivePool(db, ENV) // 扮演 worker
+    await a.refresh()
+    await b.refresh()
+    expect(b.providers).toHaveLength(1)
+
+    const sub = createConnection(REDIS_URL)
+    const pub = createConnection(REDIS_URL)
+    const stop = await subscribeProviderChanges(sub, b)
+    try {
+      await upsertCredential(db, { provider: 'openrouter', key: REAL, label: null, verified: true })
+      await publishProvidersChanged(pub)
+      // pub/sub 是异步的，等它到
+      for (let i = 0; i < 40 && b.providers.length < 2; i++) await new Promise((r) => setTimeout(r, 50))
+      expect(
+        b.providers.map((p) => p.id),
+        'worker 那边没跟上',
+      ).toEqual(['mock', 'openrouter:google/veo-3.1-lite'])
+    } finally {
+      await stop()
+      sub.disconnect()
+      pub.disconnect()
+    }
+  })
+
+  /**
+   * 删密钥会让池子少掉一整家，而**在飞的 job 是按 `provider_id` 回查池子的**
+   * （`orchestrator.ts` 的 `providerOf`，查不到就抛）。所以有在飞的就拒绝删。
+   */
+  it('有在飞的任务时拒绝删密钥', async () => {
+    await upsertCredential(db, { provider: 'openrouter', key: REAL, label: null, verified: true })
+    const [job] = await db
+      .insert(s.generationJobs)
+      .values({
+        shotId,
+        attempt: TEST_ATTEMPT_BASE + 71,
+        providerId: 'openrouter:google/veo-3.1-lite',
+        modelId: 'google/veo-3.1-lite',
+        mode: 't2v',
+        promptText: 'x',
+        params: {},
+        status: 'running',
+      })
+      .returning()
+    try {
+      const r = await app.inject({
+        method: 'DELETE',
+        url: '/api/keys/openrouter',
+        headers: WRITE_HEADERS,
+      })
+      expect(r.statusCode).toBe(409)
+      expect((r.json() as { error: { message: string } }).error.message).toMatch(/1 个 openrouter 的任务在飞/)
+      expect(await db.select().from(s.providerCredentials), '被拒之后不该真删').toHaveLength(1)
+
+      // 跑完之后就删得掉了
+      await db.update(s.generationJobs).set({ status: 'succeeded' }).where(eq(s.generationJobs.id, job!.id))
+      expect(
+        (await app.inject({ method: 'DELETE', url: '/api/keys/openrouter', headers: WRITE_HEADERS }))
+          .statusCode,
+      ).toBe(204)
+    } finally {
+      await db.delete(s.generationJobs).where(eq(s.generationJobs.id, job!.id))
+    }
+  })
+
+  /**
+   * 订阅那条连接只订了自己的频道，但**一条连接可以同时订多个**——将来有人复用
+   * 它的话，别的频道的消息不该触发重建。这条守的就是那个。
+   */
+  it('别的频道的消息不会触发重建', async () => {
+    const pool = new LivePool(db, ENV)
+    await pool.refresh()
+    const sub = createConnection(REDIS_URL)
+    const pub = createConnection(REDIS_URL)
+    const stop = await subscribeProviderChanges(sub, pool)
+    try {
+      await sub.subscribe('studio:events') // 复用同一条连接订别的
+      await upsertCredential(db, { provider: 'openrouter', key: REAL, label: null, verified: true })
+      await pub.publish('studio:events', JSON.stringify({ type: 'noise' }))
+      await new Promise((r) => setTimeout(r, 300))
+      expect(pool.providers, '不该被别的频道的消息带着重建').toHaveLength(1)
+      // 而自己的频道仍然有效
+      await publishProvidersChanged(pub)
+      for (let i = 0; i < 40 && pool.providers.length < 2; i++) await new Promise((r) => setTimeout(r, 50))
+      expect(pool.providers).toHaveLength(2)
+    } finally {
+      await stop()
+      sub.disconnect()
+      pub.disconnect()
+    }
+  })
+
+  /** 存/删之后要**真的**调重建回调，否则页面上仍然显示旧的 runtime */
+  it('POST 与 DELETE 都会触发本进程重建', async () => {
+    let reloads = 0
+    const hot = buildServer({
+      db,
+      queues,
+      storage,
+      providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })],
+      maxAttempts: 4,
+      media: { render: () => Promise.reject(new Error('未配置')) },
+      healthProbe: () => client`SELECT 1`,
+      makeSubscriber: () => createConnection(REDIS_URL),
+      apiKey: TEST_API_KEY,
+      probeKey: () =>
+        Promise.resolve({
+          ok: true as const,
+          label: null,
+          limitUsd: null,
+          remainingUsd: null,
+          usedUsd: 0,
+          usedTodayUsd: 0,
+          isFreeTier: false,
+        }),
+      onCredentialsChanged: () => {
+        reloads += 1
+        return Promise.resolve()
+      },
+    })
+    await hot.ready()
+
+    const post = await hot.inject({
+      method: 'POST',
+      url: '/api/keys',
+      headers: WRITE_HEADERS,
+      payload: { provider: 'openrouter', key: REAL },
+    })
+    expect(post.statusCode).toBe(201)
+    expect((post.json() as { reload: { ok: boolean } }).reload.ok, '要如实回报重建结果').toBe(true)
+    expect(reloads).toBe(1)
+
+    expect(
+      (await hot.inject({ method: 'DELETE', url: '/api/keys/openrouter', headers: WRITE_HEADERS }))
+        .statusCode,
+    ).toBe(204)
+    expect(reloads, 'DELETE 之后也要重建，否则池里还留着已删的那家').toBe(2)
+  })
+
+  /** 重建失败不该让「已经存好的密钥」看起来像没存上 */
+  it('重建失败时密钥仍然存下，但 reload.ok 是 false', async () => {
+    const broken = buildServer({
+      db,
+      queues,
+      storage,
+      providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })],
+      maxAttempts: 4,
+      media: { render: () => Promise.reject(new Error('未配置')) },
+      healthProbe: () => client`SELECT 1`,
+      makeSubscriber: () => createConnection(REDIS_URL),
+      apiKey: TEST_API_KEY,
+      probeKey: () =>
+        Promise.resolve({
+          ok: true as const,
+          label: null,
+          limitUsd: null,
+          remainingUsd: null,
+          usedUsd: 0,
+          usedTodayUsd: 0,
+          isFreeTier: false,
+        }),
+      onCredentialsChanged: () => Promise.reject(new Error('Redis 挂了')),
+    })
+    await broken.ready()
+    const r = await broken.inject({
+      method: 'POST',
+      url: '/api/keys',
+      headers: WRITE_HEADERS,
+      payload: { provider: 'openrouter', key: REAL },
+    })
+    expect(r.statusCode, '重建失败不该让存密钥这件事失败').toBe(201)
+    const body = r.json() as { reload: { ok: boolean; detail?: string } }
+    expect(body.reload.ok).toBe(false)
+    expect(body.reload.detail).toMatch(/Redis 挂了/)
+    expect(await db.select().from(s.providerCredentials), '密钥要真的存下来了').toHaveLength(1)
+  })
+
+  /** 换一把 key **不该**被在飞的任务挡住：provider id 与密钥无关 */
+  it('换一把 key 不受在飞任务影响', async () => {
+    await upsertCredential(db, { provider: 'openrouter', key: REAL, label: null, verified: true })
+    const before = new LivePool(db, ENV)
+    const idsBefore = await before.refresh()
+    await upsertCredential(db, {
+      provider: 'openrouter',
+      key: 'sk-or-v1-aaaabbbbccccddddeeeeffffaaaabbbbccccddddeeeeffff9999',
+      label: null,
+      verified: true,
+    })
+    expect(await before.refresh(), 'id 只由 (家, 模型) 决定，换密钥不该改变它').toEqual(idsBefore)
   })
 })
 

@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq'
 import { createDb } from './db/client.js'
-import { buildProviderPool } from './providers/registry.js'
+import { LivePool, subscribeProviderChanges } from './providers/pool.js'
 import { applyShotTransition } from './pipeline/applyTransition.js'
 import { handleIngest } from './queue/ingest.js'
 import { handleGenerate, handlePoll } from './queue/orchestrator.js'
@@ -26,7 +26,21 @@ const redis = createConnection(redisUrl)
 const pub = createConnection(redisUrl)
 const queues = createQueues({ url: redisUrl })
 const storage = new Storage(storageFromEnv())
-const providers = buildProviderPool()
+
+/*
+ * 池子按库里的密钥建（PR-D 把密钥搬进了库），并订阅变更——控制面那边存完一把
+ * 新 key，这个进程不重启也能跟上。`providers` 数组引用不变，只换内容，所以
+ * 下面 `deps` 与两处 `applyShotTransition` 的写法一行都不用改。
+ */
+const pool = new LivePool(db)
+await pool.refresh()
+const providers = pool.providers
+await subscribeProviderChanges(
+  createConnection(redisUrl),
+  pool,
+  (ids) => console.log('[worker] provider 池已重建：', ids.join('、')),
+  (e) => console.error('[worker] 收到凭据变更但重建失败', e),
+)
 
 const deps = { db, redis, queues, providers, maxAttempts: 4 }
 

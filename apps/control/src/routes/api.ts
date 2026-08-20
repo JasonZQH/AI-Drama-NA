@@ -1,5 +1,5 @@
-import { ShotStatus, TimeOfDay } from '@ai-drama/contracts'
-import { and, desc, eq, sql } from 'drizzle-orm'
+import { ShotStatus, TERMINAL_JOB_STATUSES, TimeOfDay } from '@ai-drama/contracts'
+import { and, desc, eq, notInArray, sql } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -50,6 +50,13 @@ export interface ApiDeps {
    * 不能因为出网被拦就测不到。
    */
   readonly probeKey?: (key: string) => Promise<ProbeResult>
+  /**
+   * 凭据变更之后重建 provider 池，并广播给别的进程（PR-E）。
+   *
+   * 不传的话密钥只对**每次请求现取**的那条链路（分镜）生效，视频那条仍要重启
+   * ——那正是 PR-D 的状态。`server.ts` 会把它接上。
+   */
+  readonly onCredentialsChanged?: () => Promise<void>
 }
 
 export type ShotlistFn = (input: ShotlistInput) => Promise<ShotlistOutcome>
@@ -191,6 +198,24 @@ async function resolveKeyOr503(db: Db, provider: ProviderId): Promise<string> {
       `没有 ${provider} 的密钥。在面板的「密钥」页存一把，或在仓库根的 .env 里加上 ${ENV_VAR[provider]}=... 再重启控制面。`,
     )
   return key
+}
+
+/**
+ * 重建本进程的池子并广播。**吞掉异常**：密钥已经落库了，重载失败不该让调用方
+ * 以为存失败——但要如实回报，页面据此决定要不要提示重启。
+ */
+async function reloadProviders(
+  deps: ApiDeps,
+  req: { log: { error: (o: unknown, m: string) => void } },
+): Promise<{ ok: boolean; detail?: string }> {
+  if (!deps.onCredentialsChanged) return { ok: false, detail: '本进程没有接热更新，需要重启才生效' }
+  try {
+    await deps.onCredentialsChanged()
+    return { ok: true }
+  } catch (e) {
+    req.log.error({ err: e }, 'provider 池重建失败')
+    return { ok: false, detail: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
@@ -436,7 +461,9 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
         label: body.label ?? null,
         verified: probe.ok,
       })
-      return reply.status(201).send({ credential: row, probe })
+      // 池子重建 + 广播。失败不该让「已经存好的密钥」看起来像没存上
+      const reload = await reloadProviders(deps, req)
+      return reply.status(201).send({ credential: row, probe, reload })
     } catch (e) {
       // 没配 CREDENTIAL_SECRET 是配置问题，不是入参问题——422 会让人去改 body
       if (e instanceof CredentialSecretMissing) throw new ApiError('DEPENDENCY_UNAVAILABLE', e.message)
@@ -457,10 +484,36 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
     return { probe }
   })
 
+  /**
+   * 删掉一把密钥会让池子里少掉这一家的全部 (provider, model) 条目，而**正在飞的
+   * job 是按 `provider_id` 回查池子的**（`orchestrator.ts` 的 `providerOf`，
+   * 找不到就抛「provider 不在池中」）。所以有在飞的任务时拒绝删。
+   *
+   * 换一把（POST）不受这条限制：provider id 只由 `(家, 模型)` 决定，与密钥无关，
+   * 换 key 之后池子里还是那几个 id，飞行中的 job 照样查得到。
+   */
   app.delete('/api/keys/:provider', async (req, reply) => {
     const provider = asProvider(z.object({ provider: z.string() }).parse(req.params).provider)
+
+    const [busy] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(s.generationJobs)
+      .where(
+        and(
+          sql`${s.generationJobs.providerId} like ${provider + ':%'}`,
+          notInArray(s.generationJobs.status, [...TERMINAL_JOB_STATUSES]),
+        ),
+      )
+    if ((busy?.n ?? 0) > 0)
+      throw new ApiError(
+        'CONFLICT',
+        `还有 ${busy?.n} 个 ${provider} 的任务在飞。删掉密钥会让它们查不到 provider 而卡死——等它们跑完，或先取消掉再删。`,
+        { inFlight: busy?.n },
+      )
+
     if (!(await deleteCredential(db, provider)))
       throw new ApiError('NOT_FOUND', `没有存过 ${provider} 的凭据`)
+    await reloadProviders(deps, req)
     return reply.status(204).send()
   })
 
