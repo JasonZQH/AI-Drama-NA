@@ -68,6 +68,47 @@ export type ShotlistDraft = z.infer<ReturnType<typeof shotlistDraft>>
 export type DraftShot = ShotlistDraft['scenes'][number]['shots'][number]
 
 /**
+ * 方言交集的白名单。`z.toJSONSchema()` 会把 zod 的校验忠实地渲染成
+ * `minLength` / `minimum` / `maximum` / `minItems`——**那些恰好是本文件第 2 条
+ * 忌讳说的数值 bounds**，留着就是在赌各家转换器：
+ *
+ * - OpenAI 系的 `strict: true` 子集**不接受**这些关键字，整个 schema 被拒；
+ * - Gemini 的 OpenAPI 3.0 子集对它们的处理不稳。
+ *
+ * 而它们留下来也没有收益：**JSON Schema 是转向器，闸门是下一行的
+ * `safeParse`**。zod 那边一个字不改，长度和区间照样拦得住。
+ */
+const WIRE_KEYS = new Set([
+  'type',
+  'properties',
+  'required',
+  'additionalProperties',
+  'items',
+  'enum',
+  'description',
+])
+
+/** `properties` 的键是字段名（shotType…），只能递归它的值，不能拿白名单去筛 */
+function toWire(node: unknown): unknown {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return node
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(node)) {
+    if (!WIRE_KEYS.has(k)) continue
+    out[k] =
+      k === 'properties' && v !== null && typeof v === 'object'
+        ? Object.fromEntries(Object.entries(v).map(([f, sub]) => [f, toWire(sub)]))
+        : toWire(v)
+  }
+  return out
+}
+
+/** 发给 `response_format.json_schema.schema` 的那份。见 `WIRE_KEYS` 的注释 */
+export function shotlistJsonSchema(characterNames: readonly string[] = []): Record<string, unknown> {
+  const full = z.toJSONSchema(shotlistDraft(characterNames), { io: 'input', unrepresentable: 'any' })
+  return toWire(full) as Record<string, unknown>
+}
+
+/**
  * LLM 方言 → `ShotIntent`。空串还原成 `undefined`：落库要 NULL 不要 `''`，
  * 混着存的话后面每个读取方都要各写一遍兜底。
  */
