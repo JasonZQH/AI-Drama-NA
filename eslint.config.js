@@ -54,7 +54,7 @@ const assertionRules = {
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/.next/**', '**/.turbo/**', 'docs/**', '**/.venv/**'],
+    ignores: ['**/dist/**', '**/.next/**', '**/.turbo/**', 'docs/**', '**/.venv/**', '**/.claude/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

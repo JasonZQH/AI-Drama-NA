@@ -48,3 +48,8 @@ docs/_to_delete/
 
 # Python worker
 workers/media/.venv/
+
+# Claude Code 的会话产物。worktree 隔离会在这里建整份仓库副本——
+# 不排除的话 `eslint .` 与 vitest 会把那些副本一起扫进来（实测 491 个 lint 错、
+# 11 条来自变异副本的测试失败），而症状看起来像是你自己的改动坏了。
+.claude/
