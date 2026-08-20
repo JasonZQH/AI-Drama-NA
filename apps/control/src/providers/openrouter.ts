@@ -123,8 +123,12 @@ export class OpenRouterProvider implements VideoProvider {
       /** 统一 schema 下 `input_references` 是扁平数组，没有各家的 role routing（issue #11） */
       maxRefImages: opts.model.supportedFrameImages.length > 0 ? 4 : 0,
       supportsSeed: opts.model.seed,
-      /** 统一请求体里没有 negative_prompt 字段 */
-      supportsNegative: false,
+      /**
+       * 统一请求体里没有 negative_prompt 字段，但**能走 passthrough**——
+       * 支不支持完全取决于该模型的 `allowed_passthrough_parameters`。
+       * veo/wan 有，seedance 全系没有（只允许 `watermark, req_key`）。
+       */
+      supportsNegative: opts.model.negativeParam !== undefined,
       supportsFirstLastFrame: opts.model.supportedFrameImages.includes('last_frame'),
       supportsAudio: opts.model.generateAudio,
       /**
@@ -216,6 +220,7 @@ export class OpenRouterProvider implements VideoProvider {
       generate_audio: GENERATE_AUDIO, // 与 estimateCost 同源，见常量注释
       ...(this.capabilities.supportsSeed && req.seed !== undefined ? { seed: req.seed } : {}),
       ...(req.refImages.length > 0 ? { input_references: refPayload(req) } : {}),
+      ...negativePassthrough(this.model, req.negativePrompt),
     }
 
     const res = await this.fetchJson<SubmitResponse>('POST', '/videos', body)
@@ -322,6 +327,37 @@ export class OpenRouterProvider implements VideoProvider {
     if (!res.ok) throw new Error(`OpenRouter ${method} ${path} HTTP ${res.status}：${text.slice(0, 400)}`)
     return JSON.parse(text) as T
   }
+}
+
+/**
+ * 负向词的 passthrough。**`style_profiles.negative_prompt` 此前是算出来、落
+ * `generation_jobs.negative_text`、然后扔掉**——`buildPrompt` 一直在返回它，
+ * 构造 HTTP body 这一行把它丢了。
+ *
+ * 形状是官方文档的原样（`provider.options.<slug>.parameters.<name>`）：
+ *
+ * ```json
+ * { "provider": { "options": { "google-vertex": {
+ *     "parameters": { "negativePrompt": "blurry, low quality" } } } } }
+ * ```
+ *
+ * **两处都错不得，而且错了都不报错：**
+ *
+ * - 参数名各家不同（veo 驼峰、wan 下划线），写错 → 不在
+ *   `allowed_passthrough_parameters` 里 → 丢弃；
+ * - slug 是路由键，官方原话「only the options for the matched provider are
+ *   forwarded」，写错 → 同样丢弃。
+ *
+ * 所以两个值都抄自线上、都由漂移检查核，不靠记性。
+ */
+function negativePassthrough(
+  model: OpenRouterModel,
+  negativePrompt: string | undefined,
+): Record<string, unknown> {
+  const name = model.negativeParam
+  const slug = model.providerSlug
+  if (!name || !slug || !negativePrompt) return {}
+  return { provider: { options: { [slug]: { parameters: { [name]: negativePrompt } } } } }
 }
 
 function refPayload(req: GenerationRequest): unknown[] {

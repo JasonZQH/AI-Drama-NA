@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { createServer, type Server } from 'node:http'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { makeRequest } from './contractSuite.js'
 import { OpenRouterProvider } from './openrouter.js'
 import { estimateMicroUsd, findModel, pricingFamily, sizeFor, snapDuration } from './openrouterModels.js'
@@ -117,8 +118,14 @@ describe('OpenRouter 能力快照', () => {
     expect(make().capabilities.serverSideContentFilter).toBe(true)
   })
 
-  it('统一请求体没有 negative_prompt，如实声明', () => {
-    expect(make().capabilities.supportsNegative).toBe(false)
+  /**
+   * 统一请求体里确实没有这个字段，但**能走 passthrough**——支不支持完全取决于
+   * 各模型的 `allowed_passthrough_parameters`，不是一刀切的 false。
+   */
+  it('负向词按模型声明：veo/wan 有，seedance 全系没有', () => {
+    expect(make(VEO_LITE).capabilities.supportsNegative).toBe(true)
+    expect(make(WAN).capabilities.supportsNegative).toBe(true)
+    expect(make(SEEDANCE).capabilities.supportsNegative).toBe(false)
   })
 
   it('cancel 是 no-op：OpenRouter 没有这个端点，不该假装取消成功', async () => {
@@ -161,5 +168,69 @@ describe('OpenRouter 进池的条件', () => {
       DEFAULT_PROVIDER: 'openrouter:google/veo-3.1-lite',
     })
     expect(pool[0]!.id).toBe('openrouter:google/veo-3.1-lite')
+  })
+})
+
+/**
+ * submit 的请求体。用 loopback server 而不是 `vi.stubGlobal('fetch')`——后者会
+ * 绕过 `vitest.setup.ts` 挂在 `net.Socket.prototype.connect` 上的出网拦截。
+ */
+describe('submit 请求体：负向词的 passthrough', () => {
+  let server: Server
+  let baseUrl = ''
+  let body: Record<string, unknown> = {}
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      let buf = ''
+      req.on('data', (c) => (buf += c))
+      req.on('end', () => {
+        body = JSON.parse(buf) as Record<string, unknown>
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ id: 'vid_1', status: 'pending' }))
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const addr = server.address()
+    if (addr === null || typeof addr === 'string') throw new Error('拿不到端口')
+    baseUrl = `http://127.0.0.1:${addr.port}`
+  })
+
+  afterAll(async () => {
+    await new Promise<void>((r) => server.close(() => r()))
+  })
+
+  const submit = async (model: typeof VEO_LITE, negativePrompt?: string) => {
+    body = {}
+    const p = new OpenRouterProvider({ apiKey: 'k', model, baseUrl })
+    await p.submit(makeRequest({ durationSec: 4, ...(negativePrompt ? { negativePrompt } : {}) }))
+    return body
+  }
+
+  /**
+   * 这条是本次改动的存在理由：`style_profiles.negative_prompt` 此前是算出来、
+   * 落 `generation_jobs.negative_text`、**然后在构造 HTTP body 这一行扔掉**。
+   */
+  it('veo：驼峰 negativePrompt，塞在 google-vertex 名下', async () => {
+    const b = await submit(VEO_LITE, 'cartoon, watermark')
+    expect(b['provider']).toEqual({
+      options: { 'google-vertex': { parameters: { negativePrompt: 'cartoon, watermark' } } },
+    })
+  })
+
+  /** 参数名与 slug 各家都不同，而两处错了都不报错，只是静默丢弃 */
+  it('wan：下划线 negative_prompt，塞在 atlas-cloud 名下', async () => {
+    const b = await submit(WAN, 'cartoon')
+    expect(b['provider']).toEqual({
+      options: { 'atlas-cloud': { parameters: { negative_prompt: 'cartoon' } } },
+    })
+  })
+
+  it('seedance 不带——它的 passthrough 只有 watermark, req_key', async () => {
+    expect((await submit(SEEDANCE, 'cartoon'))['provider']).toBeUndefined()
+  })
+
+  it('没有负向词就整个 provider 键都不出现，不是空对象', async () => {
+    expect((await submit(VEO_LITE))['provider']).toBeUndefined()
   })
 })
