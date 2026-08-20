@@ -150,7 +150,15 @@ export const shots = pgTable(
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
   (t) => [
-    index('shots_scene_idx').on(t.sceneId, t.index),
+    /**
+     * **unique，不只是 index。** `episodes` 与 `scenes` 两层都有对应的唯一约束
+     * （`episodes_project_index_uq` / `scenes_episode_index_uq`），唯独 shots
+     * 这层漏了——`shots.index` 此前完全没有 DB 约束，seed 只是碰巧不重号。
+     *
+     * 现在有第二个写入方了（`POST /api/episodes/:id/shotlist`），重号会让
+     * `orderBy(shots.index)` 的顺序变成不确定的，而剪辑时间线正是照这个顺序拼的。
+     */
+    unique('shots_scene_index_uq').on(t.sceneId, t.index),
     index('shots_status_idx').on(t.status),
     /**
      * 最后一道防线。zod 的 ShotIntent 已经拦 >10 秒，但绕过它直接写库的路径

@@ -30,7 +30,7 @@ const draftShot = (names: readonly string[]) =>
   z.strictObject({
     shotType: ShotType,
     cameraMove: CameraMove,
-    action: z.string().min(4),
+    action: z.string().min(4).describe('这一镜画面里发生什么，只写镜头看得见的东西'),
     /** `''` = 无 */
     emotion: z.string(),
     /** `''` = 无 */
@@ -42,7 +42,16 @@ const draftShot = (names: readonly string[]) =>
      * 不在这里加 `multipleOf: 0.1` 去挡：那正是本文件第 2 条忌讳说的数值 bounds，
      * 而 18 镜最多累计 0.9 秒误差、对 ±15% 的 E3 是噪音。
      */
-    durationSec: z.number().min(1).max(10),
+    durationSec: z
+      .number()
+      .min(1)
+      .max(10)
+      /*
+       * **`description` 是 bounds 被剃掉之后唯一还能传给模型的包络。**
+       * 见下面 `WIRE_KEYS`：`minimum`/`maximum` 不发出去，模型看不到 1–10。
+       * 不说的话超限只在 L1 被拒，白烧一轮修复。
+       */
+      .describe('本镜时长，1 到 10 秒之间，典型 4 秒'),
     /**
      * **角色名是唯一能在 schema 层钉死的叙事字段。**
      *
@@ -72,11 +81,13 @@ export type DraftShot = ShotlistDraft['scenes'][number]['shots'][number]
  * `minLength` / `minimum` / `maximum` / `minItems`——**那些恰好是本文件第 2 条
  * 忌讳说的数值 bounds**，留着就是在赌各家转换器：
  *
- * - OpenAI 系的 `strict: true` 子集**不接受**这些关键字，整个 schema 被拒；
- * - Gemini 的 OpenAPI 3.0 子集对它们的处理不稳。
+ * 各家对这些关键字的支持是**分叉且在动**的（有的整份 schema 拒收、有的静默
+ * 丢弃、有的按版本变）。与其跟着任何一家的当期文档走，不如只发**交集**——
+ * 这个判断不依赖任何一家下个月改不改。
  *
  * 而它们留下来也没有收益：**JSON Schema 是转向器，闸门是下一行的
- * `safeParse`**。zod 那边一个字不改，长度和区间照样拦得住。
+ * `safeParse`**。zod 那边一个字不改，长度和区间照样拦得住；给模型的软性提示
+ * 走 `description`（白名单里放行了它，`durationSec` 就是这么把 1–10 说出去的）。
  */
 const WIRE_KEYS = new Set([
   'type',
@@ -91,6 +102,15 @@ const WIRE_KEYS = new Set([
 /** `properties` 的键是字段名（shotType…），只能递归它的值，不能拿白名单去筛 */
 function toWire(node: unknown): unknown {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) return node
+  /*
+   * `$ref` 不在白名单里，剃掉之后剩一个 `{}` ——那在 JSON Schema 里是**「任意
+   * 值」**，strict 会照收，于是整棵子树的约束静默消失。
+   *
+   * 当前触发不了（全仓零 `.meta()`/`register()`，zod v4 默认 `reused: 'inline'`），
+   * 但给任一子 schema 加个 id 就会冒出来。**而这条测不出来**：toWire 已经把
+   * `$ref` 抹掉了，断言输出里没有 `$ref` 永远是绿的。所以只能在这里炸。
+   */
+  if ('$ref' in node) throw new Error('shotlistJsonSchema: schema 里出现了 $ref，白名单会把它剃成「任意值」')
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(node)) {
     if (!WIRE_KEYS.has(k)) continue

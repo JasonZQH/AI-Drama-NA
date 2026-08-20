@@ -10,6 +10,8 @@ import { buildServer, type ServerDeps } from '../server.js'
 import { Storage, storageFromEnv } from '../storage/s3.js'
 import { resolveDependencies } from '../pipeline/batch.js'
 import { createGenerationJob } from '../queue/ingest.js'
+import { ShotlistRejected } from '../pipeline/callShotlist.js'
+import type { ShotlistFn } from './api.js'
 
 /**
  * API 集成测试：真起 Fastify，打真实 Postgres / Redis / MinIO。
@@ -73,7 +75,19 @@ beforeAll(async () => {
   const [p] = await db.select().from(s.projects).limit(1)
   if (!p) throw new Error('库里没有 project，先跑 pnpm db:seed')
   projectId = p.id
-  const [ep] = await db.select().from(s.episodes).where(eq(s.episodes.projectId, projectId)).limit(1)
+  /*
+   * **必须 ORDER BY**，理由与下面挑 shot 的那条一样，但后果更隐蔽：任何用例
+   * 临时建的 episode 都可能被这里挑中，于是整个文件跑在一集不存在的数据上，
+   * 而 PATCH 那组的 afterAll 还会把 seed 的文案写到那集头上。
+   * 实测过一次——分镜端点用例留下一集残留，`GET /api/episodes/:id` 当场从
+   * 12 镜变成 1 镜。seed 的那集是 index=1。
+   */
+  const [ep] = await db
+    .select()
+    .from(s.episodes)
+    .where(eq(s.episodes.projectId, projectId))
+    .orderBy(s.episodes.index)
+    .limit(1)
   episodeId = ep!.id
   // 必须 ORDER BY：不加的话 Postgres 返回顺序不确定，会与并发/后续的测试
   // 文件抢同一个镜头，表现为「有时过有时不过」
@@ -660,6 +674,244 @@ describe('PATCH /api/episodes/:id', () => {
         scriptMd: null,
       })
       .where(eq(s.episodes.id, episodeId))
+  })
+})
+
+describe('POST /api/episodes/:id/shotlist', () => {
+  /**
+   * 自建一集，不借 seed 的那一集——它已经有 12 个镜头，会被「已有镜头」那道闸挡下。
+   * index 用 900+ 避开 seed 与其他用例（`episodes_project_index_uq`）。
+   */
+  let epId = ''
+  let sceneIds: string[] = []
+  let charNames: string[] = []
+
+  /** 18 镜 × 4s = 72s，三场，景别轮换——lint 全绿的那一份 */
+  const draftOf = (names: readonly string[]) => ({
+    scenes: [0, 1, 2].map((sc) => ({
+      shots: Array.from({ length: 6 }, (_, i) => ({
+        shotType: (['ms', 'cu', 'ws'] as const)[(sc * 6 + i) % 3]!,
+        cameraMove: 'static' as const,
+        action: 'Lena crosses the room',
+        // 一半空镜、一半有台词，才能验 character_ids 两个方向都对
+        emotion: '',
+        dialogue: i % 2 === 0 ? '' : 'You did.',
+        durationSec: 4,
+        characterNames: i % 2 === 0 ? [] : [names[0]!],
+      })),
+    })),
+  })
+
+  /** 注入桩：不打 OpenRouter。真打的话每跑一次 CI 就是一次真实计费 */
+  const withStub = (fn: ShotlistFn): FastifyInstance =>
+    buildServer({
+      db,
+      queues,
+      storage,
+      providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })],
+      maxAttempts: 4,
+      media: { render: () => Promise.reject(new Error('未配置')) },
+      healthProbe: () => client`SELECT 1`,
+      makeSubscriber: () => createConnection(REDIS_URL),
+      apiKey: TEST_API_KEY,
+      shotlist: fn,
+    })
+
+  const ok = (names: readonly string[]) =>
+    withStub(() => Promise.resolve({ draft: draftOf(names), warnings: [], repaired: false, costUsd: 0.0034 }))
+
+  const post = (a: FastifyInstance, id: string) =>
+    a.inject({ method: 'POST', url: `/api/episodes/${id}/shotlist`, headers: WRITE_HEADERS })
+
+  beforeAll(async () => {
+    const [ep] = await db
+      .insert(s.episodes)
+      .values({ projectId, index: 901, title: '分镜端点用例', targetDurationSec: 72 })
+      .returning()
+    epId = ep!.id
+    const rows = await db
+      .insert(s.scenes)
+      .values([0, 1, 2].map((i) => ({ episodeId: epId, index: i + 1, summary: `场 ${i + 1}` })))
+      .returning()
+    sceneIds = rows.map((r) => r.id)
+    charNames = (
+      await db
+        .select({ name: s.characters.name })
+        .from(s.characters)
+        .where(eq(s.characters.projectId, projectId))
+    ).map((c) => c.name)
+  })
+
+  /** 每条用例自己清干净：`shots_scene_index_uq` 会让第二次插入撞车 */
+  const clearShots = async () => {
+    await db.delete(s.shots).where(inArray(s.shots.sceneId, sceneIds))
+  }
+
+  it('没有剧本时先拦下来，不去花那 $0.003', async () => {
+    const res = await post(ok(charNames), epId)
+    expect(res.statusCode).toBe(422)
+    expect(res.json()).toMatchObject({ error: { code: 'VALIDATION_FAILED' } })
+    // 报错要说清该做什么
+    expect((res.json() as { error: { message: string } }).error.message).toMatch(/剧本/)
+  })
+
+  describe('有剧本之后', () => {
+    beforeAll(async () => {
+      await db
+        .update(s.episodes)
+        .set({ scriptMd: '# 第一场\n\nLena 推门进来。' })
+        .where(eq(s.episodes.id, epId))
+    })
+
+    it('18 镜落库，index 跨场全集连续，空镜的 character_ids 是空数组', async () => {
+      await clearShots()
+      const res = await post(ok(charNames), epId)
+      expect(res.statusCode).toBe(201)
+      expect(res.json()).toMatchObject({ shots: 18, scenes: 3, repaired: false })
+
+      const rows = await db
+        .select()
+        .from(s.shots)
+        .where(inArray(s.shots.sceneId, sceneIds))
+        .orderBy(s.shots.index)
+      expect(rows).toHaveLength(18)
+      expect(rows.map((r) => r.index)).toEqual(Array.from({ length: 18 }, (_, i) => i + 1))
+      // 三场各 6 镜，且第 7 镜属于第二场——跨场连续不是「每场从 1 开始」
+      expect(rows[6]!.sceneId).toBe(sceneIds[1])
+      expect(rows[0]!.characterIds).toEqual([])
+      expect(rows[1]!.characterIds).toHaveLength(1)
+      expect(rows[0]!.dialogue).toBeNull() // 空串要落 NULL
+      expect(rows[1]!.dialogue).toBe('You did.')
+      expect(rows[0]!.emotion, '空串该落 NULL 而不是 ""').toBeNull()
+      expect(rows[0]!.durationSec).toBe('4.0')
+    })
+
+    it('已经有镜头就拒绝——重来会让已计费的产物失效', async () => {
+      const res = await post(ok(charNames), epId)
+      expect(res.statusCode).toBe(409)
+      expect((res.json() as { error: { message: string } }).error.message).toMatch(/18 个镜头/)
+    })
+
+    it('模型两轮都不过 → 422 带上校验原文，不是 500', async () => {
+      await clearShots()
+      const app2 = withStub(() =>
+        Promise.reject(new ShotlistRejected(['总时长 48.0 秒，偏离目标 72 秒 -33%'], '{}')),
+      )
+      const res = await post(app2, epId)
+      expect(res.statusCode).toBe(422)
+      expect(res.json()).toMatchObject({
+        error: { code: 'VALIDATION_FAILED', details: { errors: ['总时长 48.0 秒，偏离目标 72 秒 -33%'] } },
+      })
+      expect(await db.select().from(s.shots).where(inArray(s.shots.sceneId, sceneIds))).toHaveLength(0)
+    })
+
+    /**
+     * `vitest.config.ts` 把 `*_API_KEY` 从测试环境里摘掉了，所以这条是确定性的。
+     * 不注入桩 = 走真实的 `shotlistFromEnv()`，正是没配 key 时用户会打到的那条路径。
+     */
+    it('没配 OPENROUTER_API_KEY → 503 + 可行动的报错，不是 500 fetch failed', async () => {
+      await clearShots()
+      const bare = buildServer({
+        db,
+        queues,
+        storage,
+        providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })],
+        maxAttempts: 4,
+        media: { render: () => Promise.reject(new Error('未配置')) },
+        healthProbe: () => client`SELECT 1`,
+        makeSubscriber: () => createConnection(REDIS_URL),
+        apiKey: TEST_API_KEY,
+      })
+      const res = await post(bare, epId)
+      expect(res.statusCode).toBe(503)
+      const body = res.json() as { error: { code: string; message: string } }
+      expect(body.error.code).toBe('DEPENDENCY_UNAVAILABLE')
+      expect(body.error.message, '报错要说清去哪儿配').toMatch(/OPENROUTER_API_KEY/)
+    })
+
+    /**
+     * E2 封顶 25 镜 × 单镜 10 秒 = 250 秒，E3 要求 ≥ 目标 × 0.85——目标超过
+     * 294 秒时**没有任何分镜表能同时过 E2 与 E3**。不提前拦的话是两轮 LLM 的
+     * 钱花完，然后给一句「总时长不对」，人看不出真正的原因。
+     */
+    it('目标时长本身不可达 → 调模型之前就拦下', async () => {
+      await clearShots()
+      await db.update(s.episodes).set({ targetDurationSec: 600 }).where(eq(s.episodes.id, epId))
+      let called = false
+      const app2 = withStub(() => {
+        called = true
+        return Promise.resolve({ draft: draftOf(charNames), warnings: [], repaired: false, costUsd: 0 })
+      })
+      const res = await post(app2, epId)
+      expect(res.statusCode).toBe(422)
+      expect(called, '钱不该花出去').toBe(false)
+      expect((res.json() as { error: { message: string } }).error.message).toMatch(/不可能达成/)
+      await db.update(s.episodes).set({ targetDurationSec: 72 }).where(eq(s.episodes.id, epId))
+    })
+
+    it('没有场次 → 409，而不是让模型去猜', async () => {
+      // finally 里删：断言炸掉时 inline 的 delete 不会执行，残留的 episode
+      // 会让下一次重放撞 episodes_project_index_uq，看起来像另一个 bug
+      await db.delete(s.episodes).where(eq(s.episodes.index, 902))
+      const [empty] = await db
+        .insert(s.episodes)
+        .values({ projectId, index: 902, scriptMd: '有剧本没场次', targetDurationSec: 72 })
+        .returning()
+      try {
+        const res = await post(ok(charNames), empty!.id)
+        expect(res.statusCode).toBe(409)
+      } finally {
+        await db.delete(s.episodes).where(eq(s.episodes.id, empty!.id))
+      }
+    })
+
+    it('写路径要 x-api-key', async () => {
+      const res = await ok(charNames).inject({ method: 'POST', url: `/api/episodes/${epId}/shotlist` })
+      expect(res.statusCode).toBe(401)
+    })
+  })
+
+  afterAll(async () => {
+    await clearShots()
+    await db.delete(s.episodes).where(eq(s.episodes.id, epId))
+  })
+})
+
+/**
+ * `shots_scene_index_uq`：`episodes` 与 `scenes` 两层都有对应约束，唯独 shots
+ * 这层此前只有一个普通 index——重号不报错，而 `orderBy(shots.index)` 的顺序
+ * 会因此变成不确定的，剪辑时间线正是照这个顺序拼的。
+ */
+describe('shots.index 的唯一约束真的存在', () => {
+  it('同一场里插重号会被数据库拒掉', async () => {
+    await db.delete(s.episodes).where(eq(s.episodes.index, 903))
+    const [ep] = await db
+      .insert(s.episodes)
+      .values({ projectId, index: 903, targetDurationSec: 72 })
+      .returning()
+    const [sc] = await db.insert(s.scenes).values({ episodeId: ep!.id, index: 1 }).returning()
+    const row = { sceneId: sc!.id, index: 7, shotType: 'ms' as const, action: 'x' }
+    await db.insert(s.shots).values(row)
+    /*
+     * drizzle 把 PostgresError 包了一层，外层 message 只有 "Failed query: …"。
+     * 断言外层等于断言「插入失败了」——**唯一约束没了也可能因为别的原因失败**。
+     * 所以下探到 cause 上的约束名。
+     */
+    const err = await db
+      .insert(s.shots)
+      .values(row)
+      .then(
+        () => null,
+        (e: unknown) => e,
+      )
+    const cause = (err as { cause?: { constraint_name?: string; code?: string } })?.cause
+    expect(cause?.code, '23505 = unique_violation').toBe('23505')
+    expect(cause?.constraint_name).toBe('shots_scene_index_uq')
+  })
+
+  // 断言炸掉时也要清——残留的 episode 会被文件顶部的 beforeAll 挑中
+  afterAll(async () => {
+    await db.delete(s.episodes).where(eq(s.episodes.index, 903))
   })
 })
 
