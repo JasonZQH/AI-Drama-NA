@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
@@ -8,7 +8,7 @@ import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
 import { createConnection, createQueues } from '../queue/queues.js'
 import { assertNoWorker } from '../queue/assertNoWorker.js'
-import { MediaWorkerUnavailable, renderEpisode } from '../pipeline/render.js'
+import { MediaWorkerUnavailable, ensureTimeline, renderEpisode } from '../pipeline/render.js'
 import { buildServer, type ServerDeps } from '../server.js'
 import { Storage, storageFromEnv } from '../storage/s3.js'
 import { resolveDependencies } from '../pipeline/batch.js'
@@ -216,7 +216,24 @@ async function cleanup(): Promise<void> {
     await db.delete(s.generationJobs).where(inArray(s.generationJobs.id, ids))
   }
 
-  await db.update(s.shots).set({ status: 'ready', selectedTakeId: null, attemptCount: 0 })
+  /*
+   * **这一行原来没有 `where`。**
+   *
+   * 于是每跑一次 `pnpm test:int`，afterAll 都会把**全库每一个镜头**抹成
+   * `ready` / `selectedTakeId=null` / `attemptCount=0`——包括用户自己那些已经
+   * 花了真钱、已经选片锁定、已经渲染成片的镜头。takes 与 generation_jobs 不动，
+   * `updated_at` 也不动（这里没写它），所以从数据上看不出是谁干的：
+   * 一集片子还在，状态却退回了「待生成」。
+   *
+   * 实测后果：用户一集 11 镜、$4.40 的成片被退回 ready，而
+   * `resolveDependencies` 只看 status——再点一次「生成整集」就是重付一遍。
+   *
+   * 只清本文件自己那一镜。别的用例、别的项目的数据一律不碰。
+   */
+  await db
+    .update(s.shots)
+    .set({ status: 'ready', selectedTakeId: null, attemptCount: 0 })
+    .where(eq(s.shots.id, shotId))
   await queues.generate.drain(true)
 }
 
@@ -730,6 +747,38 @@ describe('空 timeline 要回填，不能永久复用', () => {
 
     expect(reached, '空 timeline 没回填——这一集被永久钉死了').toBe(true)
     expect(await clipCount(), '回填后该有 clip').toBeGreaterThan(0)
+  })
+
+  /**
+   * **provider 的时长是档位不是数值。**
+   *
+   * seedance 最低 4 秒，所以一个 2 秒的镜头拿回来也是 4.04 秒的片子。不写
+   * `trimEndSec` 的话 `outpoint` 为空、媒体 worker 整段拼进去——真机实测
+   * 一集 11 镜、目标 30 秒、成片 **44.5 秒（+48%）**。
+   *
+   * 后果不只是长了：分镜的 E3 判据守着 ±15%、面板显示「30.0s / 目标 30s」、
+   * 确认弹窗按秒估价，而成片跟这些数一个都对不上——整个时长规划层是装饰性的。
+   */
+  it('clip 按镜头的意图时长裁剪，而不是拿到多长播多长', async () => {
+    await makeRenderable()
+    const tlId = await ensureTimeline(db, episodeId)
+    const clips = await db.select().from(s.timelineClips).where(eq(s.timelineClips.timelineId, tlId))
+    expect(clips.length).toBeGreaterThan(0)
+    for (const c of clips) {
+      expect(c.trimEndSec, 'trimEndSec 为空 = 整段拼进去，意图时长白规划').not.toBeNull()
+    }
+    // 与那一镜的 duration_sec 逐字相等——不是随便一个非空值
+    const byTake = new Map(clips.map((c) => [c.takeId, c.trimEndSec]))
+    const locked = await db
+      .select({ takeId: s.shots.selectedTakeId, durationSec: s.shots.durationSec })
+      .from(s.shots)
+      .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+      .where(and(eq(s.scenes.episodeId, episodeId), isNotNull(s.shots.selectedTakeId)))
+    for (const l of locked) {
+      expect(Number(byTake.get(l.takeId!)), `镜头 ${l.takeId} 的裁剪点对不上意图时长`).toBe(
+        Number(l.durationSec),
+      )
+    }
   })
 })
 
