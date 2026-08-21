@@ -74,17 +74,30 @@ beforeAll(async () => {
   // 有 worker 在跑的话，测试入队的任务会被立刻消费掉——先说清楚，别让人对着
   // 「expected false to be true」猜半天
   await assertNoWorker(queues)
-  // 复用 seed 出来的 demo 项目，不自己造数据——夹具漂移了测试要能发现
-  // 取最后一个镜头，与 api.int.test.ts（取第一个）错开，避免共享真实数据库时互相干扰
-  const [shot] = await db.select({ id: s.shots.id }).from(s.shots).orderBy(desc(s.shots.index)).limit(1)
-  if (!shot) throw new Error('库里没有 shot，先跑 pnpm db:seed')
-  shotId = shot.id
   // 按 seed 的固定标题定位，不用无序的 limit(1)——开发机上随手建的项目会被随机
   // 挑中，症状是「预算闸门读到 0 花费」这种看起来像记账坏了的失败。理由同
   // api.int.test.ts 顶部那条注释
   const [p] = await db.select({ id: s.projects.id }).from(s.projects).where(eq(s.projects.title, DEMO_TITLE))
   if (!p) throw new Error(`库里没有夹具项目「${DEMO_TITLE}」，先跑 pnpm db:seed`)
   projectId = p.id
+  /*
+   * 复用 seed 出来的 demo 项目，不自己造数据——夹具漂移了测试要能发现。
+   * 取最后一个镜头，与 api.int.test.ts（取第一个）错开。
+   *
+   * **必须限定在夹具项目内**：不限的话取的是全库 index 最大的那一镜，而那可能
+   * 是别人真实项目里的镜头，随后被这个文件反复改状态、删 job。理由与
+   * api.int.test.ts 顶部那段一样，那边毁过一次真实数据。
+   */
+  const [shot] = await db
+    .select({ id: s.shots.id })
+    .from(s.shots)
+    .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+    .innerJoin(s.episodes, eq(s.scenes.episodeId, s.episodes.id))
+    .where(eq(s.episodes.projectId, projectId))
+    .orderBy(desc(s.shots.index))
+    .limit(1)
+  if (!shot) throw new Error(`夹具项目「${DEMO_TITLE}」里没有镜头，先跑 pnpm db:seed`)
+  shotId = shot.id
   await reset(redis, 'mock')
 
   // 清掉上一轮的残留。集成测试必须可重复运行——否则第二次跑就会撞
@@ -1499,9 +1512,13 @@ describe('prompt-kit：Shot Intent + 三路资产 → prompt', () => {
   })
 
   beforeAll(async () => {
+    // 同样限定在夹具项目内——不限的话可能挑中真实项目的镜头并反复改它的状态
     const rows = await db
       .select({ id: s.shots.id, cast: s.shots.characterIds })
       .from(s.shots)
+      .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+      .innerJoin(s.episodes, eq(s.scenes.episodeId, s.episodes.id))
+      .where(eq(s.episodes.projectId, projectId))
       .orderBy(desc(s.shots.index))
       .limit(3)
     const withCast = rows.find((r) => r.id !== shotId && r.cast.length > 0)
