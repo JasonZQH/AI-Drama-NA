@@ -454,13 +454,28 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
    * 在事务里发的话，回滚时队列条目不会跟着回滚——留下一条指向不存在的
    * generation_jobs 行的任务。这里用唯一约束把事务打回来，断言队列干净。
    */
-  it('事务回滚时不留下队列条目', async () => {
-    const attempt = TEST_ATTEMPT_BASE + 70
-    await armShot(attempt - 1) // 于是状态机会算出 attempt 这个号
-    // 先占掉这个号，让事务里的 INSERT 撞唯一约束
+  /**
+   * attempt 号取自 `generation_jobs` 的最大值，不是 `shots.attempt_count`。
+   *
+   * 这条用例原本是**故意占掉一个号来制造唯一约束冲突**，借此验事务回滚。
+   * 那个触发条件现在不成立了——号从 jobs 表现算，撞不上了，而这正是修复的
+   * 目的：`gj_shot_attempt_uq` 建在 `(shot_id, attempt)` 上，计数器却在另一张
+   * 表，两者一旦漂开，下一次生成就会算出一个用过的号。
+   *
+   * **实测漂过**：一个镜头 `attempt_count=0` 却已经有一条 `attempt=1` 的 job
+   * （中间经过一次 ingest 失败与人工重新入队）。批量生成走到它时 500，而整批
+   * 剩下的 8 个镜头再没入队，面板上什么都没显示。
+   *
+   * 回滚本身仍然有守卫：下一条用例（「让入队自己失败」）验的是入队在事务**之后**，
+   * 那条不依赖唯一约束。
+   */
+  it('attempt 号从 jobs 表现算——占掉的号不会被再用', async () => {
+    const occupied = TEST_ATTEMPT_BASE + 70
+    // 计数器停在一个**比已用号小**的值：正是实测漂开时的样子
+    await armShot(0)
     await createGenerationJob(db, {
       shotId,
-      attempt,
+      attempt: occupied,
       providerId: 'mock',
       modelId: 'mock-v1',
       mode: 't2v',
@@ -468,17 +483,19 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
     })
     await queues.generate.drain(true)
 
-    await expect(applyShotTransition(tdeps(db), shotId, { type: 'generate.requested' })).rejects.toThrow()
+    const r = await applyShotTransition(tdeps(db), shotId, { type: 'generate.requested' })
+    expect(r, '计数器落后于已用号时，生成应当照样能起来').toMatchObject({ ok: true })
 
-    const queued = await queues.generate.getJobs(['waiting', 'delayed', 'prioritized', 'active'])
-    expect(
-      queued.filter((j) => j.data.shotId === shotId),
-      '回滚了却留下队列条目',
-    ).toHaveLength(0)
+    const [next] = await db
+      .select({ attempt: s.generationJobs.attempt })
+      .from(s.generationJobs)
+      .where(eq(s.generationJobs.shotId, shotId))
+      .orderBy(desc(s.generationJobs.attempt))
+      .limit(1)
+    expect(next!.attempt, '新 attempt 必须大于已占用的那个').toBe(occupied + 1)
 
-    // 状态机没跑完，镜头必须还在原地
-    const [shot] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
-    expect(shot!.status).toBe('ready')
+    await db.delete(s.generationJobs).where(eq(s.generationJobs.shotId, shotId))
+    await queues.generate.drain(true)
   })
 
   /**

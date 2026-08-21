@@ -688,13 +688,50 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
         costMicroUsd: sql<number>`(select coalesce(sum(${s.generationJobs.costMicroUsd}), 0) from ${s.generationJobs} where ${s.generationJobs.shotId} = ${s.shots.id})::bigint`,
         // mock 的钱不是真花的钱，界面要能把这两者分开标（见 routes/stats.ts）
         mockCostMicroUsd: sql<number>`(select coalesce(sum(${s.generationJobs.costMicroUsd}), 0) from ${s.generationJobs} where ${s.generationJobs.shotId} = ${s.shots.id} and ${s.generationJobs.providerId} = 'mock')::bigint`,
+        /*
+         * 封面：**选中的那条 take 优先，没有就取最后一次生成的**。
+         *
+         * 镜头网格给每张卡留了 9:16 的缩略图位，但从来没填过内容——生成完的
+         * 镜头和没生成的长得一模一样，一整屏纯黑。而「一屏看到 24 个镜头」
+         * （07 §1）的全部价值就在于**一眼看出哪些出片了、出的是什么**。
+         *
+         * 只回 asset id，字节仍然走 `/api/assets/:id/content` 的 302 预签名
+         * ——控制面不代理媒体（10 §1.2）。
+         */
+        posterAssetId: sql<string | null>`(
+          select a.id from ${s.takes} t
+          join ${s.assets} a on a.id = t.asset_id
+          where t.shot_id = ${s.shots.id}
+          order by (t.id = ${s.shots.selectedTakeId}) desc, t.created_at desc
+          limit 1
+        )`,
       })
       .from(s.shots)
       .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
       .where(eq(s.scenes.episodeId, id))
       .orderBy(s.shots.index)
 
-    return { episode: ep, scenes, shots }
+    /*
+     * 成片。**此前面板上唯一通向 `/watch` 的路径是渲染那一刻的
+     * `window.open`** ——关掉那个标签页，片子就再也找不到了。
+     *
+     * 与 `GET /api/watch/:id` 同一个查询：取最近一次 succeeded 的 render_job。
+     */
+    const [master] = await db
+      .select({ assetId: s.assets.id, finishedAt: s.renderJobs.finishedAt })
+      .from(s.renderJobs)
+      .innerJoin(s.assets, eq(s.renderJobs.outputAssetId, s.assets.id))
+      .innerJoin(s.timelines, eq(s.renderJobs.timelineId, s.timelines.id))
+      .where(and(eq(s.timelines.episodeId, id), eq(s.renderJobs.status, 'succeeded')))
+      .orderBy(desc(s.renderJobs.finishedAt))
+      .limit(1)
+
+    return {
+      episode: ep,
+      scenes,
+      shots,
+      master: master ? { assetId: master.assetId, finishedAt: master.finishedAt } : null,
+    }
   })
 
   /**
@@ -1020,10 +1057,11 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
     const { id } = Uuid.parse(req.params)
     const body = z.object({ dryRun: z.boolean().default(false) }).parse(req.body ?? {})
 
-    const provider = deps.providers[0]
-    if (!provider) throw new ApiError('NO_PROVIDER_AVAILABLE', '池内没有可用的 provider')
+    if (deps.providers.length === 0) throw new ApiError('NO_PROVIDER_AVAILABLE', '池内没有可用的 provider')
 
-    const plan = await planBatch(db, id, provider, budgetFromEnv())
+    // 传整个池子：每一镜按自己的 provider_hint 路由再估价。此前传的是
+    // providers[0]（mock），dryRun 的数比实际低一个数量级——而闸门读的就是它
+    const plan = await planBatch(db, id, deps.providers, budgetFromEnv())
 
     if (body.dryRun) {
       return {
@@ -1045,11 +1083,36 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
     }
 
     const batchId = randomUUID()
+    /*
+     * **一个镜头失败不该杀掉整批。**
+     *
+     * 此前这里是裸循环：第 3 个镜头抛错，第 4–11 个再也没入队，而调用方拿到的
+     * 是一个 4xx/5xx——面板上一片安静，人以为整批都在跑。实测撞到过（attempt
+     * 号漂了导致唯一约束冲突），11 镜只入队了 2 个。
+     *
+     * 现在逐个收集失败并如实回报：能跑的先跑起来，跑不动的说清是哪一镜、为什么。
+     */
+    const failures: { shotId: string; code: string; message: string }[] = []
+    let enqueued = 0
     for (const shotId of plan.runnable) {
-      await applyTransition(deps, shotId, { type: 'generate.requested' })
+      try {
+        await applyTransition(deps, shotId, { type: 'generate.requested' })
+        enqueued += 1
+      } catch (e) {
+        const code = e instanceof ApiError ? e.code : 'INTERNAL'
+        failures.push({ shotId, code, message: e instanceof Error ? e.message : String(e) })
+        req.log.error({ err: e, shotId }, '批量生成中有镜头入队失败')
+        /*
+         * 预算用尽是**整批的**结论，不是这一镜的——继续试只会把剩下的每一镜
+         * 都撞一遍同样的墙，还多打 N 条日志。其余错误逐镜跳过。
+         */
+        if (code === 'BUDGET_EXCEEDED') break
+      }
     }
 
     return reply.status(202).send({
+      failures,
+      enqueued,
       batchId,
       planned: plan.runnable.length,
       blocked: plan.blocked.length,

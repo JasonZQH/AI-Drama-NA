@@ -1,4 +1,5 @@
-import type { VideoProvider } from '@ai-drama/contracts'
+import type { GenerationRequest, VideoProvider } from '@ai-drama/contracts'
+import { routeProvider } from '../providers/route.js'
 import { and, eq, gte, sql } from 'drizzle-orm'
 import type { Db, DbOrTx } from '../db/client.js'
 import * as s from '../db/schema.js'
@@ -117,7 +118,22 @@ export async function spentToday(db: Db, projectId: string): Promise<number> {
 export async function planBatch(
   db: Db,
   episodeId: string,
-  provider: VideoProvider,
+  /**
+   * **整个池子，不是某一个 provider。**
+   *
+   * 此前这里收单个 `VideoProvider`，调用方传的是 `deps.providers[0]` ——而
+   * `buildProviderPool` 把 mock 排在最前。于是 dryRun 用 **mock 的价目表**给
+   * 每一镜估价，而实际入队时 `applyTransition` 会按 `provider_hint` 路由到真
+   * provider。
+   *
+   * 真钱实测撞到的数字：面板显示「预估 **$0.60**」，实际是 11 × $0.3667 =
+   * **$4.03**——低估 **10 倍**，而**预算闸门读的就是这个数**。
+   *
+   * `applyTransition` 里那句注释早就写着「估算用的是路由选出来的那家的价目表，
+   * 不是 providers[0] 的——否则 dryRun 的数与实际扣费不是一回事」。单镜路径
+   * 是对的，批量路径漏了。
+   */
+  pool: readonly VideoProvider[],
   policy: BudgetPolicy,
 ): Promise<BatchPlan> {
   const shots = await db
@@ -127,6 +143,8 @@ export async function planBatch(
       continuityFromShotId: s.shots.continuityFromShotId,
       durationSec: s.shots.durationSec,
       sceneId: s.shots.sceneId,
+      providerHint: s.shots.providerHint,
+      safetyProfile: s.shots.safetyProfile,
     })
     .from(s.shots)
     .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
@@ -135,26 +153,35 @@ export async function planBatch(
 
   const { runnable, blocked, skipped } = resolveDependencies(shots)
 
-  // 事前估算，用于预算闸门与确认弹窗（04 §3 estimateCost）
+  /*
+   * 事前估算，用于预算闸门与确认弹窗（04 §3 estimateCost）。
+   *
+   * **每一镜各自路由再估价**——同一集里不同镜头可以指定不同 provider，而不同
+   * provider 的单价差 10 倍。用一家的价目表乘以镜头数得到的是一个碰巧的数。
+   */
   const estimatedCostMicroUsd = runnable.reduce((sum, id) => {
     const shot = shots.find((x) => x.id === id)
-    return (
-      sum +
-      provider.estimateCost({
-        requestId: '00000000-0000-4000-8000-000000000000',
-        shotId: id,
-        mode: 't2v',
-        prompt: '',
-        refImages: [],
-        durationSec: Number(shot?.durationSec ?? 4),
-        resolution: '720p',
-        aspectRatio: '9:16',
-        fps: 24,
-        safetyProfile: 'standard',
-        priority: 'normal',
-        providerParams: {},
-      })
-    )
+    const probe: GenerationRequest = {
+      requestId: '00000000-0000-4000-8000-000000000000',
+      shotId: id,
+      mode: 't2v',
+      prompt: '',
+      refImages: [],
+      durationSec: Number(shot?.durationSec ?? 4),
+      resolution: '720p',
+      aspectRatio: '9:16',
+      fps: 24,
+      safetyProfile: shot?.safetyProfile ?? 'standard',
+      priority: 'normal',
+      providerParams: {},
+    }
+    const routed = routeProvider(pool, {
+      providerHint: shot?.providerHint ?? null,
+      filteredBy: [],
+      probe,
+    })
+    // 路由不到就记 0：那一镜入队时会被判 NO_PROVIDER，本来就不会花钱
+    return sum + (routed ? routed.provider.estimateCost(probe) : 0)
   }, 0)
 
   const [ep] = await db

@@ -1,6 +1,7 @@
 'use client'
 
 import type { EpisodeTree } from '@/lib/api'
+import { assetUrl } from '@/lib/api'
 
 /** 一镜的实时进度。stage 来自 provider（ComfyUI 的 loading_model / denoising / …） */
 export interface ShotProgress {
@@ -166,7 +167,7 @@ function ShotCard({
   onSelect: (shotId: string) => void
   progress?: ShotProgress
 }): React.ReactElement {
-  const { shot, takeCount, costMicroUsd, mockCostMicroUsd } = entry
+  const { shot, takeCount, costMicroUsd, mockCostMicroUsd, posterAssetId } = entry
   return (
     // button 而非 div：焦点环、Enter/Space 触发都是原生的，不用自己补 a11y
     <button
@@ -188,6 +189,22 @@ function ShotCard({
         className="relative mx-auto aspect-[9/16] w-full"
         style={{ background: 'var(--bg-inset)', maxHeight: 200 }}
       >
+        {/*
+          **封面 = 最后一次生成的第一帧。**
+          用 `<video preload="metadata">` 而不是另生成一张缩略图：浏览器会把
+          第一帧当 poster 画出来，省掉一整条「抽帧 → 存储 → 再取」的链路，而
+          那条链路要动 media worker、存储和一张新表。
+          `muted`/`playsInline` 是 iOS Safari 不黑屏的前提。
+        */}
+        {posterAssetId && (
+          <video
+            src={assetUrl(posterAssetId)}
+            preload="metadata"
+            muted
+            playsInline
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        )}
         <div className="absolute top-1 right-1">
           <StatusPill status={shot.status} {...(shot.status === 'review' ? { count: takeCount } : {})} />
         </div>
