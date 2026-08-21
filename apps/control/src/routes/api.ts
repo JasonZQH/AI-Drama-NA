@@ -841,12 +841,15 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       )
 
     /*
-     * 目标时长本身可不可能被满足——在花那两轮 LLM 之前问。不问的话报错是
-     * 「总时长不对」，人读不出真正的原因是这一集的目标时长压根不可达。
-     * `episodes.target_duration_sec` 没有 CHECK，PATCH 也放到 600。
+     * 目标时长够不够得着——在花那两轮 LLM 之前算一次。
+     *
+     * **不再拦人。** 时长是输出不是输入（见 shotlist.ts 的 W3）：一集多长由剧本
+     * 决定，目标只用来告诉人「你预想的和实际能做的差多少」。硬约束只剩单镜时长
+     * 必须是这家 provider 真能产出的值（E8）。
+     *
+     * 但要在**生成之前**说，而不是等 W3 事后告诉他偏了 48%——那时钱已经花了。
      */
     const unreachable = targetOutOfReach(ep.targetDurationSec, poolMinShotSec())
-    if (unreachable) throw new ApiError('VALIDATION_FAILED', unreachable)
 
     const sceneRows = await db
       .select()
@@ -972,7 +975,11 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       shots: rows.length,
       scenes: out.draft.scenes.length,
       repaired: out.repaired,
-      warnings: out.warnings,
+      /*
+       * 目标够不着那条排在最前面：它是**生成之前**就知道的，而 W3 是事后量出来的。
+       * 两条一起给人看，他才分得清「我的预期本来就不现实」和「这一集碰巧长了」。
+       */
+      warnings: unreachable ? [unreachable, ...out.warnings] : out.warnings,
       costUsd: out.costUsd,
     })
   })

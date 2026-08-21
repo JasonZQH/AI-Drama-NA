@@ -88,17 +88,16 @@ export const SAME_SHOT_TYPE_RUN = 3
 const NEGATION = /(\bno\b|\bnot\b|\bwithout\b|\bavoid\b|\bdon't\b|不要|没有|无人(?!机)|避免)/i
 
 /**
- * 目标时长本身可不可能被满足。
+ * 目标时长跟这一集实际能产出的范围差多远。
  *
- * E2 封顶 25 镜、单镜封顶 10 秒 → 总时长上限 250 秒；E3 要求总时长 ≥ 目标 ×
- * (1 − 15%)。所以目标超过 **294 秒**时，**不存在任何能同时通过 E2 与 E3 的
- * 分镜表**——模型怎么改都不可能过，两轮 LLM 的钱白花，而人看到的报错是
- * 「总时长不对」，读不出真正的原因是这一集的目标时长本身就不可满足。
+ * **返回的是提示，不再是闸门。** W3 降级之后，总时长是输出不是输入——目标只
+ * 用来告诉人「你预想的和实际能做的差多少」，不该拦住生成。
  *
- * 所以在调模型**之前**问一次。要支持长集得让 `SHOT_COUNT` 从目标时长推出来
- * 而不是硬编码，那是另一件事。
+ * 仍然值得在调模型**之前**算一次：目标 30 秒而 provider 最短 4 秒 × 至少 10 镜
+ * = 40 秒时，人应该在花那两轮 LLM 之前就知道这个数达不到，而不是等 W3 事后
+ * 告诉他偏了 48%。
  *
- * @returns 不可达时返回可行动的说明；可达返回 null
+ * @returns 够不着时返回可行动的说明；够得着返回 null
  */
 export function targetOutOfReach(targetDurationSec: number, minShotSec = 1): string | null {
   const max = SHOT_COUNT.max * 10 // 单镜上限见 contracts 的 draftShot.durationSec
@@ -114,12 +113,13 @@ export function targetOutOfReach(targetDurationSec: number, minShotSec = 1): str
   const lo = targetDurationSec * (1 - DURATION_TOLERANCE)
   const hi = targetDurationSec * (1 + DURATION_TOLERANCE)
   if (lo > max)
-    return `目标时长 ${targetDurationSec} 秒不可能达成：最多 ${SHOT_COUNT.max} 镜 × 单镜 10 秒 = ${max} 秒，而 ±${DURATION_TOLERANCE * 100}% 要求至少 ${lo.toFixed(1)} 秒。把 targetDurationSec 调到 ${Math.floor(max / (1 - DURATION_TOLERANCE))} 秒以内（03 §S3 的口径是 60–90 秒一集）。`
+    return `这一集会明显短于你的预期：最多 ${SHOT_COUNT.max} 镜 × 单镜 10 秒 = ${max} 秒，而目标 ${targetDurationSec} 秒的 ±${DURATION_TOLERANCE * 100}% 要求至少 ${lo.toFixed(1)} 秒。生成照常进行——想让两个数对上，把 targetDurationSec 调到 ${Math.floor(max / (1 - DURATION_TOLERANCE))} 秒以内（03 §S3 的口径是 60–90 秒一集）。`
   if (hi < min)
     return (
-      `目标时长 ${targetDurationSec} 秒不可能达成：当前 provider 最短 ${minShotSec} 秒一镜，` +
-      `至少 ${SHOT_COUNT.min} 镜 = ${min} 秒，而 ±${DURATION_TOLERANCE * 100}% 只允许到 ${hi.toFixed(1)} 秒。` +
-      `把 targetDurationSec 调到 ${Math.ceil(min / (1 + DURATION_TOLERANCE))} 秒以上，` +
+      `这一集会明显长于你的预期：当前 provider 最短 ${minShotSec} 秒一镜，` +
+      `至少 ${SHOT_COUNT.min} 镜 = ${min} 秒，而目标 ${targetDurationSec} 秒的 ±${DURATION_TOLERANCE * 100}% ` +
+      `只到 ${hi.toFixed(1)} 秒。生成照常进行——时长由剧本决定。` +
+      `想让两个数对上，把 targetDurationSec 调到 ${Math.ceil(min / (1 + DURATION_TOLERANCE))} 秒以上，` +
       `或者配一个档位更细的模型（wan 系支持 2 秒起）。`
     )
   return null
@@ -170,7 +170,18 @@ export function lintShotlist(draft: ShotlistDraft, ctx: LintContext): LintResult
   }
 
   /*
-   * E3 · 03 §S3 完成判据。
+   * W3 · 总时长偏离目标。**warning 不是 error——时长是输出不是输入。**
+   *
+   * 原来是 error。真机实测的后果：目标 30 秒的一集，模型交出
+   * `3.0×8 + 2.0×3 = 30.0`——**精确到小数点后一位**。它不是在导戏，是在解一道
+   * 算术题；而每一镜配多少秒本该由那一镜的动作需要多长决定。
+   *
+   * 更糟的是那 30 秒**根本不可达**（seedance 最短 4 秒 × 至少 10 镜 = 40 秒），
+   * 于是模型被逼着写下一堆买不到的数字，E3 还给了满分。
+   *
+   * 现在硬约束只剩**单镜时长必须是这家 provider 真能产出的值**（E8）。
+   * 一集多长由剧本决定，算出来多少就是多少——目标只用来提示「跟你预想的差多少」。
+   * 成本不靠它兜底：批量生成前有 dryRun 估价 + 预算闸门 + 确认弹窗三道。
    *
    * 文档原文是「**每场**的镜头时长总和 ≈ **场次**目标时长」，但 `scenes` 表没有
    * target_duration 列——加一列等于让 S2 决定每场配多少秒，那不是 S3 的事。
@@ -180,12 +191,11 @@ export function lintShotlist(draft: ShotlistDraft, ctx: LintContext): LintResult
   const drift = (total - ctx.targetDurationSec) / ctx.targetDurationSec
   if (Math.abs(drift) > DURATION_TOLERANCE) {
     const pct = (drift * 100).toFixed(0)
-    errors.push(
-      `总时长 ${total.toFixed(1)} 秒，偏离目标 ${ctx.targetDurationSec} 秒 ${pct}%，` +
-        `超过 ±${DURATION_TOLERANCE * 100}%。` +
-        `请${drift > 0 ? '缩短镜头或减少镜头数' : '加长镜头或增加镜头数'}，让总和落进 ` +
-        `${(ctx.targetDurationSec * (1 - DURATION_TOLERANCE)).toFixed(1)}–` +
-        `${(ctx.targetDurationSec * (1 + DURATION_TOLERANCE)).toFixed(1)} 秒。`,
+    warnings.push(
+      `总时长 ${total.toFixed(1)} 秒，偏离目标 ${ctx.targetDurationSec} 秒 ${pct}%` +
+        `（超过 ±${DURATION_TOLERANCE * 100}%）。目标是预期不是判据——` +
+        `${drift > 0 ? '这一集比预想的长' : '这一集比预想的短'}，剧情需要就留着，` +
+        `不需要就在分集页把 targetDurationSec 改成 ${Math.round(total)} 秒。`,
     )
   }
 

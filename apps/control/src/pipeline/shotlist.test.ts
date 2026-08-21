@@ -110,15 +110,25 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
     expect(lintShotlist(draft(25, 3, { durationSec: 2.88 }), ctx).errors.join()).not.toMatch(/镜头总数/)
   })
 
-  it('E3 总时长偏离 >±15%，两个方向的提示不一样', () => {
-    // 建议区间必须断言全：把 (1+TOL) 与 (1−TOL) 写反会印成「落进 82.8–61.2 秒」，
-    // 模型照着改就是往反方向调，而只匹配 /缩短镜头/ 的断言看不出来
-    expect(lintShotlist(draft(18, 3, { durationSec: 6 }), ctx).errors.join()).toMatch(
-      /总时长 108\.0 秒，偏离目标 72 秒 50%[^]*缩短镜头[^]*落进 61\.2–82\.8 秒/,
-    )
-    expect(lintShotlist(draft(18, 3, { durationSec: 2 }), ctx).errors.join()).toMatch(
-      /总时长 36\.0 秒，偏离目标 72 秒 -50%[^]*加长镜头[^]*落进 61\.2–82\.8 秒/,
-    )
+  /**
+   * **W3 是 warning 不是 error——时长是输出不是输入。**
+   *
+   * 原来是 error。真机实测的后果：目标 30 秒的一集，模型交出
+   * `3.0×8 + 2.0×3 = 30.0`，精确到小数点后一位——它不是在导戏，是在解算术题。
+   * 而那 30 秒根本不可达（seedance 最短 4 秒 × 至少 10 镜 = 40 秒），
+   * E3 还给了满分。
+   */
+  it('W3 总时长偏离只标黄，两个方向的措辞不一样', () => {
+    const long = lintShotlist(draft(18, 3, { durationSec: 6 }), ctx)
+    expect(long.errors, '偏长不该拦住生成——剧情需要就该让它长').toEqual([])
+    expect(long.warnings.join()).toMatch(/总时长 108\.0 秒，偏离目标 72 秒 50%[^]*比预想的长/)
+
+    const short = lintShotlist(draft(18, 3, { durationSec: 2 }), ctx)
+    expect(short.errors).toEqual([])
+    expect(short.warnings.join()).toMatch(/总时长 36\.0 秒，偏离目标 72 秒 -50%[^]*比预想的短/)
+
+    // 要给出「不想要就把目标改成多少」——不然人只知道偏了，不知道下一步做什么
+    expect(long.warnings.join()).toMatch(/targetDurationSec 改成 108 秒/)
   })
 
   /**
@@ -131,12 +141,12 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
    * 用 18 × 4.6 = 82.8 这种写法能过是**靠浮点运气**——4.6 不是二进制精确值，
    * 累加 18 次的误差方向决定这条用例的红绿。边界断言不该建在那上面。
    */
-  it('恰好 ±15% 是合法的，多一点点就不是', () => {
+  it('恰好 ±15% 之内不标黄，多一点点才标', () => {
     const c = { sceneCount: 3, targetDurationSec: 80, minShotSec: 2 }
     expect(16 * 5.75).toBe(92) // 前提：这一步没有浮点误差
-    expect(lintShotlist(draft(16, 3, { durationSec: 5.75 }), c).errors.join()).not.toMatch(/总时长/)
+    expect(lintShotlist(draft(16, 3, { durationSec: 5.75 }), c).warnings.join()).not.toMatch(/总时长/)
     // 再多 0.25 秒/镜就越界
-    expect(lintShotlist(draft(16, 3, { durationSec: 6 }), c).errors.join()).toMatch(/总时长/)
+    expect(lintShotlist(draft(16, 3, { durationSec: 6 }), c).warnings.join()).toMatch(/总时长/)
   })
 
   it('E4 空镜说话——TTS 取不到 voiceId 会配出无人称旁白', () => {
@@ -218,10 +228,11 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
  * 40 秒——这道闸当时放行了，E3 还算出 30.0/30 完美，一直到成片 44.5 秒才露出来。
  */
 describe('targetOutOfReach 用的是 provider 的档位下限', () => {
-  it('30 秒目标在 seedance（4 秒起）上不可能达成，并给出可行动的两条路', () => {
+  it('30 秒目标在 seedance（4 秒起）上够不着，但不拦生成', () => {
     const msg = targetOutOfReach(30, 4)
     expect(msg, 'seedance 上 10 镜 × 4 秒 = 40 秒 > 30 × 1.15').toBeTruthy()
     expect(msg).toMatch(/最短 4 秒一镜/)
+    expect(msg, '语气要是提示不是拦截——时长是输出不是输入').toMatch(/生成照常进行/)
     expect(msg, '要给出目标该调到多少').toMatch(/35 秒以上/)
     expect(msg, '换模型是另一条路，要说出来').toMatch(/wan/)
   })
@@ -306,8 +317,10 @@ describe('lintShotlist · warnings（只标黄，不重试）', () => {
     const d = draft(30, 5, { durationSec: 9 })
     d.scenes[0]!.shots[0] = shot({ dialogue: '谁在那', characterNames: [] })
     d.scenes[0]!.shots[1] = shot({ characterNames: ['Lena', 'Marcus', 'Ray'] })
-    // E1 场数 + E2 镜数 + E3 时长 + E4 空镜说话 + E5 三人同框，各一条
-    expect(lintShotlist(d, ctx).errors).toHaveLength(5)
+    // E1 场数 + E2 镜数 + E4 空镜说话 + E5 三人同框，各一条。
+    // **时长不在里面**：它是 W3 了，同一份稿子的偏差只标黄
+    expect(lintShotlist(d, ctx).errors).toHaveLength(4)
+    expect(lintShotlist(d, ctx).warnings.join(), '时长偏差要出现在 warning 那一侧').toMatch(/总时长/)
   })
 })
 
@@ -319,8 +332,8 @@ describe('lintShotlist · warnings（只标黄，不重试）', () => {
  * 的输出，不跑在 seed 上。这条用例是那句话的活文档：哪天有人把 lint 接到 seed
  * 上，它会立刻提醒为什么不该那么做。
  */
-describe('seed 的 12 镜夹具是刻意的最小规模，过不了 E3', () => {
-  it('12 镜 42.5 秒 vs 目标 75 秒 → 只触发 E3，镜头数是合法的', () => {
+describe('seed 的 12 镜夹具是刻意的最小规模，只会被 W3 标黄', () => {
+  it('12 镜 42.5 秒 vs 目标 75 秒 → 只标黄，不判错', () => {
     const durs = [4, 3, 4, 3.5, 4, 3, 2.5, 4, 4, 3.5, 4, 3]
     const kinds = [
       'establishing',
@@ -346,8 +359,8 @@ describe('seed 的 12 镜夹具是刻意的最小规模，过不了 E3', () => {
     expect(durs.reduce((a, b) => a + b, 0)).toBe(42.5)
 
     const r = lintShotlist(d, { sceneCount: 3, targetDurationSec: 75, minShotSec: 2 })
-    expect(r.errors.join(), '12 < 10 不成立，镜头数其实是合法的').not.toMatch(/镜头总数/)
-    expect(r.errors.join(), '42.5s vs 75s 偏差 −43%，必须被 E3 抓到').toMatch(/总时长 42.5 秒/)
-    expect(r.errors.join()).toMatch(/-43%/)
+    expect(r.errors, '12 镜 42.5 秒是合法的一集——短，但不该判错').toEqual([])
+    expect(r.warnings.join(), '42.5s vs 75s 偏差 −43%，W3 要标出来').toMatch(/总时长 42.5 秒/)
+    expect(r.warnings.join()).toMatch(/-43%/)
   })
 })

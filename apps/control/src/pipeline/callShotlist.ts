@@ -1,11 +1,5 @@
 import { shotlistDraft, shotlistJsonSchema, type ShotlistDraft, type TimeOfDay } from '@ai-drama/contracts'
-import {
-  DURATION_TOLERANCE,
-  MAX_CAST_PER_SHOT,
-  SAME_SHOT_TYPE_RUN,
-  SHOT_COUNT,
-  lintShotlist,
-} from './shotlist.js'
+import { MAX_CAST_PER_SHOT, SAME_SHOT_TYPE_RUN, SHOT_COUNT, lintShotlist } from './shotlist.js'
 
 /**
  * 剧本 → 分镜表（`03-pipeline.md` S3）。**一个函数，一个实现。**
@@ -158,13 +152,22 @@ export function systemPrompt(input: ShotlistInput): string {
     'Hard rules:',
     `- Return exactly ${input.scenes.length} scene objects, in the same order as the input scenes. Do not add, drop, or merge scenes.`,
     `- ${SHOT_COUNT.min} to ${SHOT_COUNT.max} shots total across all scenes. Typical is 18.`,
-    `- Shot durations must sum to about ${input.targetDurationSec} seconds (within ${DURATION_TOLERANCE * 100}%).`,
     /*
-     * 下限从 provider 的档位取，上限仍是 03 §S3 的建议值 8 秒。
-     * 写死 `2-8` 的那一版在 seedance 上是错的：它最短 4 秒，模型照着写 2 秒，
-     * 每一镜都被静默抬档，而整集按写的那个数算。
+     * **时长是输出不是输入。**
+     *
+     * 原来这里写的是「must sum to about N (within 15%)」，配一条 error 级的判据。
+     * 真机实测的后果：目标 30 秒的一集，模型交出 `3.0×8 + 2.0×3 = 30.0`，精确到
+     * 小数点后一位——它不是在导戏，是在解算术题。而那 30 秒**根本不可达**
+     * （seedance 最短 4 秒 × 至少 10 镜 = 40 秒），于是它被逼着写下一堆买不到的
+     * 数字，而 E3 给了满分。
+     *
+     * 现在硬约束只剩「单镜必须是这家 provider 真能产出的整秒数」。一集多长由
+     * 剧本决定，目标降级成一句 roughly。成本不靠它兜底：批量生成前有 dryRun
+     * 估价 + 预算闸门 + 确认弹窗三道。
      */
-    `- Each shot ${input.minShotSec} to 8 seconds. ${input.minShotSec} is a hard floor — the video model cannot make anything shorter.`,
+    `- Give each shot the length its action actually needs. Let the scene decide how many shots it takes; do not pad or compress to hit a number.`,
+    `- Whole seconds only, from ${input.minShotSec} to 8. **${input.minShotSec} is a hard floor** — the video model physically cannot make anything shorter, and a fraction of a second is rounded up to the next whole second you have to pay for.`,
+    `- The episode should land roughly around ${input.targetDurationSec} seconds. That is the author's expectation, not a quota — if the script needs more or fewer shots, follow the script.`,
     `- At most ${MAX_CAST_PER_SHOT} characters per shot. More than that interacting reliably breaks the video model.`,
     '- Every shot with dialogue must list its speaker in characterNames.',
     `- Vary shotType; never use the same one ${SAME_SHOT_TYPE_RUN} shots in a row.`,
