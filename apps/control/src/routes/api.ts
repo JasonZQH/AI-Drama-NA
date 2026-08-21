@@ -583,8 +583,13 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
         system: systemPrompt({
           scriptMd: '',
           synopsis: null,
+          episodeBrief: null,
           targetDurationSec: sample.targetDurationSec,
-          scenes: Array.from({ length: sample.scenes }, () => ({ summary: null, timeOfDay: null })),
+          scenes: Array.from({ length: sample.scenes }, () => ({
+            summary: null,
+            timeOfDay: null,
+            lighting: null,
+          })),
           characters: [],
         }),
         /** 硬规则里的数字全部取自这里，不再另写一遍（PR-J） */
@@ -849,7 +854,12 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
 
     const [proj] = await db.select().from(s.projects).where(eq(s.projects.id, ep.projectId))
     const characters = await db
-      .select({ id: s.characters.id, name: s.characters.name, description: s.characters.description })
+      .select({
+        id: s.characters.id,
+        name: s.characters.name,
+        description: s.characters.description,
+        anchorTokens: s.characters.anchorTokens,
+      })
       .from(s.characters)
       .where(eq(s.characters.projectId, ep.projectId))
 
@@ -859,9 +869,29 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       out = await run({
         scriptMd: script,
         synopsis: proj?.synopsis ?? null,
+        /*
+         * **这三列 S1 就写好落库了，而这里一个都没传。**
+         *
+         * 上面那句 CONFLICT 文案自己都写着「整条流水线的起点」，而起点的戏剧
+         * 目标（钩子、悬念）此前从没进过分镜调用——模型拿到的是一份不知道要
+         * 往哪儿走的剧本。零新调用、零新表列，只是把已有的发出去。
+         */
+        episodeBrief:
+          [ep.logline, ep.hook && `Hook: ${ep.hook}`, ep.cliffhanger && `Cliffhanger: ${ep.cliffhanger}`]
+            .filter(Boolean)
+            .join('\n') || null,
         targetDurationSec: ep.targetDurationSec,
-        scenes: sceneRows.map((sc) => ({ summary: sc.summary, timeOfDay: sc.timeOfDay })),
-        characters: characters.map((c) => ({ name: c.name, description: c.description })),
+        // `sceneRows` 本来就是整行，`lighting` 一直在手里被丢掉——「光照太单一」在这一层的直接原因
+        scenes: sceneRows.map((sc) => ({
+          summary: sc.summary,
+          timeOfDay: sc.timeOfDay,
+          lighting: sc.lighting,
+        })),
+        characters: characters.map((c) => ({
+          name: c.name,
+          description: c.description,
+          anchorTokens: c.anchorTokens,
+        })),
       })
     } catch (e) {
       // 模型不肯就范 ≠ 系统坏了。422 带上校验原文，人能直接看出是哪一条没过

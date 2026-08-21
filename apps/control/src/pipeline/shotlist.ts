@@ -174,6 +174,27 @@ export function lintShotlist(draft: ShotlistDraft, ctx: LintContext): LintResult
       )
     }
 
+    /*
+     * E7 · 案例占位符泄漏。
+     *
+     * `characterNames` 有 enum + 受限解码双重挡着，`<A>` 进不去；
+     * **`action` / `emotion` / `dialogue` 一层都没有**——那是照抄 system prompt 里
+     * 那条案例唯一的出口，而它会一路进库、进 t2v prompt，烧掉 $2–11 的视频钱。
+     * 所以是 E 不是 W：那一轮免费的修复正好用来换掉它。
+     *
+     * 编号跳过 E6：E6 留给已排期的「hiddenAnchors 逐字写错」，两边可以并存。
+     *
+     * ponytail: 一条字符类而不是维护一张占位符表——尖括号在这三个字段里没有任何
+     * 合法用途，真误报也是人能一眼看懂的报错。要更细再换成 /<[A-Z]>/。
+     */
+    const leaked = [l.s.action, l.s.emotion, l.s.dialogue].filter((t) => /[<>]/.test(t))
+    if (leaked.length > 0) {
+      errors.push(
+        `${at(l)} 抄了案例里的占位符（${leaked.join(' / ')}）。` +
+          `案例是另一集的，只能学写法——把 <A>/<B> 换成 <cast> 里的真实角色名。`,
+      )
+    }
+
     // E5 · 13 §4.5「禁 3 人以上复杂互动」
     if (l.s.characterNames.length > MAX_CAST_PER_SHOT) {
       errors.push(

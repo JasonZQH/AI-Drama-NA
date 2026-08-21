@@ -1,7 +1,13 @@
 import { createServer, type Server } from 'node:http'
-import { shotlistJsonSchema } from '@ai-drama/contracts'
+import { shotlistDraft, shotlistJsonSchema } from '@ai-drama/contracts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { ShotlistRejected, callShotlist, systemPrompt, type ShotlistInput } from './callShotlist.js'
+import {
+  ShotlistRejected,
+  callShotlist,
+  systemPrompt,
+  userPrompt,
+  type ShotlistInput,
+} from './callShotlist.js'
 import { DURATION_TOLERANCE, MAX_CAST_PER_SHOT, SAME_SHOT_TYPE_RUN, SHOT_COUNT } from './shotlist.js'
 
 /**
@@ -15,15 +21,17 @@ import { DURATION_TOLERANCE, MAX_CAST_PER_SHOT, SAME_SHOT_TYPE_RUN, SHOT_COUNT }
 const input: ShotlistInput = {
   scriptMd: 'INT. APARTMENT - NIGHT\nLena finds the letter.',
   synopsis: 'She comes home to a city that moved on.',
+  episodeBrief: 'She has ten minutes to decide.\nHook: the letter is addressed to someone else.',
   targetDurationSec: 72,
   scenes: [
-    { summary: 'Lena returns', timeOfDay: 'night' },
-    { summary: 'The letter', timeOfDay: 'night' },
-    { summary: 'The rooftop', timeOfDay: 'night' },
+    // 第一场给自由文本光照，后两场只有枚举——两条回落分支都要被 userPrompt 覆盖到
+    { summary: 'Lena returns', timeOfDay: 'night', lighting: 'one bare bulb over the door' },
+    { summary: 'The letter', timeOfDay: 'night', lighting: null },
+    { summary: 'The rooftop', timeOfDay: 'night', lighting: null },
   ],
   characters: [
-    { name: 'Lena', description: 'mid-30s, dark bob, grey coat' },
-    { name: 'Marcus', description: '40s, close-cropped hair' },
+    { name: 'Lena', description: 'mid-30s, dark bob', anchorTokens: ['grey wool coat'] },
+    { name: 'Marcus', description: '40s, close-cropped hair', anchorTokens: [] },
   ],
 }
 
@@ -177,10 +185,11 @@ describe('systemPrompt 的硬规则与判据同源', () => {
   const p = systemPrompt({
     scriptMd: 'x',
     synopsis: null,
+    episodeBrief: null,
     targetDurationSec: 72,
     scenes: [
-      { summary: null, timeOfDay: null },
-      { summary: null, timeOfDay: null },
+      { summary: null, timeOfDay: null, lighting: null },
+      { summary: null, timeOfDay: null, lighting: null },
     ],
     characters: [],
   })
@@ -214,6 +223,137 @@ describe('systemPrompt 的硬规则与判据同源', () => {
   it('单镜时长仍是建议区间 2-8，不是 schema 的硬上限 1-10', () => {
     expect(p).toContain('Each shot 2-8 seconds')
     expect(p).not.toContain('1-10 seconds')
+  })
+})
+
+/**
+ * **案例本身必须能过自己的校验。**
+ *
+ * 示范一个会被 lint 判死的写法是这一整套里最坏的结果：模型照着学，每次生成都白烧
+ * 一轮修复再失败，而日志里只会说「校验没过」，不会说「是你教它这么写的」。
+ *
+ * 所以这一组把案例从 systemPrompt 的输出里**原样解析回来**再验——不是另抄一份
+ * 常量对着比（那样两份会漂，而漂了之后测试还是绿的）。
+ */
+/**
+ * userPrompt 的三样新输入，**全部早就落库了，只是从没发出去**。
+ * 这一组守的就是「发出去了」这件事——不发的话，加了列也等于没加。
+ */
+describe('userPrompt 把已落库的上下文发出去', () => {
+  const u = userPrompt(input)
+
+  it('episodeBrief 进去了——这是「针对这个剧本的概述」', () => {
+    expect(u).toContain('<episode>')
+    expect(u).toContain('She has ten minutes to decide.')
+    expect(u).toContain('Hook: the letter is addressed to someone else.')
+  })
+
+  it('场级 lighting 自由文本优先，没有才回落枚举', () => {
+    expect(u, '有自由文本时用它').toContain('Lena returns · one bare bulb over the door')
+    expect(u, '没有时回落到枚举那个词').toContain('The letter · night')
+  })
+
+  it('锚点发出去，并且说清楚它是自动拼的', () => {
+    expect(u).toContain('[always on screen: grey wool coat]')
+    expect(u, '不说的话模型会在 action 里把同一件外套再写一遍').toContain(
+      'attached to every shot automatically',
+    )
+    // 没有锚点的角色不该拼出一个空的方括号
+    expect(u).not.toContain('[always on screen: ]')
+  })
+
+  it('CAST 用破折号不用冒号', () => {
+    /*
+     * `- Lena: woman, 25…` 与剧本里的台词行 `LIN XIA: 你怎么在这。` 同形。
+     * `prompt.ts` 已经为下游同一个理由裁决过一次。
+     */
+    expect(u).toContain('- Lena — mid-30s, dark bob')
+    expect(u).not.toContain('- Lena:')
+  })
+
+  it('剧本在指令之前——大块资料先放，要勾掉的清单放末尾', () => {
+    expect(u.indexOf('<script>')).toBeLessThan(u.indexOf('<scenes'))
+    expect(u.indexOf('<scenes')).toBeLessThan(u.indexOf('Based on the script above'))
+  })
+
+  it('场次数出现在 <scenes> 上，E1 判的就是它', () => {
+    expect(u).toContain(`<scenes count="${input.scenes.length}">`)
+  })
+})
+
+describe('systemPrompt 里那条案例', () => {
+  const rendered = systemPrompt({
+    scriptMd: 'x',
+    synopsis: null,
+    episodeBrief: null,
+    targetDurationSec: 72,
+    scenes: [{ summary: null, timeOfDay: null, lighting: null }],
+    characters: [],
+  })
+  const raw = /SHOTS FOR THAT SCENE\n(\[[\s\S]*?\])\n<\/example>/.exec(rendered)?.[1]
+
+  it('能从提示词里解析出来（解析不出来说明格式漂了）', () => {
+    expect(raw, '案例的形状变了，下面几条就都在验空气').toBeTruthy()
+    expect(() => JSON.parse(raw!)).not.toThrow()
+  })
+
+  const shots = JSON.parse(raw ?? '[]') as Record<string, unknown>[]
+
+  it('过 L1：占位符当角色名也要合法', () => {
+    // 角色名灌 enum，所以要把两个占位符当成这一集的 cast 传进去
+    const r = shotlistDraft(['<A>', '<B>']).safeParse({ scenes: [{ shots }] })
+    expect(
+      r.success ? [] : r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+      '案例过不了自己那道闸门',
+    ).toEqual([])
+  })
+
+  it('守住集级判据：说话人在 cast 里、同框不超过上限', () => {
+    for (const sh of shots) {
+      const names = sh['characterNames'] as string[]
+      if ((sh['dialogue'] as string).length > 0)
+        expect(names.length, `有台词却没人说：${JSON.stringify(sh['action'])}`).toBeGreaterThan(0)
+      expect(names.length).toBeLessThanOrEqual(MAX_CAST_PER_SHOT)
+    }
+  })
+
+  it('不写否定式，不写冒号', () => {
+    for (const sh of shots) {
+      const text = `${sh['action'] as string} ${sh['emotion'] as string}`
+      /*
+       * 案例第 4 镜示范的正是「用删除表达消失」：`collar open at her bare throat`
+       * 而不是「不再戴着项链」。它要是自己写了否定式，上面那条 Writing style
+       * 规则就成了一句自相矛盾的话。
+       */
+      expect(text, `案例自己写了否定式：${text}`).not.toMatch(
+        /\bno\b|\bnot\b|\bwithout\b|\bnever\b|\bdon't\b/i,
+      )
+      // 冒号后接内容是 Veo 的台词语法，有把描述当台词烧进画面的风险
+      expect(text).not.toContain(':')
+    }
+  })
+
+  it('景别与时长都在变——变化是演示出来的，不靠多写一句文案', () => {
+    const types = shots.map((sh) => sh['shotType'])
+    expect(new Set(types).size, '四镜同景别就没演示到「Vary shotType」').toBe(shots.length)
+    expect(new Set(shots.map((sh) => sh['durationSec'])).size).toBeGreaterThan(2)
+  })
+
+  it('里面没有任何专有名词——占位符是唯一的防照抄', () => {
+    /*
+     * 案例里的人名/地名泄进 `action` **没有任何一层拦得住**（`characterNames`
+     * 有 enum 挡着，action 没有）。所以案例里根本不放真名：`<A>` 一眼能被 E7
+     * 抓出来，而 `Odile` 这种像真名的东西泄漏了也看不出来。
+     */
+    for (const sh of shots) {
+      /*
+       * **只查 `action`。** 泄漏的洞就在这一个字段：`characterNames` 有 enum 挡着，
+       * 而 `dialogue` 是一句英文台词，句首本来就大写（"You came."）——把它算进来
+       * 只会得到一个每次改台词都要伺候的假阳性。
+       */
+      const caps = (sh['action'] as string).split(/[\s,.]+/).filter((w) => /^[A-Z][a-z]{2,}$/.test(w))
+      expect(caps, `案例里出现了像真名的词：${caps.join('、')}`).toEqual([])
+    }
   })
 })
 
