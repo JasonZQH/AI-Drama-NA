@@ -67,11 +67,32 @@ export const BodyRef = z.object({
 })
 export type BodyRef = z.infer<typeof BodyRef>
 
+/**
+ * 一套服装。角色可以有多套（睡衣版 / 工作版 / 休闲版），由
+ * `scenes.state_in.characters[name].outfit` 按场选。
+ *
+ * ## `description` 是新增的，而且是目前唯一真正生效的字段
+ *
+ * 「这一场 Lena 穿睡衣」进 prompt **不需要任何图片**——需要的是一段文字
+ * （`grey flannel pajamas`）。图那一半的用途是喂给视频模型当参考图，而「要不要
+ * 喂、喂几张、会不会被首帧图吃掉」还没有答案（P6 的 U1–U3）。文字这一半现在
+ * 就能生效，所以先做它。
+ *
+ * ## `wornMasked` 从必填改成可选
+ *
+ * 先例是 `characters.face_set` 的可空，schema 里的原话是「**角色卡先于参考图
+ * 存在**（生产顺序是抽角色卡 → 出图 → 精修 → 入库 → 锁定）」。服装完全同理：
+ * 先有「一套灰色法兰绒睡衣」这个概念，后有它的参考图。
+ *
+ * 改类型不需要迁移：`characters.wardrobe` 此前零写入方，库里没有旧数据。
+ */
 export const Outfit = z.object({
   id: z.string(),
   name: z.string(),
-  /** 推荐：穿着态 + parsing mask 抠到服装区域 */
-  wornMasked: z.string().uuid(),
+  /** 进 prompt 的那段文字。不给图也能生效的那一半 */
+  description: z.string().default(''),
+  /** 推荐：穿着态 + parsing mask 抠到服装区域。P6 之前没有产出它的链路 */
+  wornMasked: z.string().uuid().optional(),
   /** 备选：平铺 */
   flatLay: z.string().uuid().optional(),
 })

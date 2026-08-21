@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import { createDb } from './db/client.js'
 import { LivePool, publishProvidersChanged, subscribeProviderChanges } from './providers/pool.js'
 import { registerApi, type ApiDeps } from './routes/api.js'
+import { registerAssets } from './routes/assets.js'
 import { registerErrorHandler } from './routes/errors.js'
 import { registerSse } from './routes/sse.js'
 import { registerStats } from './routes/stats.js'
@@ -91,6 +92,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   })
 
   registerApi(app, deps)
+  registerAssets(app, deps.db)
   registerStats(app, deps)
   registerSse(app, { redisUrl: '', makeSubscriber: deps.makeSubscriber })
 

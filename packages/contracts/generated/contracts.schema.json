@@ -602,6 +602,10 @@
         "name": {
           "type": "string"
         },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
         "wornMasked": {
           "type": "string",
           "format": "uuid",
@@ -615,8 +619,7 @@
       },
       "required": [
         "id",
-        "name",
-        "wornMasked"
+        "name"
       ]
     },
     "EvalPolicy": {
