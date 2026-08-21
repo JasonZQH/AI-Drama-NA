@@ -110,10 +110,31 @@ beforeAll(async () => {
     .orderBy(s.episodes.index)
     .limit(1)
   episodeId = ep!.id
-  // 必须 ORDER BY：不加的话 Postgres 返回顺序不确定，会与并发/后续的测试
-  // 文件抢同一个镜头，表现为「有时过有时不过」
-  const [sh] = await db.select().from(s.shots).orderBy(s.shots.index).limit(1)
-  shotId = sh!.id
+  /*
+   * **必须限定在夹具项目内**，不能在全库里挑。
+   *
+   * `orderBy(index).limit(1)` 取的是全库 index 最小的那一镜——而任何别的项目
+   * 都有 index=1 的镜头，并列时挑中谁**完全不确定**。挑中真实项目的那一次，
+   * 下面的 `cleanup()` 会把它的 generation_jobs、takes、timeline_clips 全删掉，
+   * 并把镜头状态重置。
+   *
+   * 实测毁过一次真实数据：Jason 跑完一整集、选完片、渲染完成之后，我跑了
+   * `pnpm test:int`——他那一集的第 1 镜生成记录清零、全部选片被撤销。
+   * 表现出来像是「改了个时段，之前的生成都消失了」，而与时段毫无关系。
+   *
+   * 这是同一类错误的第三次（前两次：按 limit(1) 挑项目、密钥表被清空）。
+   * 判据很简单：**集成测试碰的每一行都必须证明它属于夹具项目。**
+   */
+  const [sh] = await db
+    .select()
+    .from(s.shots)
+    .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+    .innerJoin(s.episodes, eq(s.scenes.episodeId, s.episodes.id))
+    .where(eq(s.episodes.projectId, projectId))
+    .orderBy(s.shots.index)
+    .limit(1)
+  if (!sh) throw new Error(`夹具项目「${DEMO_TITLE}」里没有镜头，先跑 pnpm db:seed`)
+  shotId = sh.shots.id
 
   await cleanup()
 })
