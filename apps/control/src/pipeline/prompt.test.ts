@@ -13,6 +13,7 @@ const intent = (over: Partial<PromptIntent> = {}): PromptIntent => ({
   cameraMove: null,
   emotion: null,
   timeOfDay: null,
+  lighting: null,
   ...over,
 })
 
@@ -152,6 +153,71 @@ describe('buildPrompt', () => {
       assets({ location: { description: 'city rooftop', interior: false, anchorTokens: [] } }),
     ).prompt
     expect(q).toMatch(/city rooftop, night/)
+  })
+
+  /**
+   * 光照是短剧里区分度最高的一项，而枚举只有四格。
+   *
+   * 「路灯刚亮，招牌还没全开」和 `night` 在画面上完全是两回事——自由文本必须
+   * 压过枚举，否则加这一列没有意义。
+   */
+  it('lighting 自由文本压过 timeOfDay 的固定词', () => {
+    const p = buildPrompt(
+      intent({ timeOfDay: 'night', lighting: 'streetlamps just flickered on, signage still dark' }),
+      assets({ location: { description: 'city alley', interior: false, anchorTokens: [] } }),
+    ).prompt
+    expect(p).toContain('streetlamps just flickered on')
+    expect(p, '枚举那个词不该同时出现').not.toMatch(/city alley, night\./)
+  })
+
+  it('没有 lighting 时回落到枚举', () => {
+    const p = buildPrompt(
+      intent({ timeOfDay: 'dusk', lighting: null }),
+      assets({ location: { description: 'city alley', interior: false, anchorTokens: [] } }),
+    ).prompt
+    expect(p).toContain('city alley, dusk light')
+  })
+
+  it('lighting 是空白串时也回落，不拼出一个空从句', () => {
+    const p = buildPrompt(
+      intent({ timeOfDay: 'night', lighting: '   ' }),
+      assets({ location: { description: 'city alley', interior: false, anchorTokens: [] } }),
+    ).prompt
+    expect(p).toContain('city alley, night')
+    expect(p).not.toMatch(/,\s*,|,\s*\./)
+  })
+
+  /**
+   * 去重那一行做的是 `new RegExp(`\\b${timeProse}\\b`)`。枚举时代 `timeProse`
+   * 是四个常量之一，怎么拼都安全；自由文本一进来它就是**用户输入进正则构造器**：
+   *
+   * - `lamp (cold` → `SyntaxError`，`prompt-preview` 与入队路径一起 500
+   * - `dawn. hard shadows` → `.` 当通配，静默匹上地点描述，**整句光照被吞掉**
+   *
+   * 后者更贵：不报错、不留痕，只是那一镜的光没了。
+   */
+  it('光照里的正则元字符既不该炸也不该被静默吃掉', () => {
+    const p = buildPrompt(
+      intent({ timeOfDay: null, lighting: 'a single lamp (cold' }),
+      assets({ location: { description: 'city alley', interior: false, anchorTokens: [] } }),
+    ).prompt
+    expect(p).toContain('a single lamp (cold')
+
+    // `.` 当通配符时会匹上 `dawnx hard shadows`，于是这一句光照整个不见
+    const q = buildPrompt(
+      intent({ timeOfDay: null, lighting: 'dawn. hard shadows' }),
+      assets({
+        location: { description: 'rooftop at dawnx hard shadows', interior: false, anchorTokens: [] },
+      }),
+    ).prompt
+    expect(q, '`.` 不该当通配符把整句光照吃掉').toContain('dawn. hard shadows')
+
+    // 转义而不是「自由文本一律不查」：去重本身要留着
+    const r = buildPrompt(
+      intent({ timeOfDay: null, lighting: 'night' }),
+      assets({ location: { description: 'city rooftop at night', interior: false, anchorTokens: [] } }),
+    ).prompt
+    expect(r.match(/night/g), '光照与地点写了同一个词，不该拼两遍').toHaveLength(1)
   })
 
   /**

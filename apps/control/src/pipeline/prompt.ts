@@ -81,6 +81,13 @@ export interface PromptIntent {
   readonly emotion: string | null
   /** 场景级，来自 `scenes.time_of_day` */
   readonly timeOfDay: TimeOfDay | null
+  /**
+   * 场景级自由文本光照（`scenes.lighting`）。**有它就用它，压过 `timeOfDay`。**
+   *
+   * 枚举只有四格、映射成四个固定英文词，而光照恰恰是短剧里区分度最高的一项
+   * （「路灯刚亮」和「深夜」在画面上完全是两回事）。枚举留作粗分桶与统计。
+   */
+  readonly lighting: string | null
 }
 
 export interface PromptAssets {
@@ -169,7 +176,8 @@ export function buildPrompt(intent: PromptIntent, assets: PromptAssets): BuiltPr
     .filter((x) => x.length > 0)
     .join(', ')
 
-  const timeProse = intent.timeOfDay ? TIME_OF_DAY_PROSE[intent.timeOfDay] : null
+  // 自由文本优先：四个枚举词是兜底，不是上限
+  const timeProse = intent.lighting?.trim() || (intent.timeOfDay ? TIME_OF_DAY_PROSE[intent.timeOfDay] : null)
 
   /*
    * 地点：**白描散文，不带标签前缀。**
@@ -186,8 +194,20 @@ export function buildPrompt(intent: PromptIntent, assets: PromptAssets): BuiltPr
     const body = traits([assets.location.description, ...assets.location.anchorTokens]).join(', ')
     const where = `${assets.location.interior ? 'indoors' : 'outdoors'}, ${body}`
     if (!timeProse) return where
-    // 已经写了 night / dusk 之类就不再补一次
-    return new RegExp(`\\b${timeProse}\\b`, 'i').test(body) ? where : `${where}, ${timeProse}`
+    /*
+     * 已经写了 night / dusk 之类就不再补一次。
+     *
+     * **`timeProse` 必须转义**：枚举时代它是四个常量之一，怎么拼都安全；自由
+     * 文本一进来，这一行就是把用户输入喂进正则构造器——`lamp (cold` 直接
+     * SyntaxError（预览与入队路径一起 500），`dawn. hard shadows` 里的 `.` 当
+     * 通配符匹上地点描述、**整句光照被吞掉且不报错不留痕**。后者更贵。
+     *
+     * 转义而不是「自由文本一律不查重」：去重本身是要留的——地点写着
+     * `city rooftop at night`、光照也写 `night` 时，拼出「…at night, night.」
+     * 同样是坏输出。Node 22 没有 `RegExp.escape`，所以手写。
+     */
+    const literal = timeProse.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
+    return new RegExp(`\\b${literal}\\b`, 'i').test(body) ? where : `${where}, ${timeProse}`
   })()
 
   const sentences = [

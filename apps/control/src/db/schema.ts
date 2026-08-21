@@ -105,6 +105,20 @@ export const scenes = pgTable(
     index: integer('index').notNull(),
     locationId: uuid('location_id'),
     timeOfDay: text('time_of_day').$type<TimeOfDay>(),
+    /**
+     * 自由文本的光照描述。**有它就用它，没有才回落到 `time_of_day` 的那个词。**
+     *
+     * 枚举只有 day/night/dawn/dusk 四格，映射成四个固定英文词。而真实短剧要的
+     * 是「路灯刚亮，招牌还没全开」「暴雨将至的顶光」这类——四个格子装不下，
+     * 而它直接决定画面。
+     *
+     * 枚举保留不删：它是粗分桶，将来做「这部剧夜戏占比」这类统计要用，
+     * 而且它已经进了分镜提示词的场次列表（`callShotlist` 的 `[night]` 标签）。
+     *
+     * `ContinuityState.lighting` 早就声明了同一个东西（场级、自由文本），
+     * 只是从没实现过。这一列是它的落地。
+     */
+    lighting: text('lighting'),
     summary: text('summary'),
     stateIn: jsonb('state_in').$type<ContinuityState>(), // 进场可见状态
     stateOut: jsonb('state_out').$type<ContinuityState>(), // 出场可见状态

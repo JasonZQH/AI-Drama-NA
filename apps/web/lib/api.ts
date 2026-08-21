@@ -105,6 +105,8 @@ export interface EpisodeTree {
     index: number
     summary: string | null
     timeOfDay: string | null
+    /** 自由文本光照。有它就压过 timeOfDay 的固定词（pipeline/prompt.ts） */
+    lighting: string | null
     locationId: string | null
   }[]
   /** 最近一次成功渲染的成片。null = 还没渲染过 */

@@ -186,12 +186,15 @@ async function refuseIfSpent(db: Db, scope: { projectId?: string; episodeId?: st
 const sceneBody = z.object({
   summary: z.string().nullish(),
   timeOfDay: TimeOfDay.nullish(),
+  /** 自由文本光照。有它就压过 timeOfDay 的那个固定词，见 prompt.ts */
+  lighting: z.string().nullish(),
   locationId: z.string().uuid().nullish(),
 })
 
 const scenePatch = (b: z.infer<typeof sceneBody>): Record<string, unknown> => ({
   ...(b.summary === undefined ? {} : { summary: blankToNull(b.summary) }),
   ...(b.timeOfDay === undefined ? {} : { timeOfDay: b.timeOfDay ?? null }),
+  ...(b.lighting === undefined ? {} : { lighting: blankToNull(b.lighting) }),
   ...(b.locationId === undefined ? {} : { locationId: b.locationId ?? null }),
 })
 

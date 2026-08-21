@@ -14,6 +14,7 @@ import { Storage, storageFromEnv } from '../storage/s3.js'
 import { resolveDependencies } from '../pipeline/batch.js'
 import { createGenerationJob } from '../queue/ingest.js'
 import { ShotlistRejected } from '../pipeline/callShotlist.js'
+import { resolvePrompt } from '../pipeline/resolvePrompt.js'
 import { probeOpenRouter, type ProbeResult } from '../credentials/probe.js'
 import { deleteCredential, resolveKey, upsertCredential } from '../credentials/store.js'
 import { LivePool, publishProvidersChanged, subscribeProviderChanges } from '../providers/pool.js'
@@ -1173,6 +1174,39 @@ describe('作者侧：新建项目 / 分集 / 场次', () => {
     await write('PATCH', `/api/episodes/${ep.id}`, { scriptMd: '有剧本了' })
     const r = await write('POST', `/api/episodes/${ep.id}/shotlist`)
     expect(r.statusCode, '有剧本有场次之后不该再被前置条件拦下').not.toBe(409)
+  })
+
+  /**
+   * 光照自由文本压过枚举。四个枚举格只映射成四个固定英文词，而「路灯刚亮起、
+   * 霓虹还半暗」与 `night` 在画面上是两回事——这一列不压过枚举的话，加它没有意义。
+   */
+  it('lighting 自由文本压过 timeOfDay，清空后回落', async () => {
+    const p = await newProject()
+    const ep = (
+      (await write('POST', `/api/projects/${p.id}/episodes`, {})).json() as { episode: { id: string } }
+    ).episode
+    const sc = (
+      (await write('POST', `/api/episodes/${ep.id}/scenes`, { timeOfDay: 'night' })).json() as {
+        scene: { id: string }
+      }
+    ).scene
+    const [shot] = await db
+      .insert(s.shots)
+      .values({ sceneId: sc.id, index: 1, shotType: 'ms', action: 'she waits' })
+      .returning()
+
+    const before = await resolvePrompt(db, shot!.id)
+    expect(before!.prompt, '没写 lighting 时用枚举那个词').toContain('night')
+
+    await write('PATCH', `/api/scenes/${sc.id}`, { lighting: 'streetlamps just flickered on' })
+    const after = await resolvePrompt(db, shot!.id)
+    expect(after!.prompt).toContain('streetlamps just flickered on')
+
+    // 空串落 NULL，然后回落到枚举
+    await write('PATCH', `/api/scenes/${sc.id}`, { lighting: '  ' })
+    const cleared = await resolvePrompt(db, shot!.id)
+    expect(cleared!.prompt, '清空之后该回落到枚举').toContain('night')
+    expect(cleared!.prompt).not.toContain('streetlamps')
   })
 
   it('PATCH 场次改摘要与时段，空串落 NULL', async () => {

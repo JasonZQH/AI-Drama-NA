@@ -139,6 +139,7 @@ export const scenes = pgTable('scenes', {
   index:      integer('index').notNull(),
   locationId: uuid('location_id'),
   timeOfDay:  text('time_of_day').$type&lt;TimeOfDay&gt;(),      // day|night|dawn|dusk
+  lighting:   text('lighting'),                            // 自由文本，有它就压过 time_of_day
   summary:    text('summary'),
   stateIn:    jsonb('state_in').$type&lt;ContinuityState&gt;(),  // 进场可见状态
   stateOut:   jsonb('state_out').$type&lt;ContinuityState&gt;(), // 出场可见状态

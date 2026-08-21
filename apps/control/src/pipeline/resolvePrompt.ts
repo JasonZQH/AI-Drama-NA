@@ -28,6 +28,7 @@ export interface ResolvedPrompt extends BuiltPrompt {
     readonly location: { description: string; interior: boolean; anchorTokens: readonly string[] } | null
     readonly style: { description: string; negativePrompt: string | null } | null
     readonly timeOfDay: string | null
+    readonly lighting: string | null
   }
 }
 
@@ -52,6 +53,7 @@ export async function resolvePrompt(tx: DbOrTx, shotId: string): Promise<Resolve
   const [ctx] = await tx
     .select({
       timeOfDay: s.scenes.timeOfDay,
+      lighting: s.scenes.lighting,
       locDescription: s.locations.description,
       locInterior: s.locations.interior,
       locAnchors: s.locations.anchorTokens,
@@ -95,7 +97,13 @@ export async function resolvePrompt(tx: DbOrTx, shotId: string): Promise<Resolve
       ? null
       : { description: ctx.styleDescription, negativePrompt: ctx.styleNegative }
 
-  const inputs = { characters, location, style, timeOfDay: ctx?.timeOfDay ?? null }
+  const inputs = {
+    characters,
+    location,
+    style,
+    timeOfDay: ctx?.timeOfDay ?? null,
+    lighting: ctx?.lighting ?? null,
+  }
 
   // promptOverride 是人工旁路：写了就原样用，不再拼装（当前无写入方）
   if (row.promptOverride)
@@ -113,6 +121,7 @@ export async function resolvePrompt(tx: DbOrTx, shotId: string): Promise<Resolve
       cameraMove: row.cameraMove,
       emotion: row.emotion,
       timeOfDay: ctx?.timeOfDay ?? null,
+      lighting: ctx?.lighting ?? null,
     },
     { characters, location, style },
   )
