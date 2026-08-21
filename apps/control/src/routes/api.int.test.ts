@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
@@ -740,6 +741,124 @@ describe('空 timeline 要回填，不能永久复用', () => {
  * 补上写入口之后，分镜才有真剧本可读，而不是在 200 字的 hook+logline 上
  * 让模型自己编情节。
  */
+/**
+ * **改一个镜头的内容。**
+ *
+ * 在这之前 `shots` 上唯一能写的字段是 `provider_hint`——`action` / `emotion` /
+ * `shotType` / `durationSec` / `prompt_override` 面板改不了、API 也改不了。
+ * 分镜一旦生成就是只读的：第 3 镜写错一个词，只有 redo（同一个 prompt 重掷骰子）
+ * 或者删掉整集重来两条路。
+ */
+describe('PATCH /api/shots/:id', () => {
+  const patch = (body: Record<string, unknown>, id = shotId) =>
+    app.inject({ method: 'PATCH', url: `/api/shots/${id}`, headers: WRITE_HEADERS, payload: body })
+
+  const readBack = async (id = shotId) => (await db.select().from(s.shots).where(eq(s.shots.id, id)))[0]!
+
+  beforeEach(async () => {
+    await db.update(s.shots).set({ status: 'ready', selectedTakeId: null }).where(eq(s.shots.id, shotId))
+  })
+
+  /** 把 `shotId` 那一镜做成 locked + 一条 selected take，返回 takeId 供断言归档 */
+  const lockWithTake = async (): Promise<string> => {
+    const [asset] = await db
+      .insert(s.assets)
+      .values({
+        projectId,
+        kind: 'video',
+        storageKey: `test/shot-patch/${fixtureAttempt}.mp4`,
+        mime: 'video/mp4',
+        bytes: 1,
+        sha256: 'd'.repeat(64),
+        producedBy: 'generation',
+      })
+      .returning({ id: s.assets.id })
+    const jobId = await createGenerationJob(db, {
+      shotId,
+      attempt: fixtureAttempt++,
+      providerId: 'mock',
+      modelId: 'mock-v1',
+      mode: 't2v',
+      promptText: 'shot-patch fixture',
+    })
+    const [take] = await db
+      .insert(s.takes)
+      .values({ shotId, jobId, assetId: asset!.id, status: 'selected' })
+      .returning({ id: s.takes.id })
+    await db.update(s.shots).set({ status: 'locked', selectedTakeId: take!.id }).where(eq(s.shots.id, shotId))
+    return take!.id
+  }
+
+  it('改 intent 字段并能读回，空串落 NULL', async () => {
+    const r = await patch({ action: '她把钥匙放回原处', emotion: '下巴收紧', cameraMove: 'dolly' })
+    expect(r.statusCode).toBe(200)
+    let row = await readBack()
+    expect(row.action).toBe('她把钥匙放回原处')
+    expect(row.emotion).toBe('下巴收紧')
+    expect(row.cameraMove).toBe('dolly')
+
+    await patch({ emotion: '   ' })
+    row = await readBack()
+    expect(row.emotion, '空串该落 NULL，别混着存').toBeNull()
+  })
+
+  it('promptOverride 终于有写入方了', async () => {
+    /*
+     * 这一列有三处读取方却**零写入方**——「我知道该怎么写，别拼了」这件事
+     * 在产品上至今不存在。
+     */
+    await patch({ promptOverride: '手写的 prompt，不要拼装' })
+    expect((await readBack()).promptOverride).toBe('手写的 prompt，不要拼装')
+    await patch({ promptOverride: '' })
+    expect((await readBack()).promptOverride, '清空该回到自动拼装').toBeNull()
+  })
+
+  it('空 body 拒收——不然是一次什么都没做的成功', async () => {
+    expect((await patch({})).statusCode).toBe(422)
+  })
+
+  it('状态机的账本不给改', async () => {
+    /*
+     * 断言「没变」而不是「等于某个值」：`attemptCount` 会被同文件前面的用例推高，
+     * 写死 0 的话这条单跑绿、全跑红——那是最难查的一类假绿。
+     */
+    const before = await readBack()
+    await patch({ status: 'locked', attemptCount: 99, index: 7, sceneId: randomUUID() })
+    const after = await readBack()
+    expect(after.status, 'status 是状态机的').toBe(before.status)
+    expect(after.attemptCount, 'attemptCount 是状态机的').toBe(before.attemptCount)
+    expect(after.index, 'index 有唯一约束，换顺序是时间线的事').toBe(before.index)
+    expect(after.sceneId, '换场次会绕过 shots_scene_idx 的唯一约束').toBe(before.sceneId)
+  })
+
+  /**
+   * 改了内容，已经花钱生成的 take 就不再对应这一镜了。`intent.edited` 从第一版
+   * 就在状态机里管这件事，但**全仓零发射方**——这条语义空转了整个 M1。
+   */
+  it('改内容会归档 take 并把镜头放回 ready', async () => {
+    const takeId = await lockWithTake()
+    expect((await readBack()).status).toBe('locked')
+
+    await patch({ action: '换一个动作，之前那条 take 不算数了' })
+    const row = await readBack()
+    expect(row.status, 'locked 改了内容要回 ready').toBe('ready')
+    expect(row.selectedTakeId, '选中要清掉——它对应的是旧 intent').toBeNull()
+    const [t] = await db.select().from(s.takes).where(eq(s.takes.id, takeId))
+    expect(t!.status, '归档而非删除：系统不自动销毁花过钱的东西').toBe('archived')
+  })
+
+  it('在飞的镜头不许改——产物回来时会对不上一份已经不存在的 intent', async () => {
+    await db.update(s.shots).set({ status: 'generating' }).where(eq(s.shots.id, shotId))
+    const r = await patch({ action: '生成中偷偷改' })
+    // 400 而不是 409：与 generate / redo / reset 同一个约定（INVALID_STATE_TRANSITION）
+    expect(r.statusCode).toBe(400)
+    expect((r.json() as { error: { message: string } }).error.message, '要说清是哪个状态挡的').toMatch(
+      /状态 generating 不接受事件 intent\.edited/,
+    )
+    expect((await readBack()).action, '被拒时一个字段都不该动——所以迁移在写列之前').not.toBe('生成中偷偷改')
+  })
+})
+
 describe('PATCH /api/episodes/:id', () => {
   const patch = (body: Record<string, unknown>) =>
     app.inject({
