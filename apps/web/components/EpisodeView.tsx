@@ -8,6 +8,7 @@ import { api, type DryRunPlan, type EpisodeTree } from '@/lib/api'
 import { useStudioEvent } from '@/lib/events'
 import { ProjectShell } from '@/components/ProjectShell'
 import { ScriptEditor } from '@/components/ScriptEditor'
+import { SceneEditor } from '@/components/SceneEditor'
 import { PageHeader, Shell } from '@/components/Shell'
 import { useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -48,6 +49,7 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
   const [err, setErr] = useState<string | null>(null)
   const [progress, setProgress] = useState<Record<string, ShotProgress>>({})
   const [scriptOpen, setScriptOpen] = useState(false)
+  const [scenesOpen, setScenesOpen] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -235,6 +237,7 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
   }
 
   const totalSec = tree.shots.reduce((a, x) => a + Number(x.shot.durationSec), 0)
+  const noLocation = tree.scenes.filter((sc) => !sc.locationId).length
   const projectId = tree.episode.projectId
 
   return (
@@ -264,6 +267,24 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
           刷新
         </button>
         {/* 剧本是分镜的输入。字数直接摆出来——空的时候要一眼看得见 */}
+        {/*
+          场次是分镜的必需输入（没有就 409），而在这之前它在面板上完全看不见：
+          ShotGrid 的 SCENE 分组头是按镜头分组出来的，零镜头时整个网格被空态换掉。
+          缺地点的场次数摆在按钮上——不挂地点 = 那一场的 prompt 里没有环境描述。
+        */}
+        <button
+          type="button"
+          onClick={() => setScenesOpen(true)}
+          title="分镜按场次切镜头。没有场次，「生成分镜」会直接拒绝"
+          className="tnum rounded-md px-2 py-1 text-[12px]"
+          style={{
+            border: '1px solid var(--border-strong)',
+            color: noLocation > 0 ? 'var(--status-review)' : 'var(--text-secondary)',
+          }}
+        >
+          场次 {tree.scenes.length}
+          {noLocation > 0 ? ` · ${noLocation} 缺地点` : ''}
+        </button>
         <button
           type="button"
           onClick={() => setScriptOpen(true)}
@@ -309,6 +330,16 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
           {busy ? '渲染中…' : `渲染成片 ${lockedCount}/${tree.shots.length}`}
         </button>
       </PageHeader>
+
+      {scenesOpen && (
+        <SceneEditor
+          episodeId={episodeId}
+          projectId={projectId}
+          scenes={tree.scenes}
+          onChanged={() => void load()}
+          onClose={() => setScenesOpen(false)}
+        />
+      )}
 
       {scriptOpen && (
         <ScriptEditor
@@ -434,7 +465,11 @@ function Empty({
         </>
       ) : (
         <>
-          <p>本集还没有镜头。镜头由剧本拆解写入，导入后回到这里刷新。</p>
+          <p>本集还没有镜头。</p>
+          <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            顺序是：顶部「剧本」粘一段 → 顶部「场次」配好场次与地点 → 点「生成分镜」。
+            三样齐了那个按钮才点得动。
+          </p>
           <button
             type="button"
             onClick={onReload}

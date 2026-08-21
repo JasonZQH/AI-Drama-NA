@@ -99,7 +99,14 @@ export interface EpisodeTree {
     /** 端点一直在返回整行，页面要靠它渲染项目侧边栏 */
     projectId: string
   }
-  scenes: { id: string; index: number; summary: string | null; timeOfDay: string | null }[]
+  /** 端点返回的是整行；`locationId` 此前漏在类型里，而它是地点进 prompt 的唯一通路 */
+  scenes: {
+    id: string
+    index: number
+    summary: string | null
+    timeOfDay: string | null
+    locationId: string | null
+  }[]
   shots: { shot: Shot; takeCount: number; costMicroUsd: number; mockCostMicroUsd: number }[]
 }
 
