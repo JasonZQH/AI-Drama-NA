@@ -829,6 +829,37 @@ describe('POST /api/episodes/:id/shotlist', () => {
       expect(rows[1]!.dialogue).toBe('You did.')
       expect(rows[0]!.emotion, '空串该落 NULL 而不是 ""').toBeNull()
       expect(rows[0]!.durationSec).toBe('4.0')
+
+      /*
+       * **落 `ready` 不是 `draft`。**
+       *
+       * `draft` 的唯一出路是 `intent.completed`，而全仓没有任何东西发这个事件
+       * ——落成 draft 的话这些镜头永远动不了，面板上「待生成 0」。
+       *
+       * 第一版就是这样，而这条用例只断言了行数与字段，一路绿到真钱实测才撞上。
+       */
+      expect(
+        rows.map((r) => r.status),
+        '分镜落库的镜头必须能直接生成——draft 的唯一出路 intent.completed 没有任何发出方',
+      ).toEqual(Array.from({ length: 18 }, () => 'ready'))
+    })
+
+    /** 上一条的执行版：真的能被状态机接受，而不只是列里写着 ready */
+    it('落库的镜头真的能进生成——不是只有状态列长得对', async () => {
+      await clearShots()
+      expect((await post(ok(charNames), epId)).statusCode).toBe(201)
+      const [shot] = await db
+        .select({ id: s.shots.id })
+        .from(s.shots)
+        .where(inArray(s.shots.sceneId, sceneIds))
+        .orderBy(s.shots.index)
+        .limit(1)
+      const gen = await app.inject({
+        method: 'POST',
+        url: `/api/shots/${shot!.id}/generate`,
+        headers: WRITE_HEADERS,
+      })
+      expect(gen.statusCode, '状态机拒绝了刚生成的分镜——它们进不了生成').toBe(202)
     })
 
     it('已经有镜头就拒绝——重来会让已计费的产物失效', async () => {

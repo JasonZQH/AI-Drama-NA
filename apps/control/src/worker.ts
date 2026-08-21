@@ -1,5 +1,8 @@
 import { Worker } from 'bullmq'
-import { createDb } from './db/client.js'
+import { TERMINAL_JOB_STATUSES } from '@ai-drama/contracts'
+import { and, eq, notInArray } from 'drizzle-orm'
+import { createDb, type Db } from './db/client.js'
+import * as s from './db/schema.js'
 import { LivePool, subscribeProviderChanges } from './providers/pool.js'
 import { applyShotTransition } from './pipeline/applyTransition.js'
 import { handleIngest } from './queue/ingest.js'
@@ -73,6 +76,9 @@ const workers = [
         {
           db,
           storage,
+          // 取产物可能要鉴权（OpenRouter 的 unsigned_urls 要 Authorization）。
+          // 不传这个池子的话下载一直 401，而钱已经花了
+          providers,
           // 断掉这条回调，镜头会永远停在 generating
           onTakeAccepted: (shotId, takeId) =>
             applyShotTransition({ db, queues, providers, maxAttempts: 4 }, shotId, {
@@ -102,6 +108,18 @@ const workers = [
 for (const w of workers) {
   w.on('failed', (job, err) => {
     console.error(`[${w.name}] job ${job?.id} 失败:`, err.message)
+    /*
+     * **ingest 用尽重试之后要落库。**
+     *
+     * 此前它只往 stdout 写一行：`generation_jobs` 永远停在 `downloading`、
+     * 镜头永远停在 `generating`、面板永远转圈——而**钱已经花了**。
+     * 真钱实测撞到的正是这个：产物 401，面板上什么都看不出来。
+     *
+     * `attemptsMade >= 上限` 才算终结，中途那几次重试不该把行改脏。
+     */
+    if (w.name === QUEUE.ingest && job && job.attemptsMade >= (job.opts.attempts ?? 1)) {
+      void failIngest(db, (job.data as { generationJobId?: string }).generationJobId, err.message)
+    }
   })
 }
 
@@ -119,3 +137,45 @@ async function shutdown(): Promise<void> {
 
 process.on('SIGTERM', () => void shutdown())
 process.on('SIGINT', () => void shutdown())
+
+/**
+ * ingest 彻底失败：把 `generation_jobs` 从 `downloading` 推到 `failed`，
+ * 并把镜头交还给人。
+ *
+ * 用契约里现成的 `download_failed`（注释写着「产物已生成，只是没搬回来」）。
+ * 它**在 `RETRYABLE` 白名单里**，所以镜头回到 `ready` 等人再点，而不是判死。
+ *
+ * ⚠️ 这对「网络抖了一下」是对的，对「鉴权配错了」是错的——后者再点一次会
+ * **再花一次钱**拿到同一个 401。所以 `failureDetail` 必须把原因说全，让人在
+ * 点之前看得见。真要按原因分流，那是给 `download_failed` 再拆一个不可重试的
+ * 兄弟码，不是现在做的事。
+ *
+ * 这里不退款也不删 job：钱确实花了，Ledger 不说谎（约束 C4）。
+ */
+async function failIngest(db: Db, generationJobId: string | undefined, detail: string): Promise<void> {
+  if (!generationJobId) return
+  try {
+    const [row] = await db
+      .update(s.generationJobs)
+      .set({
+        status: 'failed',
+        failureCode: 'download_failed',
+        failureDetail: detail.slice(0, 500),
+      })
+      .where(
+        and(
+          eq(s.generationJobs.id, generationJobId),
+          // 终态守卫：迟到的失败不该改写已经结算的行
+          notInArray(s.generationJobs.status, [...TERMINAL_JOB_STATUSES]),
+        ),
+      )
+      .returning({ shotId: s.generationJobs.shotId })
+    if (!row) return
+    await applyShotTransition({ db, queues, providers, maxAttempts: 4 }, row.shotId, {
+      type: 'attempt.failed',
+      code: 'download_failed',
+    })
+  } catch (e) {
+    console.error('[ingest] 落库失败状态时又失败了:', e)
+  }
+}

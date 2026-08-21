@@ -250,7 +250,11 @@ function Panel({
               时候最需要看：花钱之前。见 06-api-spec.md 的 prompt-preview。
             */}
             <div className="mb-3">
-              <PromptPreview shotId={shotId} />
+              <PromptPreview
+                shotId={shotId}
+                canGenerate={shot?.status === 'ready'}
+                onGenerated={() => setReload((n) => n + 1)}
+              />
             </div>
             {err ? (
               /* R3：失败要说明是什么、以及下一步 */

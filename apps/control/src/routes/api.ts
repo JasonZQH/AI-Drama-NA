@@ -24,6 +24,7 @@ import {
   targetOutOfReach,
 } from '../pipeline/shotlist.js'
 import { resolvePrompt } from '../pipeline/resolvePrompt.js'
+import { routeProvider } from '../providers/route.js'
 import { CAMERA_MOVE_PROSE, SHOT_TYPE_PROSE, TIME_OF_DAY_PROSE } from '../pipeline/prompt.js'
 import { applyShotTransition } from '../pipeline/applyTransition.js'
 import type { ShotEvent } from '../pipeline/shotMachine.js'
@@ -40,7 +41,7 @@ import {
   upsertCredential,
   type ProviderId,
 } from '../credentials/store.js'
-import type { VideoProvider } from '@ai-drama/contracts'
+import type { GenerationRequest, VideoProvider } from '@ai-drama/contracts'
 
 export interface ApiDeps {
   readonly db: Db
@@ -618,7 +619,60 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
     const { shotId } = z.object({ shotId: z.string().uuid() }).parse(req.body ?? {})
     const r = await resolvePrompt(db, shotId)
     if (!r) throw new ApiError('NOT_FOUND', `shot ${shotId} 不存在`)
-    return r
+
+    /*
+     * 顺手把**这一镜要花多少钱**也算出来。
+     *
+     * 「花钱之前先看清将要发出去的是什么」——价钱是那句话的另一半。而且它必须
+     * 用**路由真正会选中的那一家**的价目表，不是 `providers[0]` 的，否则预览的
+     * 数与实际扣费不是一回事（`applyTransition` 那段注释说的是同一件事）。
+     */
+    const [row] = await db
+      .select({
+        durationSec: s.shots.durationSec,
+        safetyProfile: s.shots.safetyProfile,
+        providerHint: s.shots.providerHint,
+      })
+      .from(s.shots)
+      .where(eq(s.shots.id, shotId))
+    const probe: GenerationRequest = {
+      requestId: '00000000-0000-4000-8000-000000000000',
+      shotId,
+      mode: 't2v',
+      prompt: r.prompt,
+      refImages: [],
+      safetyProfile: row!.safetyProfile,
+      priority: 'normal',
+      providerParams: {},
+      durationSec: Number(row!.durationSec),
+      resolution: '720p',
+      aspectRatio: '9:16',
+      fps: 24,
+    }
+    const routed = routeProvider(deps.providers, {
+      providerHint: row!.providerHint,
+      filteredBy: [],
+      probe,
+    })
+    const estimate = routed
+      ? {
+          providerId: routed.provider.id,
+          modelId: routed.provider.modelId,
+          costMicroUsd: routed.provider.estimateCost(probe),
+        }
+      : null
+
+    return {
+      ...r,
+      estimate,
+      /** 可选的 provider 与当前 hint，供抽屉里的选择器用 */
+      providerHint: row!.providerHint,
+      pool: deps.providers.map((x) => ({
+        id: x.id,
+        modelId: x.modelId,
+        costMicroUsd: x.validate(probe).ok ? x.estimateCost(probe) : null,
+      })),
+    }
   })
 
   app.get('/api/episodes/:id', async (req) => {
@@ -793,6 +847,23 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
         return {
           sceneId: sceneRows[si]!.id,
           index: ++n,
+          /*
+           * **落 `ready` 不是 `draft`。**
+           *
+           * `draft` 的语义是「人还在写这一镜的 Intent」，出路只有一条
+           * `intent.completed`（`shotMachine.ts:112`）——而**全仓没有任何东西
+           * 发这个事件**：没有端点、没有按钮、seed 也是直接写 `ready`。
+           *
+           * 第一版这里没给 status，落库取列默认值 `draft`，于是分镜生成出来的
+           * 镜头**永远动不了**：面板上「待生成 0」，镜头抽屉里没有生成入口。
+           * P4 的用例只断言了「库里有 N 行」，没验「这些行能不能生成」，所以
+           * 一路绿到真钱实测才撞上。
+           *
+           * 而这些镜头的 Intent 确实是完整的——四层校验刚过完（strict schema →
+           * zod → 集级 lint → DB check）。人要改的话有 `intent.edited`，不需要
+           * 先退回 draft。
+           */
+          status: 'ready' as const,
           shotType: i.shotType,
           cameraMove: i.cameraMove,
           action: i.action,
@@ -877,6 +948,46 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
     const [row] = await db.delete(s.scenes).where(eq(s.scenes.id, id)).returning({ id: s.scenes.id })
     if (!row) throw new ApiError('NOT_FOUND', `scene ${id} 不存在`)
     return reply.status(204).send()
+  })
+
+  /**
+   * 指定这一镜用哪个 provider（`shots.provider_hint`）。
+   *
+   * ## 为什么必须有这个入口
+   *
+   * 路由的第一优先级就是它（`route.ts:54`），没有 hint 时取 `capable[0]`
+   * ——而 `buildProviderPool` 把 **mock 排在第一**。于是配好了真 key、真模型
+   * 之后，面板上点生成**仍然只会走 mock**，产出一段假视频、一分钱不花，
+   * 而没有任何地方告诉你为什么。
+   *
+   * `provider_hint` 这一列一直存在、路由一直读它，但**全仓零写入方**。
+   *
+   * ## 为什么不是改 `DEFAULT_PROVIDER`
+   *
+   * 那是全局默认。把它设成真 provider 意味着**每一次点生成都在花钱**，包括
+   * 手滑的那次。默认留在 mock、按镜显式指定，是「默认不花钱」那条更安全的
+   * 方向——与 `RETRYABLE` 白名单的立论一致：错的方向便宜得多。
+   *
+   * 传 null 清掉，回到自动路由。
+   */
+  app.patch('/api/shots/:id/provider', async (req) => {
+    const { id } = Uuid.parse(req.params)
+    const { providerHint } = z.object({ providerHint: z.string().nullable() }).parse(req.body ?? {})
+
+    if (providerHint !== null && !deps.providers.some((p) => p.id === providerHint))
+      throw new ApiError(
+        'VALIDATION_FAILED',
+        `provider「${providerHint}」不在当前池里。池里有：${deps.providers.map((p) => p.id).join('、')}`,
+        { pool: deps.providers.map((p) => p.id) },
+      )
+
+    const [row] = await db
+      .update(s.shots)
+      .set({ providerHint })
+      .where(eq(s.shots.id, id))
+      .returning({ id: s.shots.id, providerHint: s.shots.providerHint })
+    if (!row) throw new ApiError('NOT_FOUND', `shot ${id} 不存在`)
+    return { shot: row }
   })
 
   app.post('/api/shots/:id/generate', async (req, reply) => {
