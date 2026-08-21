@@ -13,6 +13,7 @@ const intent = (over: Partial<PromptIntent> = {}): PromptIntent => ({
   cameraMove: null,
   emotion: null,
   timeOfDay: null,
+  lighting: null,
   ...over,
 })
 
@@ -152,6 +153,38 @@ describe('buildPrompt', () => {
       assets({ location: { description: 'city rooftop', interior: false, anchorTokens: [] } }),
     ).prompt
     expect(q).toMatch(/city rooftop, night/)
+  })
+
+  /**
+   * 光照是短剧里区分度最高的一项，而枚举只有四格。
+   *
+   * 「路灯刚亮，招牌还没全开」和 `night` 在画面上完全是两回事——自由文本必须
+   * 压过枚举，否则加这一列没有意义。
+   */
+  it('lighting 自由文本压过 timeOfDay 的固定词', () => {
+    const p = buildPrompt(
+      intent({ timeOfDay: 'night', lighting: 'streetlamps just flickered on, signage still dark' }),
+      assets({ location: { description: 'city alley', interior: false, anchorTokens: [] } }),
+    ).prompt
+    expect(p).toContain('streetlamps just flickered on')
+    expect(p, '枚举那个词不该同时出现').not.toMatch(/city alley, night\./)
+  })
+
+  it('没有 lighting 时回落到枚举', () => {
+    const p = buildPrompt(
+      intent({ timeOfDay: 'dusk', lighting: null }),
+      assets({ location: { description: 'city alley', interior: false, anchorTokens: [] } }),
+    ).prompt
+    expect(p).toContain('city alley, dusk light')
+  })
+
+  it('lighting 是空白串时也回落，不拼出一个空从句', () => {
+    const p = buildPrompt(
+      intent({ timeOfDay: 'night', lighting: '   ' }),
+      assets({ location: { description: 'city alley', interior: false, anchorTokens: [] } }),
+    ).prompt
+    expect(p).toContain('city alley, night')
+    expect(p).not.toMatch(/,\s*,|,\s*\./)
   })
 
   /**

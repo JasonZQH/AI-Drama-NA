@@ -81,6 +81,13 @@ export interface PromptIntent {
   readonly emotion: string | null
   /** 场景级，来自 `scenes.time_of_day` */
   readonly timeOfDay: TimeOfDay | null
+  /**
+   * 场景级自由文本光照（`scenes.lighting`）。**有它就用它，压过 `timeOfDay`。**
+   *
+   * 枚举只有四格、映射成四个固定英文词，而光照恰恰是短剧里区分度最高的一项
+   * （「路灯刚亮」和「深夜」在画面上完全是两回事）。枚举留作粗分桶与统计。
+   */
+  readonly lighting: string | null
 }
 
 export interface PromptAssets {
@@ -169,7 +176,8 @@ export function buildPrompt(intent: PromptIntent, assets: PromptAssets): BuiltPr
     .filter((x) => x.length > 0)
     .join(', ')
 
-  const timeProse = intent.timeOfDay ? TIME_OF_DAY_PROSE[intent.timeOfDay] : null
+  // 自由文本优先：四个枚举词是兜底，不是上限
+  const timeProse = intent.lighting?.trim() || (intent.timeOfDay ? TIME_OF_DAY_PROSE[intent.timeOfDay] : null)
 
   /*
    * 地点：**白描散文，不带标签前缀。**

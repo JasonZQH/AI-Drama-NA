@@ -31,6 +31,8 @@ interface Scene {
   index: number
   summary: string | null
   timeOfDay: string | null
+  /** 自由文本光照。有它就压过 timeOfDay 的固定词，见 pipeline/prompt.ts */
+  lighting: string | null
   locationId: string | null
 }
 
@@ -239,6 +241,18 @@ export function SceneEditor({
                   </span>
                 )}
               </div>
+
+              {/*
+                **光照：自由文本压过上面那个枚举。**
+                四个枚举格（day/night/dawn/dusk）映射成四个固定英文词，而光照
+                恰恰是短剧里区分度最高的一项——「路灯刚亮，招牌还没全开」与
+                「深夜」在画面上完全是两回事。枚举留作粗分桶。
+              */}
+              <SummaryInput
+                value={sc.lighting ?? ''}
+                onSave={(v) => void patch(sc.id, { lighting: v })}
+                placeholder={`光照（可留空，留空就用上面那个「${TIMES.find((t) => t.v === (sc.timeOfDay ?? ''))?.label ?? '未定'}」）`}
+              />
             </div>
           ))}
         </div>
@@ -257,7 +271,15 @@ export function SceneEditor({
  * 现在：受控 + 脏标记 + Enter 也存。不做「关闭时拦截」——那是剧本抽屉的量级
  * （一整集的正文），一行摘要值不上一个确认框。
  */
-function SummaryInput({ value, onSave }: { value: string; onSave: (v: string) => void }): React.ReactElement {
+function SummaryInput({
+  value,
+  onSave,
+  placeholder = '这一场发生了什么（进分镜提示词的 SCENES 列表）',
+}: {
+  value: string
+  onSave: (v: string) => void
+  placeholder?: string
+}): React.ReactElement {
   const [v, setV] = useState(value)
   // 外部刷新（新建场次、别处改了）要能盖回来
   useEffect(() => setV(value), [value])
@@ -273,7 +295,7 @@ function SummaryInput({ value, onSave }: { value: string; onSave: (v: string) =>
           if (e.key === 'Enter' && dirty) onSave(v)
           if (e.key === 'Escape') setV(value)
         }}
-        placeholder="这一场发生了什么（进分镜提示词的 SCENES 列表）"
+        placeholder={placeholder}
         className="w-full rounded-md px-2 py-1 pr-14 text-[13px] outline-none"
         style={{
           background: 'var(--bg-surface)',
