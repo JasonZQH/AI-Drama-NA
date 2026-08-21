@@ -188,6 +188,39 @@ describe('buildPrompt', () => {
   })
 
   /**
+   * 去重那一行做的是 `new RegExp(`\\b${timeProse}\\b`)`。枚举时代 `timeProse`
+   * 是四个常量之一，怎么拼都安全；自由文本一进来它就是**用户输入进正则构造器**：
+   *
+   * - `lamp (cold` → `SyntaxError`，`prompt-preview` 与入队路径一起 500
+   * - `dawn. hard shadows` → `.` 当通配，静默匹上地点描述，**整句光照被吞掉**
+   *
+   * 后者更贵：不报错、不留痕，只是那一镜的光没了。
+   */
+  it('光照里的正则元字符既不该炸也不该被静默吃掉', () => {
+    const p = buildPrompt(
+      intent({ timeOfDay: null, lighting: 'a single lamp (cold' }),
+      assets({ location: { description: 'city alley', interior: false, anchorTokens: [] } }),
+    ).prompt
+    expect(p).toContain('a single lamp (cold')
+
+    // `.` 当通配符时会匹上 `dawnx hard shadows`，于是这一句光照整个不见
+    const q = buildPrompt(
+      intent({ timeOfDay: null, lighting: 'dawn. hard shadows' }),
+      assets({
+        location: { description: 'rooftop at dawnx hard shadows', interior: false, anchorTokens: [] },
+      }),
+    ).prompt
+    expect(q, '`.` 不该当通配符把整句光照吃掉').toContain('dawn. hard shadows')
+
+    // 转义而不是「自由文本一律不查」：去重本身要留着
+    const r = buildPrompt(
+      intent({ timeOfDay: null, lighting: 'night' }),
+      assets({ location: { description: 'city rooftop at night', interior: false, anchorTokens: [] } }),
+    ).prompt
+    expect(r.match(/night/g), '光照与地点写了同一个词，不该拼两遍').toHaveLength(1)
+  })
+
+  /**
    * dialogue 不进 prompt：它驱动 TTS（schema 注释就是这么写的），而把带引号的
    * 台词塞进视频 prompt 会诱导模型把字 render 进画面——style_profiles 的负向词
    * 里「text overlay」正是在防这个。`PromptIntent` 里因此根本没有这个字段，
