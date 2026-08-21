@@ -21,12 +21,22 @@ const TIMEOUT_MS = 15_000
 export interface ProbeOk {
   readonly ok: true
   readonly label: string | null
-  /** 信用额度上限，null = 不限 */
+  /** **这把 key 自己的**限额，null = 不限。注意它不是账户余额 */
   readonly limitUsd: number | null
   readonly remainingUsd: number | null
   readonly usedUsd: number
   readonly usedTodayUsd: number
   readonly isFreeTier: boolean
+  /**
+   * **账户余额**，来自另一个端点 `GET /api/v1/credits`。
+   *
+   * 这一对是这次探测里最要紧的东西，而 `/key` **看不到它**：一把没充过钱的
+   * key 在 `/key` 上是完全健康的（`limit: null` = 没有单独限额），于是面板会
+   * 显示「✓ 有效 · 剩余 不限」，然后第一次真实生成 402。
+   *
+   * null = 这个端点没取到（不影响 key 本身的有效性判定）。
+   */
+  readonly account: { totalCredits: number; totalUsage: number; remaining: number } | null
 }
 
 export interface ProbeBad {
@@ -85,6 +95,34 @@ export async function probeOpenRouter(apiKey: string, baseUrl = BASE_URL): Promi
     usedUsd: d.usage ?? 0,
     usedTodayUsd: d.usage_daily ?? 0,
     isFreeTier: d.is_free_tier ?? false,
+    // 余额单独一个端点。取不到不影响「这把 key 有效」的判定
+    account: await accountCredits(apiKey, baseUrl),
+  }
+}
+
+/**
+ * 账户余额。**与 key 的有效性是两件事**，所以失败只返回 null 不改变探测结论。
+ *
+ * 响应形状（2026-08-21 对着线上实测）：`{"data":{"total_credits":10,"total_usage":0}}`
+ */
+async function accountCredits(apiKey: string, baseUrl: string): Promise<ProbeOk['account']> {
+  try {
+    const res = await fetch(`${baseUrl}/credits`, {
+      headers: { authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (!res.ok) return null
+    const d = (JSON.parse(await res.text()) as { data?: { total_credits?: number; total_usage?: number } })
+      .data
+    if (!d || typeof d.total_credits !== 'number') return null
+    const totalUsage = d.total_usage ?? 0
+    return {
+      totalCredits: d.total_credits,
+      totalUsage,
+      remaining: d.total_credits - totalUsage,
+    }
+  } catch {
+    return null
   }
 }
 
