@@ -187,4 +187,18 @@ export interface VideoProvider {
 
   /** 供路由器摘除故障 provider */
   health(): Promise<ProviderHealth>
+
+  /**
+   * 取产物时要带的额外请求头。
+   *
+   * **存在的理由是一次真钱事故。** OpenRouter 的产物字段叫 `unsigned_urls`
+   * ——名字暗示不需要鉴权，而适配器的注释里早就写着「若它确实需要鉴权，
+   * `queue/ingest.ts` 的裸 fetch 会 401」。第一次真实生成验证了后者：
+   * **$0.3667 花掉了，视频拿不回来**（`下载失败 HTTP 401`）。
+   *
+   * 为什么是「给头」而不是「你去下载」：`ingest.ts` 那套停滞闸、总时长闸、
+   * 流中途体积上限是所有 provider 共用的，让每家自己下载等于每家重写一遍。
+   * 密钥仍然只留在适配器里——不进 job 数据、不进数据库。
+   */
+  artifactHeaders?(url: string): Record<string, string>
 }

@@ -37,11 +37,15 @@ import {
  *    而 submit 抛出时走不可重试的 `submit_unknown`（PR-B）。
  * 3. **`supported_durations` 是离散整数列表。** 见 `openrouterModels.ts`。
  *
- * ## 一个未验证项
+ * ## 那个「未验证项」已经被真钱验证了（2026-08-21）
  *
- * 产物字段叫 `unsigned_urls`，而文档给的下载示例带着 `Authorization`。若它确实
- * 需要鉴权，`queue/ingest.ts` 的裸 `fetch` 会 401。第一次拿到 key 时先跑
- * `scripts/probe-openrouter.mjs` 验这一条——**在验之前不要跑整集**。
+ * 产物字段叫 `unsigned_urls`，名字暗示不需要鉴权。**它需要。**
+ * `GET /videos/:id/content` 裸 fetch 回 401——第一次真实生成时
+ * **$0.3667 花掉了、视频拿不回来**，`queue/ingest.ts` 反复重试反复 401。
+ *
+ * 现在由 `artifactHeaders()` 补上 `Authorization`。留这段话是因为它值一次
+ * 教训：**字段名不是契约**，而「先跑一镜再跑整集」这条纪律恰好在这里省下了
+ * 一整集的钱。
  */
 
 const BASE_URL = 'https://openrouter.ai/api/v1'
@@ -264,6 +268,20 @@ export class OpenRouterProvider implements VideoProvider {
    */
   cancel(): Promise<void> {
     return Promise.resolve()
+  }
+
+  /**
+   * 产物要带 `Authorization`。
+   *
+   * 字段名 `unsigned_urls` 是个陷阱——它暗示 URL 自带签名、拿去裸 fetch 即可。
+   * 实测不是：`GET /videos/:id/content` 回 **401**。这一条本文件顶部的「一个
+   * 未验证项」写了很久，直到第一次真实生成才验证：**$0.3667 花掉了，视频
+   * 拿不回来。**
+   *
+   * 只给自家域名加头，别的一律不加——把 key 发给别人的服务器是另一类事故。
+   */
+  artifactHeaders(url: string): Record<string, string> {
+    return url.startsWith(this.baseUrl) ? { authorization: `Bearer ${this.apiKey}` } : {}
   }
 
   /** 用公开的模型列表探活：不需要 key、不产生任何计费 */

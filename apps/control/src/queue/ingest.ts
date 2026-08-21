@@ -1,4 +1,5 @@
 import { TERMINAL_JOB_STATUSES } from '@ai-drama/contracts'
+import type { VideoProvider } from '@ai-drama/contracts'
 import { and, eq, notInArray } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
@@ -57,6 +58,13 @@ export interface IngestDeps {
    * 生成完成了、成本记了、take 也建了，但没人告诉镜头「有候选了」。
    */
   readonly onTakeAccepted?: (shotId: string, takeId: string) => Promise<unknown>
+  /**
+   * 取产物时问它要鉴权头（`VideoProvider.artifactHeaders`）。
+   *
+   * OpenRouter 的 `unsigned_urls` 名字骗人——它要 `Authorization`，裸 fetch
+   * 回 401。不传这个池子的话下载会一直失败，而**钱已经花了**。
+   */
+  readonly providers?: readonly VideoProvider[]
   /** 不传用上面的常量。测试要在不下载 512MB、不等半小时的前提下验守卫时传它 */
   readonly limits?: {
     readonly maxBytes?: number
@@ -67,6 +75,8 @@ export interface IngestDeps {
 
 export interface IngestInput {
   readonly generationJobId: string
+  /** 哪家产的。用来问 `artifactHeaders`——见 IngestDeps.providers */
+  readonly providerId?: string
   readonly shotId: string
   readonly projectId: string
   /** provider 侧可下载 URL，或本地 fixture 路径（mock） */
@@ -87,7 +97,14 @@ export async function handleIngest(deps: IngestDeps, input: IngestInput): Promis
   const key = input.storageKey ?? s3Key.take(input.projectId, input.shotId, input.generationJobId)
 
   // 自部署 worker 直写存储（provider 只回 storageKey），字节本来就不搬运
-  const local = input.storageKey ? null : await materialize(input.sourceUrl, deps)
+  /*
+   * 产物可能要鉴权。密钥只留在适配器里——这里只问它「取这个 URL 要带什么头」。
+   * 池里没有这家（或它不需要头）就是空对象，行为与此前一致。
+   */
+  const provider = input.providerId ? deps.providers?.find((p) => p.id === input.providerId) : undefined
+  const headers = provider?.artifactHeaders?.(input.sourceUrl) ?? {}
+
+  const local = input.storageKey ? null : await materialize(input.sourceUrl, deps, headers)
   try {
     return await ingestLocal(deps, input, key, local?.path)
   } finally {
@@ -227,7 +244,11 @@ const NO_CLEANUP = (): Promise<void> => Promise.resolve()
  * 那就是下两遍、留两个临时文件，而且 `finally` 要同时管住两个。所以先物化，
  * 再把路径传给下游。
  */
-async function materialize(sourceUrl: string, deps: IngestDeps): Promise<LocalCopy> {
+async function materialize(
+  sourceUrl: string,
+  deps: IngestDeps,
+  headers: Record<string, string> = {},
+): Promise<LocalCopy> {
   if (!sourceUrl.startsWith('http://') && !sourceUrl.startsWith('https://')) {
     return { path: sourceUrl.replace(/^file:\/\//, ''), cleanup: NO_CLEANUP }
   }
@@ -262,9 +283,17 @@ async function materialize(sourceUrl: string, deps: IngestDeps): Promise<LocalCo
   try {
     bump() // 连接与响应头阶段也受停滞闸管
     const res = await fetch(sourceUrl, {
+      headers,
       signal: AbortSignal.any([AbortSignal.timeout(totalMs), stalled.signal]),
     })
-    if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}：${sourceUrl}`)
+    if (!res.ok)
+      throw new Error(
+        `下载失败 HTTP ${res.status}：${sourceUrl}` +
+          // 401 几乎总是「provider 的产物要鉴权，而池里没有它」，说清楚省一轮排查
+          (res.status === 401 || res.status === 403
+            ? `（产物需要鉴权。检查 handleIngest 的 deps.providers 里有没有这条 job 的 provider，以及它有没有实现 artifactHeaders）`
+            : ''),
+      )
     if (!res.body) throw new Error(`下载响应没有 body：${sourceUrl}`)
 
     /*

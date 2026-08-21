@@ -364,6 +364,8 @@ export async function handlePoll(
     shotId: current.shotId,
     projectId,
     sourceUrl: res.outputUrl,
+    // ingest 要靠它问 artifactHeaders——OpenRouter 的产物 URL 要鉴权
+    providerId: data.providerId,
     ...(res.storageKey ? { storageKey: res.storageKey } : {}),
   })
   return 'succeeded'

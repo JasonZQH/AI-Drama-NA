@@ -55,6 +55,11 @@ export interface IngestJobData {
   readonly projectId: string
   readonly sourceUrl: string
   readonly storageKey?: string
+  /**
+   * 哪家产的。ingest 要靠它问 `artifactHeaders` ——OpenRouter 的产物 URL 叫
+   * `unsigned_urls` 却要 `Authorization`，裸 fetch 回 401（真钱验证过）。
+   */
+  readonly providerId?: string
 }
 
 export interface NotifyJobData {
