@@ -2139,6 +2139,19 @@ describe('提示词检视', () => {
   })
 
   /** **这条是这一组的核心。** 预览必须与真实入队时构建的那份逐字相同 */
+  /**
+   * 闸门与出口必须成对存在。`redo.requested` 从第一版就在状态机里，但一直零
+   * 发射方——报错让人「去重做」而重做不存在，正是面板上那类「说了等于没说」。
+   */
+  it('POST /api/shots/:id/redo 把锁定的镜头放回 ready', async () => {
+    await db.update(s.shots).set({ status: 'locked' }).where(eq(s.shots.id, shotId))
+    const r = await app.inject({ method: 'POST', url: `/api/shots/${shotId}/redo`, headers: WRITE_HEADERS })
+    expect(r.statusCode).toBe(200)
+    const [row] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
+    expect(row!.status).toBe('ready')
+    expect(row!.selectedTakeId, '选中要跟着清掉，否则闸门会把这一镜永久卡死').toBeNull()
+  })
+
   it('预览与真实生成逐字一致', async () => {
     const preview = await app.inject({
       method: 'POST',
@@ -2151,7 +2164,14 @@ describe('提示词检视', () => {
     expect(p.overridden).toBe(false)
     expect(p.prompt.length).toBeGreaterThan(20)
 
-    // 真跑一次生成，比对落库的 prompt_text
+    /*
+     * 真跑一次生成，比对落库的 prompt_text。
+     *
+     * **先把残留的 take 归档**：前面的用例可能给这一镜留下一条 `selected`，
+     * 而「有选定成片就不再花钱」那道闸（applyTransition.ts）会拦下来。
+     * 直接 UPDATE 成 ready 却不动 take，正是烧掉 $4.03 的那个真实状态。
+     */
+    await db.update(s.takes).set({ status: 'archived' }).where(eq(s.takes.shotId, shotId))
     await db.update(s.shots).set({ status: 'ready', selectedTakeId: null }).where(eq(s.shots.id, shotId))
     const gen = await app.inject({
       method: 'POST',

@@ -1046,6 +1046,20 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
    * 这条路由是 `submit_unknown` 能存在的前提：提交结果未知时系统故意停下来
    * 不自动重投（绝不自动付第二次钱），代价是必须给人一个一键继续的出口。
    */
+  /**
+   * 重做已锁定的镜头：清掉选中、把 take 归档、回到 `ready`。
+   *
+   * `redo.requested` 在状态机里从第一版就在（`locked` 的两个入口之一），
+   * 但**全仓零发射方**——于是「这一镜我不满意，重来」在产品上不存在，
+   * 而「有选定成片就不再花钱」那道闸给出的唯一出路正是它。
+   * 闸门与出口必须同时存在，否则报错就是在教人做一件做不到的事。
+   */
+  app.post('/api/shots/:id/redo', async (req) => {
+    const { id } = Uuid.parse(req.params)
+    const r = await applyTransition(deps, id, { type: 'redo.requested' })
+    return { shotId: id, status: r.next }
+  })
+
   app.post('/api/shots/:id/reset', async (req) => {
     const { id } = Uuid.parse(req.params)
     const r = await applyTransition(deps, id, { type: 'manual.reset' })
