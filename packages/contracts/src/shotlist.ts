@@ -31,8 +31,19 @@ const draftShot = (names: readonly string[]) =>
     shotType: ShotType,
     cameraMove: CameraMove,
     action: z.string().min(4).describe('这一镜画面里发生什么，只写镜头看得见的东西'),
-    /** `''` = 无 */
-    emotion: z.string(),
+    /**
+     * **这一列至今零 description，而 `WIRE_KEYS` 只放行 description**——等于它对
+     * 模型完全没有包络。真实那一集 8 个非空 emotion **8 个全是抽象内心名词**
+     * （anticipation / solitude / decisiveness / defiance），而 `prompt.ts` 会把它
+     * 逗号接在 action 后面，拼出 `…, anticipation.` 这种拍不出来的悬空片段。
+     *
+     * `''` = 无。
+     */
+    emotion: z
+      .string()
+      .describe(
+        '可见的表情或体态，不是内心感受。写「下巴收紧」「肩膀垮下来」，不写「焦虑」「决心」。无关时留空串',
+      ),
     /** `''` = 无 */
     dialogue: z.string(),
     /**

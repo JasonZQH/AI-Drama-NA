@@ -62,13 +62,27 @@ export interface ShotlistInput {
   readonly scriptMd: string
   /** `projects.synopsis`——episodes 没有这列 */
   readonly synopsis: string | null
+  /**
+   * `episodes.logline` / `hook` / `cliffhanger` 拼成的两三行。
+   *
+   * 这三列 S1 就写好落库了，而分镜调用**一个都没传**——于是模型拿到的是一份
+   * 没有戏剧目标的剧本。这就是「针对这个剧本的概述」，零新调用零新表列。
+   */
+  readonly episodeBrief: string | null
   readonly targetDurationSec: number
   /** 顺序即场次号。模型必须一一对应，不能增删合并 */
   readonly scenes: readonly {
     readonly summary: string | null
     readonly timeOfDay: TimeOfDay | null
+    /** `scenes.lighting`。自由文本优先、没有才回落枚举——与 `prompt.ts` 同一口径 */
+    readonly lighting: string | null
   }[]
-  readonly characters: readonly { readonly name: string; readonly description: string }[]
+  readonly characters: readonly {
+    readonly name: string
+    readonly description: string
+    /** `characters.anchor_tokens`。发它是为了让模型知道哪些外观是自动拼的、别复述 */
+    readonly anchorTokens: readonly string[]
+  }[]
 }
 
 export interface ShotlistOptions {
@@ -147,24 +161,126 @@ export function systemPrompt(input: ShotlistInput): string {
     '  content and frequently render the negated thing anyway. Write the positive form instead',
     '  ("hands open at her sides").',
     '- `dialogue` is the spoken line only, no speaker label. Empty string when the shot is silent.',
-    '- `emotion` is empty string when not relevant.',
+    '- `emotion` is a visible face or body state, not an inner feeling. Empty string when not relevant.',
+    '- Do not restate anything already listed in <cast>. Build, hair, clothing and standing',
+    '  props are attached to every shot automatically; typing them again puts the same coat in',
+    '  the prompt twice. `action` is for what changes from shot to shot.',
+    '- When a shot has dialogue, do not write "she speaks" or "he says" in `action`. The line is',
+    '  already in `dialogue`. Write what the body does while it is delivered.',
+    '- Vary the sentence shape. Not every shot is a named person performing a verb — some shots',
+    '  are a prop, a doorway, a reflection, or a hand. Some are four words long.',
+    ...EXAMPLE,
   ].join('\n')
 }
 
-function userPrompt(input: ShotlistInput): string {
+/**
+ * **一条案例，四镜连续，自撰。**
+ *
+ * ## 为什么只有一条
+ *
+ * 跑的是 `google/gemini-3.7-flash`，而 Gemini 3 的型号专属页原话是「Be concise in
+ * your input prompts… It may over-analyze verbose or overly complex prompt engineering
+ * techniques used for older models.」——型号页压过通用策略页。「3–5 条」那个常见口径
+ * 出自 Anthropic 给 Claude 的指南，跨厂商不算数。先一条把变量控住。
+ *
+ * ## 为什么是自撰的
+ *
+ * 四十多份公开语料里没有一份同时满足「与这七个字段同形 / 2–8 秒单镜粒度 / 许可证
+ * 干净 / 本身不是 LLM 写的」。最接近的那份 dataset card 自己写着是 Gemini 2.5 生成的
+ * caption——拿它教 Gemini 等于把模型的自我描述风格回喂回去。所以文字是自撰，**写法**
+ * 逐条来自核实过的真实拍摄稿：状态变化在发生那一镜用及物动词写一次、之后不重述；
+ * 光只在有变化时写且点名光源（`chandeliers` / `late-afternoon sun`，不是 `moody`）。
+ *
+ * ## 每一镜都在还一笔债
+ *
+ * 1. 第 1 镜没有人（`characterNames: []` 合法）、光点名光源——直接对症「场景光照太单一」
+ * 2. 第 2 镜 `emotion` 是可见体态而不是 `exhaustion`——它会被逗号接在 action 后面，要读得通
+ * 3. 第 3 镜给「项链被摘下」这个状态变化**单独一镜**
+ * 4. 第 4 镜用 `collar open at her bare throat` **正向**承接上一镜，不写「不再戴着项链」
+ *    ——`13-character-assets.md` 记的最贵一条教训就是这个
+ * 5. 景别 establishing → ms → ecu → ots，时长 3/4/2/5：变化是**演示**出来的，不加一句文案
+ *
+ * ## 占位符不是省事，是唯一的防照抄
+ *
+ * 案例里的人名泄进 `action` **没有任何一层拦得住**（`characterNames` 有 enum 挡着，
+ * action 没有）。所以案例里根本不放专有名词：`<A>` / `<B>` 一眼就能被 lint 的 E7
+ * 抓出来，而 `Odile` 这种像真名的东西泄漏了也看不出来。
+ */
+const EXAMPLE = [
+  '',
+  '<example>',
+  'One scene from a different episode, to show the writing and the rhythm. `<A>` and `<B>` are',
+  'placeholders — this episode has its own people in <cast>. Never copy a name, a place, or a',
+  'prop out of this example, and never emit `<A>` or `<B>` yourself.',
+  '',
+  'SCRIPT',
+  'INT. STAIRWELL - NIGHT',
+  '<A> stops one flight up. She works the clasp open, drops the pendant into her coat pocket,',
+  'and climbs the last flight. <B> is waiting on the landing.',
+  '<B>: You came.',
+  '',
+  'SHOTS FOR THAT SCENE',
+  '[',
+  '  {"shotType":"establishing","cameraMove":"static","action":"a bare bulb burns over four flights of iron stair rail","emotion":"","dialogue":"","durationSec":3,"characterNames":[]},',
+  '  {"shotType":"ms","cameraMove":"handheld","action":"<A> halts mid-flight, one hand flat on the rail","emotion":"shoulders dropping, breathing hard","dialogue":"","durationSec":4,"characterNames":["<A>"]},',
+  '  {"shotType":"ecu","cameraMove":"static","action":"her thumb works the clasp open and the pendant drops into her coat pocket","emotion":"","dialogue":"","durationSec":2,"characterNames":["<A>"]},',
+  '  {"shotType":"ots","cameraMove":"dolly","action":"over <B> as <A> climbs the last three steps, collar open at her bare throat","emotion":"chin lifted","dialogue":"You came.","durationSec":5,"characterNames":["<A>","<B>"]}',
+  ']',
+  '</example>',
+] as const
+
+/**
+ * **裸大写标签换成 XML，顺序换成「资料在前、指令在后」。**
+ *
+ * 换标签不是审美：剧本自带 `## SCENE 1` 这类 markdown 标题，视觉层级压过裸大写的
+ * `SCRIPT`，模型无从判断那一行是资料还是新分节。markdown 这条路已经被剧本自己占了。
+ *
+ * `<scenes>` 挪到剧本**之后**，因为它不是参考资料而是**输出要逐条勾掉的清单**
+ * （E1 判的就是它的条数），末尾是高注意力位。收尾那段指令同理。
+ *
+ * ## CAST 行的冒号换成破折号
+ *
+ * `- Lena: woman, 25…` 与剧本里的台词行 `LIN XIA: 你怎么在这。` **同形**。
+ * `prompt.ts` 已经为下游同一个理由裁决过一次（冒号后接内容正是 Veo 的台词语法）。
+ * 一个字符的 diff，消掉一整类「把角色描述当台词写进 dialogue」。
+ *
+ * ## 三样东西早就落库了，只是从没发出去
+ *
+ * `episodeBrief`（logline/hook/cliffhanger）、`scenes.lighting`、`characters.anchorTokens`
+ * ——全部在 S1/S2 就写好落库，`api.ts` 一个都没传。用户问的「针对这个剧本的特殊情节
+ * 人物场景的概述」答案就在这儿：**不用人手写，也不用第二次 LLM 调用。**
+ */
+export function userPrompt(input: ShotlistInput): string {
   const scenes = input.scenes
-    .map((s, i) => `${i + 1}. ${s.summary ?? '(no summary)'}${s.timeOfDay ? ` [${s.timeOfDay}]` : ''}`)
+    .map((s, i) => {
+      // 与 prompt.ts 同一口径：自由文本优先，四格枚举是兜底
+      const light = s.lighting?.trim() || (s.timeOfDay ?? '')
+      return `${i + 1}. ${s.summary ?? '(no summary)'}${light ? ` · ${light}` : ''}`
+    })
     .join('\n')
-  const cast = input.characters.map((c) => `- ${c.name}: ${c.description}`).join('\n')
+  const cast = input.characters
+    .map((c) => {
+      const anchors = c.anchorTokens.length > 0 ? ` [always on screen: ${c.anchorTokens.join(', ')}]` : ''
+      return `- ${c.name} — ${c.description}${anchors}`
+    })
+    .join('\n')
   return [
-    input.synopsis ? `SERIES SYNOPSIS\n${input.synopsis}\n` : '',
-    `CAST (use these names verbatim in characterNames)\n${cast || '(none)'}\n`,
-    `SCENES (${input.scenes.length}, in order)\n${scenes}\n`,
-    `TARGET DURATION\n${input.targetDurationSec} seconds\n`,
-    `SCRIPT\n${input.scriptMd}`,
+    input.synopsis ? `<series>\n${input.synopsis}\n</series>` : '',
+    input.episodeBrief ? `<episode>\n${input.episodeBrief}\n</episode>` : '',
+    `<script>\n${input.scriptMd}\n</script>`,
+    `<cast use-these-names-verbatim>\n${cast || '(none)'}\n</cast>`,
+    `<scenes count="${input.scenes.length}">\n${scenes}\n</scenes>`,
+    [
+      'Based on the script above, break it into shots.',
+      `- Return ${input.scenes.length} scene objects, in the order of <scenes>. The Nth object covers the Nth entry; if the script's own scene headings disagree in count, follow <scenes>.`,
+      '- Cover the whole script, from its first line to its last.',
+      `- Shot durations must sum to about ${input.targetDurationSec} seconds.`,
+      '- The text after each · in <scenes> is the lighting for that whole scene. It is attached to every shot automatically — use it to decide what is visible, do not retype it in `action`.',
+      '- Everything in <cast>, including the bracketed items, is attached to every shot automatically. `action` is for what changes from shot to shot.',
+    ].join('\n'),
   ]
     .filter(Boolean)
-    .join('\n')
+    .join('\n\n')
 }
 
 /**

@@ -164,6 +164,25 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
     two.scenes[0]!.shots[0] = shot({ characterNames: ['Lena', 'Marcus'] })
     expect(lintShotlist(two, ctx).errors.join()).not.toMatch(/同框/)
   })
+
+  /**
+   * E7 · 照抄 system prompt 里那条案例的占位符。
+   *
+   * `characterNames` 有 enum + 受限解码双重挡着，`<A>` 进不去；**这三个文本字段
+   * 一层都没有**——而它们会一路进库、进 t2v prompt，烧掉 $2–11 的视频钱。
+   * 所以是 error 不是 warning：那一轮免费的修复正好用来换掉它。
+   */
+  it('E7 抄了案例里的占位符，三个文本字段各自都要抓得到', () => {
+    for (const field of ['action', 'emotion', 'dialogue'] as const) {
+      const d = draft(18)
+      d.scenes[2]!.shots[3] = shot({ [field]: '<A> waits' })
+      expect(lintShotlist(d, ctx).errors.join(), `${field} 里的占位符没被抓到`).toMatch(
+        /第 3 场第 4 镜（全集第 16 镜） 抄了案例里的占位符/,
+      )
+    }
+    // 干净的稿子不该被误伤
+    expect(lintShotlist(draft(18), ctx).errors.join()).not.toMatch(/占位符/)
+  })
 })
 
 describe('lintShotlist · warnings（只标黄，不重试）', () => {
