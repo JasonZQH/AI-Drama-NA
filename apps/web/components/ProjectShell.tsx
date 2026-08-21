@@ -51,9 +51,17 @@ export function ProjectShell({
       nav={
         <>
           <SideGroup title={project ? project.title : '项目'}>
+            {/*
+              这一条指向项目页，而项目页列的是分集。叫「剧本」是把它读成「这部剧
+              本身」——与下面那个逐集的「分集」分组不再重名（此前两处都叫分集，
+              一个是链接一个是分组标题）。
+
+              注意它与分集页那个「剧本 N 字」抽屉同名，那边指的是
+              `episodes.script_md`（单集正文）。层级不同：剧本 → 分集 → 剧本正文。
+            */}
             <SideLink
               href={`/projects/${projectId}`}
-              label="分集"
+              label="剧本"
               glyph="▦"
               count={episodes.length}
               active={active === 'episodes'}
