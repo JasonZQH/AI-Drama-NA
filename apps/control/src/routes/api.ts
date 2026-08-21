@@ -436,6 +436,18 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
          */
         providers: deps.providers.map((x) => x.id),
         credentialSecretConfigured: Boolean(process.env['CREDENTIAL_SECRET']?.trim()),
+        /**
+         * 有 key 也不一定进得了池：`OpenRouterProvider.poolFromEnv` 要求
+         * `OPENROUTER_VIDEO_MODELS` 里**列出具体模型**，空的就直接返回 `[]`。
+         *
+         * 不把这一位报出去的话，面板只能看到「有密钥但池里没有 openrouter」，
+         * 于是给出「重启控制面与 worker」——而重启一百次也不会有。这是 PR-E
+         * 那条警告的真实误诊，实测撞到了。
+         */
+        videoModels: (process.env['OPENROUTER_VIDEO_MODELS'] ?? '')
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean),
       },
     }
   })

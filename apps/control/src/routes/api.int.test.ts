@@ -7,6 +7,7 @@ import { DEMO_TITLE } from '../db/seed.js'
 import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
 import { createConnection, createQueues } from '../queue/queues.js'
+import { assertNoWorker } from '../queue/assertNoWorker.js'
 import { MediaWorkerUnavailable, renderEpisode } from '../pipeline/render.js'
 import { buildServer, type ServerDeps } from '../server.js'
 import { Storage, storageFromEnv } from '../storage/s3.js'
@@ -56,6 +57,9 @@ const TEST_ATTEMPT_BASE = 800
 const TEST_ATTEMPT_MAX = 900
 
 beforeAll(async () => {
+  // 有 worker 在跑的话，测试入队的任务会被立刻消费掉——先说清楚，别让人对着
+  // 「expected false to be true」猜半天
+  await assertNoWorker(queues)
   process.env['LOG_LEVEL'] = 'silent' // 测试输出要能一眼看出结论，不被请求日志淹没
   app = buildServer({
     db,
@@ -113,6 +117,30 @@ beforeAll(async () => {
 
   await cleanup()
 })
+
+/**
+ * 凭据表的备份与还原。
+ *
+ * **集成测试跑在开发库上**，而密钥那两组用例要清空 `provider_credentials`
+ * 才能测「没配 key 时」的路径。第一版直接 `delete`——于是**跑一次
+ * `pnpm test:int` 就会把人在面板里存的真 key 删掉**。
+ *
+ * 实测撞到了：Jason 在面板里存了 key，一次集成测试之后就没了。
+ *
+ * 现在：进这组用例前整表捞出来，退出时原样塞回去。
+ */
+let credentialBackup: (typeof s.providerCredentials.$inferSelect)[] = []
+
+async function stashCredentials(): Promise<void> {
+  credentialBackup = await db.select().from(s.providerCredentials)
+  await db.delete(s.providerCredentials)
+}
+
+async function restoreCredentials(): Promise<void> {
+  await db.delete(s.providerCredentials)
+  if (credentialBackup.length > 0) await db.insert(s.providerCredentials).values(credentialBackup)
+  credentialBackup = []
+}
 
 async function cleanup(): Promise<void> {
   const stale = await db
@@ -828,6 +856,18 @@ describe('POST /api/episodes/:id/shotlist', () => {
      */
     it('没配 OPENROUTER_API_KEY → 503 + 可行动的报错，不是 500 fetch failed', async () => {
       await clearShots()
+      /*
+       * **必须先把库里的凭据收起来。**
+       *
+       * 密钥搬进库之后（PR-D），「没配 key」不再等于「env 里没有」——人在面板
+       * 里存过一把的话，`resolveKey` 会取到它、真去打 OpenRouter、被出网拦截
+       * 判成 500。这条用例第一次跑在有真 key 的开发库上就是这么红的。
+       *
+       * 与「按 DEMO_TITLE 挑夹具项目」是同一类：集成测试不该依赖开发库里
+       * 恰好有什么。收起来的那把在 finally 里原样还回去——**跑测试不能弄丢
+       * 人在面板里存的 key**。
+       */
+      await stashCredentials()
       const bare = buildServer({
         db,
         queues,
@@ -839,11 +879,16 @@ describe('POST /api/episodes/:id/shotlist', () => {
         makeSubscriber: () => createConnection(REDIS_URL),
         apiKey: TEST_API_KEY,
       })
-      const res = await post(bare, epId)
-      expect(res.statusCode).toBe(503)
-      const body = res.json() as { error: { code: string; message: string } }
-      expect(body.error.code).toBe('DEPENDENCY_UNAVAILABLE')
-      expect(body.error.message, '报错要说清去哪儿配').toMatch(/OPENROUTER_API_KEY/)
+      try {
+        const res = await post(bare, epId)
+        expect(res.statusCode).toBe(503)
+        const body = res.json() as { error: { code: string; message: string } }
+        expect(body.error.code).toBe('DEPENDENCY_UNAVAILABLE')
+        expect(body.error.message, '报错要说清去哪儿配').toMatch(/OPENROUTER_API_KEY/)
+        expect(body.error.message, '面板那条路也要说').toMatch(/面板/)
+      } finally {
+        await restoreCredentials()
+      }
     })
 
     /**
@@ -1160,6 +1205,7 @@ describe('密钥管理', () => {
       usedUsd: 2.5,
       usedTodayUsd: 0.4,
       isFreeTier: false,
+      account: { totalCredits: 10, totalUsage: 2.5, remaining: 7.5 },
     })
   }
 
@@ -1169,6 +1215,8 @@ describe('密钥管理', () => {
 
   beforeAll(async () => {
     process.env['CREDENTIAL_SECRET'] = 'int-test-secret'
+    // 开发库上跑，先把人存的真 key 收起来，退出时还回去
+    await stashCredentials()
     keysApp = buildServer({
       db,
       queues,
@@ -1185,7 +1233,7 @@ describe('密钥管理', () => {
   })
 
   afterAll(async () => {
-    await db.delete(s.providerCredentials)
+    await restoreCredentials()
     delete process.env['CREDENTIAL_SECRET']
   })
 
@@ -1441,11 +1489,12 @@ describe('provider 池热更新', () => {
   /** 只放一个模型，断言时数量才算得清 */
   const ENV = { OPENROUTER_VIDEO_MODELS: 'google/veo-3.1-lite' } as NodeJS.ProcessEnv
 
-  beforeAll(() => {
+  beforeAll(async () => {
     process.env['CREDENTIAL_SECRET'] = 'int-test-secret'
+    await stashCredentials()
   })
   afterAll(async () => {
-    await db.delete(s.providerCredentials)
+    await restoreCredentials()
     delete process.env['CREDENTIAL_SECRET']
   })
   beforeEach(async () => {
@@ -1617,6 +1666,7 @@ describe('provider 池热更新', () => {
           usedUsd: 0,
           usedTodayUsd: 0,
           isFreeTier: false,
+          account: null,
         }),
       onCredentialsChanged: () => {
         reloads += 1
@@ -1663,6 +1713,7 @@ describe('provider 池热更新', () => {
           usedUsd: 0,
           usedTodayUsd: 0,
           isFreeTier: false,
+          account: null,
         }),
       onCredentialsChanged: () => Promise.reject(new Error('Redis 挂了')),
     })
@@ -1699,9 +1750,27 @@ describe('密钥探测（打桩，不打真实 OpenRouter）', () => {
   let server: Server
   let base = ''
   let mode: 'ok' | 'invalid' | 'down' = 'ok'
+  let creditsMode: 'ok' | 'down' | 'empty' = 'ok'
 
   beforeAll(async () => {
-    server = createServer((_req, res) => {
+    server = createServer((req, res) => {
+      // 余额是另一个端点，探测会顺手打它
+      if (req.url?.endsWith('/credits')) {
+        if (creditsMode === 'down') {
+          res.writeHead(500)
+          res.end('nope')
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(
+          JSON.stringify(
+            creditsMode === 'empty'
+              ? { data: { total_credits: 3, total_usage: 3 } }
+              : { data: { total_credits: 10, total_usage: 2.5 } },
+          ),
+        )
+        return
+      }
       if (mode === 'invalid') {
         res.writeHead(401, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: { message: 'User not found.', code: 401 } }))
@@ -1734,6 +1803,50 @@ describe('密钥探测（打桩，不打真实 OpenRouter）', () => {
       expect(r.limitUsd).toBe(20)
       expect(r.remainingUsd).toBe(17.5)
       expect(r.usedTodayUsd).toBe(0.4)
+    }
+  })
+
+  /**
+   * **账户余额与 key 的有效性是两件事。**
+   *
+   * `GET /api/v1/key` 看不到余额——一把没充过钱的 key 在那里完全健康
+   * （`limit: null` 只表示这把 key 没有单独限额）。不专门查一次 `/credits`
+   * 的话，面板会显示「✓ 有效 · 剩余 不限」，然后第一次真实生成 402。
+   *
+   * 实测过：Jason 的 key 在 `/key` 上 `limit: null`，而 `/credits` 回
+   * `{"total_credits":10,"total_usage":0}`。
+   */
+  it('账户余额单独取，且不影响「key 有效」的判定', async () => {
+    mode = 'ok'
+    const r = await probeOpenRouter('sk-x', base)
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.account).toEqual({ totalCredits: 10, totalUsage: 2.5, remaining: 7.5 })
+    }
+  })
+
+  it('/credits 挂了不改变结论，只是拿不到余额', async () => {
+    mode = 'ok'
+    creditsMode = 'down'
+    try {
+      const r = await probeOpenRouter('sk-x', base)
+      expect(r.ok, '余额取不到不该把一把好 key 判成无效').toBe(true)
+      if (r.ok) expect(r.account).toBeNull()
+    } finally {
+      creditsMode = 'ok'
+    }
+  })
+
+  it('余额为 0 时 remaining 是 0，不是 null', async () => {
+    mode = 'ok'
+    creditsMode = 'empty'
+    try {
+      const r = await probeOpenRouter('sk-x', base)
+      expect(r.ok).toBe(true)
+      // 面板据此给出「余额为 0，任何真实生成都会 402」的警告
+      if (r.ok) expect(r.account?.remaining).toBe(0)
+    } finally {
+      creditsMode = 'ok'
     }
   })
 

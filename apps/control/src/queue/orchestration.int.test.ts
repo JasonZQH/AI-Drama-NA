@@ -20,6 +20,7 @@ import {
   reconcileOnBoot,
 } from './orchestrator.js'
 import { createConnection, createQueues, pollDelayMs } from './queues.js'
+import { assertNoWorker } from './assertNoWorker.js'
 import { spentToday, spentTodayForShot } from '../pipeline/batch.js'
 import { applyShotTransition, type TransitionQueues } from '../pipeline/applyTransition.js'
 import { inFlight, release, reset, tryAcquire } from './semaphore.js'
@@ -70,6 +71,9 @@ const TEST_ATTEMPT_BASE = 900
 const TEST_ATTEMPT_MAX = 1000
 
 beforeAll(async () => {
+  // 有 worker 在跑的话，测试入队的任务会被立刻消费掉——先说清楚，别让人对着
+  // 「expected false to be true」猜半天
+  await assertNoWorker(queues)
   // 复用 seed 出来的 demo 项目，不自己造数据——夹具漂移了测试要能发现
   // 取最后一个镜头，与 api.int.test.ts（取第一个）错开，避免共享真实数据库时互相干扰
   const [shot] = await db.select({ id: s.shots.id }).from(s.shots).orderBy(desc(s.shots.index)).limit(1)

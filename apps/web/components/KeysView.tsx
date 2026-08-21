@@ -46,6 +46,8 @@ interface Probe {
   usedUsd?: number
   usedTodayUsd?: number
   isFreeTier?: boolean
+  /** 账户余额。与「key 有效」是两件事——没充钱的 key 在 /key 上完全健康 */
+  account?: { totalCredits: number; totalUsage: number; remaining: number } | null
 }
 
 interface Reload {
@@ -55,7 +57,7 @@ interface Reload {
 
 interface KeysResponse {
   credentials: Credential[]
-  runtime: { providers: string[]; credentialSecretConfigured: boolean }
+  runtime: { providers: string[]; credentialSecretConfigured: boolean; videoModels: string[] }
 }
 
 const usd = (v: number | null | undefined): string =>
@@ -94,7 +96,14 @@ export function KeysView(): React.ReactElement {
    * PR-E 之后正常情况下不该出现——存完会自动重建。还出现就是**重建失败**
    * （Redis 挂了、或这个进程根本没接热更新），那时确实要手工重启。
    */
-  const stale = or !== null && or.source !== 'none' && !loadedInRuntime
+  /** 一个模型都没列 = 就算有 key，视频池也必然是空的（poolFromEnv 直接返回 []） */
+  const noModels = (data?.runtime.videoModels.length ?? 0) === 0
+  const hasKey = or !== null && or.source !== 'none'
+  /**
+   * 有密钥、池里却没有这一家，而且**已经列了模型**——那才是「重建没成功」。
+   * 没列模型时是另一回事，处置完全不同（去 .env 加一行，不是重启）。
+   */
+  const stale = hasKey && !loadedInRuntime && !noModels
 
   async function save(force = false): Promise<void> {
     setBusy(true)
@@ -204,6 +213,21 @@ export function KeysView(): React.ReactElement {
           </Note>
         )}
 
+        {/*
+          这一条曾经被 stale 那条误诊过：只看到「有密钥但池里没有 openrouter」，
+          于是让人去重启——而没列模型的话重启一百次也不会有。
+        */}
+        {hasKey && noModels && (
+          <Note tone="warn">
+            ⚠ 有密钥，但<strong>没有列出任何视频模型</strong>，所以视频 provider 池是空的。
+            <span className="ml-1" style={{ color: 'var(--text-muted)' }}>
+              在仓库根的 <code className="font-mono">.env</code> 里加一行，例如{' '}
+              <code className="font-mono">OPENROUTER_VIDEO_MODELS=bytedance/seedance-2.0</code>
+              ，再重启控制面与 worker。<strong>分镜生成不受影响</strong>——它不走 provider 池。
+            </span>
+          </Note>
+        )}
+
         {stale && (
           <Note tone="warn">
             ⚠ 有密钥，但<strong>跑着的进程里没有这一家</strong>。
@@ -249,12 +273,39 @@ export function KeysView(): React.ReactElement {
           {probe && (
             <div className="mt-3 rounded-md p-2 text-[12px]" style={{ background: 'var(--bg-base)' }}>
               {probe.ok ? (
-                <div className="flex flex-wrap gap-x-4 gap-y-1">
-                  <span style={{ color: 'var(--status-ok, var(--accent))' }}>✓ 这把 key 有效</span>
-                  <span>额度 {usd(probe.limitUsd)}</span>
-                  <span>剩余 {usd(probe.remainingUsd)}</span>
-                  <span>累计已用 {usd(probe.usedUsd)}</span>
-                  <span>今日 {usd(probe.usedTodayUsd)}</span>
+                <div className="flex flex-col gap-1">
+                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                    <span style={{ color: 'var(--status-ok, var(--accent))' }}>✓ 这把 key 有效</span>
+                    {probe.account ? (
+                      <span>
+                        账户余额 <strong>{usd(probe.account.remaining)}</strong>
+                        <span style={{ color: 'var(--text-muted)' }}>
+                          （充值 {usd(probe.account.totalCredits)} · 已用 {usd(probe.account.totalUsage)}）
+                        </span>
+                      </span>
+                    ) : (
+                      <span style={{ color: 'var(--text-muted)' }}>账户余额取不到</span>
+                    )}
+                    <span style={{ color: 'var(--text-muted)' }}>
+                      key 限额 {usd(probe.limitUsd)} · 今日 {usd(probe.usedTodayUsd)}
+                    </span>
+                  </div>
+                  {/*
+                    余额为 0 时「key 有效」是真的但没用——第一次真实生成会 402。
+                    `GET /api/v1/key` 看不到余额（limit: null 只表示这把 key 没有
+                    单独限额），所以不专门查一次 /credits 的话，面板会显示
+                    「✓ 有效 · 剩余 不限」然后让人一头撞上 402。
+                  */}
+                  {probe.account && probe.account.remaining <= 0 && (
+                    <span style={{ color: 'var(--status-error)' }}>
+                      ✕ 账户余额为 0——key 是好的，但任何一次真实生成都会被拒（402）。先去 OpenRouter 充值。
+                    </span>
+                  )}
+                  {probe.account && probe.account.remaining > 0 && probe.account.remaining < 1 && (
+                    <span style={{ color: 'var(--status-review)' }}>
+                      ⚠ 余额不足 $1。一集视频的账单是 $2–11，一次分镜约 $0.003。
+                    </span>
+                  )}
                 </div>
               ) : (
                 <span style={{ color: 'var(--danger-text)' }}>
