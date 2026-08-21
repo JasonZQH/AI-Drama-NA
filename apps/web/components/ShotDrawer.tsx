@@ -255,6 +255,26 @@ function Panel({
                 canGenerate={shot?.status === 'ready'}
                 onGenerated={() => setReload((n) => n + 1)}
               />
+              {/*
+                锁定之后唯一的出路。`redo.requested` 从第一版就在状态机里，但一直
+                零发射方——于是「这一镜我不满意，重来」在产品上不存在，而
+                「有选定成片就不再花钱」那道闸给的出路正是它。
+              */}
+              {shot?.status === 'locked' && (
+                <button
+                  type="button"
+                  className="mt-2 rounded-md px-2 py-1 text-[12px]"
+                  style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+                  onClick={() => {
+                    void api(`/api/shots/${shotId}/redo`, { method: 'POST' }).then(() =>
+                      setReload((n) => n + 1),
+                    )
+                  }}
+                  title="把选中的成片归档，这一镜回到「待生成」。已花的钱不退，产物不删"
+                >
+                  重做这一镜
+                </button>
+              )}
             </div>
             {err ? (
               /* R3：失败要说明是什么、以及下一步 */

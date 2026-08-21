@@ -402,6 +402,63 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
     await queues.generate.drain(true)
   })
 
+  /**
+   * **已经选定过成片的镜头不许再花钱。**
+   *
+   * 真钱实测撞到的状态：11 个镜头全是 `ready`，底下压着 12 条已付费 take
+   * （10 条 `selected`）——而 `resolveDependencies` 只看 `status`。点一次
+   * 「生成整集」就是把已有的片子重做一遍，$4.03。
+   *
+   * 顺带钉住 redo 这条出路：`archive.takes` 之前只归档 `candidate`，于是
+   * `selected` 那条会变成谁都不指向的孤儿，并把这道闸永久卡死。
+   */
+  it('有 selected take 时拒绝再生成，redo 归档之后放行', async () => {
+    await armShot(TEST_ATTEMPT_BASE + 80)
+    const jobId = await newJob()
+    const [asset] = await db
+      .insert(s.assets)
+      .values({
+        projectId,
+        kind: 'video',
+        storageKey: `test/regen-guard/${jobId}.mp4`,
+        mime: 'video/mp4',
+        bytes: 1,
+        sha256: 'e'.repeat(64),
+        producedBy: 'generation',
+      })
+      .returning({ id: s.assets.id })
+    const [take] = await db
+      .insert(s.takes)
+      .values({ shotId, jobId, assetId: asset!.id, status: 'candidate' })
+      .returning({ id: s.takes.id })
+
+    await db.update(s.shots).set({ status: 'review' }).where(eq(s.shots.id, shotId))
+    await applyShotTransition(tdeps(db), shotId, { type: 'take.selected', takeId: take!.id })
+
+    // 状态机自己会拒 locked → generate.requested，先把它放回 ready 才测得到这道闸
+    await db.update(s.shots).set({ status: 'ready' }).where(eq(s.shots.id, shotId))
+    const before = await countJobs()
+    await expect(
+      applyShotTransition(tdeps(db), shotId, { type: 'generate.requested' }),
+      '已经有选定成片，不该再建一条 job',
+    ).rejects.toThrow(/已经有选定的成片/)
+    expect(await countJobs(), '被拒之后一分钱的 job 都不该留下').toBe(before)
+
+    // redo 把选中的那条一并归档，闸自动放行
+    await db.update(s.shots).set({ status: 'locked' }).where(eq(s.shots.id, shotId))
+    await applyShotTransition(tdeps(db), shotId, { type: 'redo.requested' })
+    const [archived] = await db.select().from(s.takes).where(eq(s.takes.id, take!.id))
+    expect(archived!.status, 'selected 那条也要归档，否则成孤儿并把闸卡死').toBe('archived')
+    await applyShotTransition(tdeps(db), shotId, { type: 'generate.requested' })
+    expect(await countJobs(), '归档之后该放行').toBe(before + 1)
+
+    await queues.generate.drain(true)
+    await db.delete(s.takes).where(eq(s.takes.id, take!.id))
+    await db.delete(s.assets).where(eq(s.assets.id, asset!.id))
+    // 本用例建的 job 会抬高这一镜的 max(attempt)，而后面有用例在断言那个号
+    await db.delete(s.generationJobs).where(eq(s.generationJobs.shotId, shotId))
+  })
+
   it('并发 take.selected：只有一个能锁定，另一个从 locked 被拒', async () => {
     await armShot(TEST_ATTEMPT_BASE + 60)
     /*

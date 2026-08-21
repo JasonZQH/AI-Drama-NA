@@ -1,5 +1,5 @@
 import type { GenerationRequest, VideoProvider } from '@ai-drama/contracts'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { routeProvider } from '../providers/route.js'
@@ -145,6 +145,33 @@ export async function applyShotTransition(
     for (const e of r.effects) {
       switch (e.type) {
         case 'enqueue.generation': {
+          /*
+           * **已经选定过一条 take 的镜头，绝不再花第二次钱。**
+           *
+           * 真钱实测撞到的：库里 11 个镜头全是 `ready`，底下压着 12 条已付费
+           * take（10 条 `selected`），而 `resolveDependencies` 只看 `status`
+           * ——点一次「生成整集」就是把已有的成片重做一遍，$4.03。
+           *
+           * 闸门放在这里而不是 `resolveDependencies`：花钱的入口有两个
+           * （`POST /api/shots/:id/generate` 与 `generate-batch`），而它们都
+           * 从这一个 effect 走。守在分叉之后，两条路一起守住。
+           *
+           * 判据是「有没有 `selected`」而不是「有没有 take」：
+           * `takes.allRejected` 之后镜头回到 `ready`，候选还在但没被选中，
+           * 那是**该**再来一次的；`redo.requested` 会把选中的那条一并归档
+           * （见下面 `archive.takes`），归档之后这道闸自动放行。
+           */
+          const [live] = await tx
+            .select({ id: s.takes.id })
+            .from(s.takes)
+            .where(and(eq(s.takes.shotId, e.shotId), eq(s.takes.status, 'selected')))
+            .limit(1)
+          if (live)
+            throw new Error(
+              `镜头 ${e.shotId} 已经有选定的成片（take ${live.id}），不再重复生成。` +
+                `要重来请点「重做」（POST /api/shots/:id/redo）——它会把这条归档再放行。`,
+            )
+
           const params = {
             durationSec: Number(row.durationSec),
             resolution: '720p' as const,
@@ -335,11 +362,18 @@ export async function applyShotTransition(
             .where(eq(s.generationJobs.shotId, e.shotId))
           break
         case 'archive.takes':
-          // 归档而非删除：系统永不自动销毁已经花钱生成的东西（03 §7）
+          /*
+           * 归档而非删除：系统永不自动销毁已经花钱生成的东西（03 §7）。
+           *
+           * **`selected` 也要归档。** 之前只归档 `candidate`，于是 `locked`
+           * 走 redo 之后 `shots.selected_take_id` 被清空、而那条 take 仍然挂着
+           * `selected` ——一条谁都不指向的孤儿，且它会把上面那道重复计费闸
+           * 永久卡死（镜头再也生成不了）。`rejected` 不动：那是人给的判断。
+           */
           await tx
             .update(s.takes)
             .set({ status: 'archived' })
-            .where(and(eq(s.takes.shotId, e.shotId), eq(s.takes.status, 'candidate')))
+            .where(and(eq(s.takes.shotId, e.shotId), inArray(s.takes.status, ['candidate', 'selected'])))
           break
         case 'publish':
           pending.push(() => deps.queues.notify.add('notify', { payload: e.event }))
