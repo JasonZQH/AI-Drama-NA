@@ -23,6 +23,7 @@ const input: ShotlistInput = {
   synopsis: 'She comes home to a city that moved on.',
   episodeBrief: 'She has ten minutes to decide.\nHook: the letter is addressed to someone else.',
   targetDurationSec: 72,
+  minShotSec: 2,
   scenes: [
     // 第一场给自由文本光照，后两场只有枚举——两条回落分支都要被 userPrompt 覆盖到
     { summary: 'Lena returns', timeOfDay: 'night', lighting: 'one bare bulb over the door' },
@@ -187,6 +188,7 @@ describe('systemPrompt 的硬规则与判据同源', () => {
     synopsis: null,
     episodeBrief: null,
     targetDurationSec: 72,
+    minShotSec: 2,
     scenes: [
       { summary: null, timeOfDay: null, lighting: null },
       { summary: null, timeOfDay: null, lighting: null },
@@ -220,9 +222,30 @@ describe('systemPrompt 的硬规则与判据同源', () => {
    * `shots_duration_ck`）刻意不同：一个是「该怎么写」，一个是「不许越过」。
    * 这条钉住这个区别，免得下一个人"顺手统一"成 1-10。
    */
-  it('单镜时长仍是建议区间 2-8，不是 schema 的硬上限 1-10', () => {
-    expect(p).toContain('Each shot 2-8 seconds')
-    expect(p).not.toContain('1-10 seconds')
+  /**
+   * **下限从 provider 的档位取，上限仍是 03 §S3 的建议值 8 秒。**
+   *
+   * 写死 `2-8` 的那一版在 seedance 上是错的：它全系最短 4 秒，模型照着写 2 秒，
+   * 每一镜都被 `snapDuration` 静默抬档，而整集是按写的那个数算的——真机实测
+   * 目标 30 秒的一集出了 44.5 秒的成片。
+   *
+   * 上限不跟 schema 的 10 秒合并：一个是「该怎么写」，一个是「不许越过」。
+   */
+  it('单镜时长下限取自 provider 档位，上限仍是建议值 8', () => {
+    expect(p, '夹具的 minShotSec 是 2').toContain('Each shot 2 to 8 seconds')
+    expect(p, '硬上限不该当建议值发出去').not.toContain('1-10 seconds')
+
+    const seedance = systemPrompt({
+      scriptMd: 'x',
+      synopsis: null,
+      episodeBrief: null,
+      targetDurationSec: 72,
+      minShotSec: 4,
+      scenes: [{ summary: null, timeOfDay: null, lighting: null }],
+      characters: [],
+    })
+    expect(seedance, '换成 4 秒起的模型，这句话要跟着变').toContain('Each shot 4 to 8 seconds')
+    expect(seedance, '要说清楚这是硬地板，不是建议').toMatch(/hard floor/)
   })
 })
 
@@ -287,6 +310,7 @@ describe('systemPrompt 里那条案例', () => {
     synopsis: null,
     episodeBrief: null,
     targetDurationSec: 72,
+    minShotSec: 2,
     scenes: [{ summary: null, timeOfDay: null, lighting: null }],
     characters: [],
   })

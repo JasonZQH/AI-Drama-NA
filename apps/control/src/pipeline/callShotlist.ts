@@ -70,6 +70,14 @@ export interface ShotlistInput {
    */
   readonly episodeBrief: string | null
   readonly targetDurationSec: number
+  /**
+   * 池里最宽松的那家 provider 的单镜时长下限。
+   *
+   * 各家时长是**档位**不是连续值（seedance 全系最短 4 秒）。不发这个数，模型会
+   * 规划一堆买不到的 2 秒镜头——`snapDuration` 静默抬到 4 秒，钱按 4 秒付，
+   * 而整集按 2 秒那份计划算，成片跟面板上每一个数都对不上。
+   */
+  readonly minShotSec: number
   /** 顺序即场次号。模型必须一一对应，不能增删合并 */
   readonly scenes: readonly {
     readonly summary: string | null
@@ -150,7 +158,13 @@ export function systemPrompt(input: ShotlistInput): string {
     'Hard rules:',
     `- Return exactly ${input.scenes.length} scene objects, in the same order as the input scenes. Do not add, drop, or merge scenes.`,
     `- ${SHOT_COUNT.min} to ${SHOT_COUNT.max} shots total across all scenes. Typical is 18.`,
-    `- Shot durations must sum to about ${input.targetDurationSec} seconds (within ${DURATION_TOLERANCE * 100}%). Each shot 2-8 seconds.`,
+    `- Shot durations must sum to about ${input.targetDurationSec} seconds (within ${DURATION_TOLERANCE * 100}%).`,
+    /*
+     * 下限从 provider 的档位取，上限仍是 03 §S3 的建议值 8 秒。
+     * 写死 `2-8` 的那一版在 seedance 上是错的：它最短 4 秒，模型照着写 2 秒，
+     * 每一镜都被静默抬档，而整集按写的那个数算。
+     */
+    `- Each shot ${input.minShotSec} to 8 seconds. ${input.minShotSec} is a hard floor — the video model cannot make anything shorter.`,
     `- At most ${MAX_CAST_PER_SHOT} characters per shot. More than that interacting reliably breaks the video model.`,
     '- Every shot with dialogue must list its speaker in characterNames.',
     `- Vary shotType; never use the same one ${SAME_SHOT_TYPE_RUN} shots in a row.`,
@@ -298,6 +312,7 @@ function check(
   names: readonly string[],
   sceneCount: number,
   targetDurationSec: number,
+  minShotSec: number,
 ): { draft: ShotlistDraft; warnings: string[] } | { errors: string[] } {
   let parsed: unknown
   try {
@@ -315,7 +330,7 @@ function check(
   }
 
   // L2 集级 lint
-  const lint = lintShotlist(decoded.data, { sceneCount, targetDurationSec })
+  const lint = lintShotlist(decoded.data, { sceneCount, targetDurationSec, minShotSec })
   if (lint.errors.length > 0) return { errors: lint.errors }
   return { draft: decoded.data, warnings: lint.warnings }
 }
@@ -337,7 +352,7 @@ export async function callShotlist(input: ShotlistInput, opts: ShotlistOptions):
     costUsd += r.costUsd
     raw = r.content
 
-    const out = check(raw, names, input.scenes.length, input.targetDurationSec)
+    const out = check(raw, names, input.scenes.length, input.targetDurationSec, input.minShotSec)
     if ('draft' in out) return { ...out, repaired: round > 0, costUsd }
 
     last = out

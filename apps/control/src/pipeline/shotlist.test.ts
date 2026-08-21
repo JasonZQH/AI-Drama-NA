@@ -1,6 +1,6 @@
 import { shotlistDraft, toIntent, type ShotlistDraft } from '@ai-drama/contracts'
 import { describe, expect, it } from 'vitest'
-import { lintShotlist } from './shotlist.js'
+import { lintShotlist, targetOutOfReach } from './shotlist.js'
 
 /** 一个默认合法的镜头，按需覆盖 */
 const shot = (over: Partial<ShotlistDraft['scenes'][number]['shots'][number]> = {}) => ({
@@ -26,7 +26,9 @@ const draft = (n: number, sceneCount = 3, over: Partial<ReturnType<typeof shot>>
   }
 }
 
-const ctx = { sceneCount: 3, targetDurationSec: 72 }
+// minShotSec 取 2：夹具用 4 秒一镜，2 秒让 E8 在基准上保持沉默，
+// 而 E8 自己的用例显式传更高的下限
+const ctx = { sceneCount: 3, targetDurationSec: 72, minShotSec: 2 }
 
 describe('shotlistDraft（LLM 方言 schema）', () => {
   it('角色名灌成 enum——编造的角色在解码阶段就被拒', () => {
@@ -130,7 +132,7 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
    * 累加 18 次的误差方向决定这条用例的红绿。边界断言不该建在那上面。
    */
   it('恰好 ±15% 是合法的，多一点点就不是', () => {
-    const c = { sceneCount: 3, targetDurationSec: 80 }
+    const c = { sceneCount: 3, targetDurationSec: 80, minShotSec: 2 }
     expect(16 * 5.75).toBe(92) // 前提：这一步没有浮点误差
     expect(lintShotlist(draft(16, 3, { durationSec: 5.75 }), c).errors.join()).not.toMatch(/总时长/)
     // 再多 0.25 秒/镜就越界
@@ -145,6 +147,29 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
     expect(r.errors.join()).toMatch(/有台词「还是那把椅子。」但 characterNames 是空的/)
     // 报错要指到具体位置，模型才改得准
     expect(r.errors.join()).toMatch(/第 1 场第 1 镜（全集第 1 镜）/)
+  })
+
+  /**
+   * E8 · 低于 provider 的时长档位下限。
+   *
+   * 各家时长是**档位不是连续值**：seedance 全系最短 4 秒。规划 2 秒不会报错，
+   * `snapDuration` 会静默抬到 4 秒——片子按 4 秒出、钱按 4 秒付，而整集时长是
+   * 按 2 秒那份计划算的。真机实测：目标 30 秒的一集，成片 44.5 秒（+48%），
+   * 而 E3 当时算出的是 30.0/30 完美。
+   */
+  it('E8 时长低于 provider 档位下限', () => {
+    const seedance = { ...ctx, minShotSec: 4 }
+    const d = draft(18)
+    d.scenes[2]!.shots[3] = shot({ durationSec: 2 })
+    expect(lintShotlist(d, seedance).errors.join()).toMatch(
+      /第 3 场第 4 镜（全集第 16 镜） 时长 2 秒低于当前 provider 的档位下限 4 秒/,
+    )
+    // 正好等于下限是合法的——写成 `<=` 的话这条才会红
+    const ok = draft(18)
+    ok.scenes[2]!.shots[3] = shot({ durationSec: 4 })
+    expect(lintShotlist(ok, seedance).errors.join()).not.toMatch(/档位下限/)
+    // 档位细的模型（wan 支持 2 秒）不该被误伤
+    expect(lintShotlist(d, { ...ctx, minShotSec: 2 }).errors.join()).not.toMatch(/档位下限/)
   })
 
   it('E5 三人以上同框，并回显是哪三个', () => {
@@ -182,6 +207,31 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
     }
     // 干净的稿子不该被误伤
     expect(lintShotlist(draft(18), ctx).errors.join()).not.toMatch(/占位符/)
+  })
+})
+
+/**
+ * **不可能达成的目标要在花钱之前就说。**
+ *
+ * 下限此前写死成 schema 的 1 秒，而没有一家真能产出 1 秒。真机实测：
+ * `targetDurationSec: 30` 配上「至少 10 镜」，在 seedance（4 秒起）上最短也要
+ * 40 秒——这道闸当时放行了，E3 还算出 30.0/30 完美，一直到成片 44.5 秒才露出来。
+ */
+describe('targetOutOfReach 用的是 provider 的档位下限', () => {
+  it('30 秒目标在 seedance（4 秒起）上不可能达成，并给出可行动的两条路', () => {
+    const msg = targetOutOfReach(30, 4)
+    expect(msg, 'seedance 上 10 镜 × 4 秒 = 40 秒 > 30 × 1.15').toBeTruthy()
+    expect(msg).toMatch(/最短 4 秒一镜/)
+    expect(msg, '要给出目标该调到多少').toMatch(/35 秒以上/)
+    expect(msg, '换模型是另一条路，要说出来').toMatch(/wan/)
+  })
+
+  it('同一个 30 秒目标在 wan（2 秒起）上是可以达成的', () => {
+    expect(targetOutOfReach(30, 2), '10 镜 × 2 秒 = 20 秒 < 34.5，够得着').toBeNull()
+  })
+
+  it('不传下限时退回 1 秒——旧调用方的行为不变', () => {
+    expect(targetOutOfReach(30)).toBeNull()
   })
 })
 
@@ -295,7 +345,7 @@ describe('seed 的 12 镜夹具是刻意的最小规模，过不了 E3', () => {
     }
     expect(durs.reduce((a, b) => a + b, 0)).toBe(42.5)
 
-    const r = lintShotlist(d, { sceneCount: 3, targetDurationSec: 75 })
+    const r = lintShotlist(d, { sceneCount: 3, targetDurationSec: 75, minShotSec: 2 })
     expect(r.errors.join(), '12 < 10 不成立，镜头数其实是合法的').not.toMatch(/镜头总数/)
     expect(r.errors.join(), '42.5s vs 75s 偏差 −43%，必须被 E3 抓到').toMatch(/总时长 42.5 秒/)
     expect(r.errors.join()).toMatch(/-43%/)

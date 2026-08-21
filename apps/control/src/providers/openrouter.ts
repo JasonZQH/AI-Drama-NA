@@ -117,6 +117,7 @@ export class OpenRouterProvider implements VideoProvider {
        * OpenRouter 的统一 schema 没有「续写一段已有视频」这个入口。
        */
       modes: opts.model.supportedFrameImages.length > 0 ? ['t2v', 'i2v', 'ref2v'] : ['t2v'],
+      minDurationSec: durations[0] ?? 0,
       maxDurationSec: durations[durations.length - 1] ?? 0,
       resolutions: opts.model.supportedResolutions.filter((r): r is '480p' | '720p' | '1080p' =>
         ['480p', '720p', '1080p'].includes(r),

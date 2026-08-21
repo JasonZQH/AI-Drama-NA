@@ -117,6 +117,19 @@ export type CostModel = z.infer<typeof CostModel>
 
 export const ProviderCapabilities = z.object({
   modes: z.array(GenMode),
+  /**
+   * **单镜时长下限。**
+   *
+   * 此前只建模了天花板（`maxDurationSec`），而真正咬人的是地板：各家的时长
+   * 是**档位**不是连续值，seedance 全系最短 4 秒。分镜可以规划 2 秒，
+   * `snapDuration` 会静默抬到 4 秒——于是你付 4 秒的钱、拿 4 秒的片，
+   * 而整集是按 2 秒那份计划算的。
+   *
+   * 实测后果：`targetDurationSec: 30` 的一集，配上 E2 的「至少 10 镜」，
+   * 在 seedance 上**最短也要 40 秒**——那个目标从一开始就不可能达成，
+   * 而 schema（1–10 秒）、E3（算出 30.0/30 完美）、估价、渲染全都放行了。
+   */
+  minDurationSec: z.number(),
   maxDurationSec: z.number(),
   resolutions: z.array(z.enum(['480p', '720p', '1080p'])),
   aspectRatios: z.array(z.enum(['9:16', '16:9', '1:1'])),

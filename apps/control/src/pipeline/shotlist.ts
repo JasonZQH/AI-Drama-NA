@@ -41,6 +41,17 @@ export interface LintContext {
   readonly sceneCount: number
   /** `episodes.target_duration_sec` */
   readonly targetDurationSec: number
+  /**
+   * 池里最宽松的那家 provider 的单镜时长下限（`ProviderCapabilities.minDurationSec`）。
+   *
+   * **各家的时长是档位不是连续值。** seedance 全系最短 4 秒，规划一个 2 秒的镜头
+   * 等于规划一段买不到的片子——`snapDuration` 会静默抬到 4 秒，你付 4 秒的钱、
+   * 拿 4 秒的片，而整集是按 2 秒那份计划算的。
+   *
+   * 取「最宽松」而不是「最严」：池里同时配了 wan（支持 2 秒）和 seedance 时，
+   * 2 秒的镜头是**可以**买到的，只要路由到 wan。真正买不到的由 `validate()` 拦。
+   */
+  readonly minShotSec: number
 }
 
 /**
@@ -89,15 +100,28 @@ const NEGATION = /(\bno\b|\bnot\b|\bwithout\b|\bavoid\b|\bdon't\b|不要|没有|
  *
  * @returns 不可达时返回可行动的说明；可达返回 null
  */
-export function targetOutOfReach(targetDurationSec: number): string | null {
+export function targetOutOfReach(targetDurationSec: number, minShotSec = 1): string | null {
   const max = SHOT_COUNT.max * 10 // 单镜上限见 contracts 的 draftShot.durationSec
-  const min = SHOT_COUNT.min * 1
+  /*
+   * **下限取自 provider 的档位，不是 schema 的 1 秒。**
+   *
+   * schema 允许 1 秒，但没有一家真能产出 1 秒——seedance 全系最短 4 秒。
+   * 用 1 算出来的「可达成」是纸面上的：真机实测 `targetDurationSec: 30` 的一集，
+   * 配上「至少 10 镜」，在 seedance 上最短也要 40 秒，而这道闸当时放行了，
+   * E3 还算出 30.0/30 完美——一直到成片 44.5 秒才露出来。
+   */
+  const min = SHOT_COUNT.min * minShotSec
   const lo = targetDurationSec * (1 - DURATION_TOLERANCE)
   const hi = targetDurationSec * (1 + DURATION_TOLERANCE)
   if (lo > max)
     return `目标时长 ${targetDurationSec} 秒不可能达成：最多 ${SHOT_COUNT.max} 镜 × 单镜 10 秒 = ${max} 秒，而 ±${DURATION_TOLERANCE * 100}% 要求至少 ${lo.toFixed(1)} 秒。把 targetDurationSec 调到 ${Math.floor(max / (1 - DURATION_TOLERANCE))} 秒以内（03 §S3 的口径是 60–90 秒一集）。`
   if (hi < min)
-    return `目标时长 ${targetDurationSec} 秒不可能达成：至少 ${SHOT_COUNT.min} 镜 × 单镜 1 秒 = ${min} 秒，而 ±${DURATION_TOLERANCE * 100}% 只允许到 ${hi.toFixed(1)} 秒。`
+    return (
+      `目标时长 ${targetDurationSec} 秒不可能达成：当前 provider 最短 ${minShotSec} 秒一镜，` +
+      `至少 ${SHOT_COUNT.min} 镜 = ${min} 秒，而 ±${DURATION_TOLERANCE * 100}% 只允许到 ${hi.toFixed(1)} 秒。` +
+      `把 targetDurationSec 调到 ${Math.ceil(min / (1 + DURATION_TOLERANCE))} 秒以上，` +
+      `或者配一个档位更细的模型（wan 系支持 2 秒起）。`
+    )
   return null
 }
 
@@ -192,6 +216,21 @@ export function lintShotlist(draft: ShotlistDraft, ctx: LintContext): LintResult
       errors.push(
         `${at(l)} 抄了案例里的占位符（${leaked.join(' / ')}）。` +
           `案例是另一集的，只能学写法——把 <A>/<B> 换成 <cast> 里的真实角色名。`,
+      )
+    }
+
+    /*
+     * E8 · 低于 provider 的时长档位下限。
+     *
+     * `snapDuration` 会把它**静默抬到**下一档：规划 2 秒、买到 4 秒、付 4 秒的钱，
+     * 而整集是按 2 秒那份计划算的。E3 因此算的是一堆买不到的数字，成片跟它对不上。
+     * 是 E 不是 W——那一轮免费的修复正好用来换掉它，比事后拿剪刀补便宜。
+     */
+    if (l.s.durationSec < ctx.minShotSec) {
+      errors.push(
+        `${at(l)} 时长 ${l.s.durationSec} 秒低于当前 provider 的档位下限 ${ctx.minShotSec} 秒。` +
+          `低于下限的会被静默抬到下一档：片子按 ${ctx.minShotSec} 秒出、钱按 ${ctx.minShotSec} 秒付，` +
+          `而整集时长是按你写的那个数算的。改成 ${ctx.minShotSec} 秒或更长。`,
       )
     }
 

@@ -82,6 +82,7 @@ export class MockProvider implements VideoProvider {
 
   readonly capabilities: ProviderCapabilities = {
     modes: ['t2v', 'i2v', 'ref2v', 'extend'],
+    minDurationSec: 1,
     maxDurationSec: 10,
     resolutions: ['480p', '720p', '1080p'],
     aspectRatios: ['9:16', '16:9', '1:1'],

@@ -585,6 +585,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
           synopsis: null,
           episodeBrief: null,
           targetDurationSec: sample.targetDurationSec,
+          minShotSec: poolMinShotSec(),
           scenes: Array.from({ length: sample.scenes }, () => ({
             summary: null,
             timeOfDay: null,
@@ -811,6 +812,21 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
    * ponytail: `usage.cost` 只随响应返回、不落账。要按文本模型出成本报表时再建
    * 一张表——现在建就是为一个不存在的报表付表结构的成本。
    */
+  /**
+   * 池里最宽松的那家 provider 的单镜时长下限。
+   *
+   * **取最小值不是最大值**：同时配了 wan（2 秒起）和 seedance（4 秒起）时，
+   * 2 秒的镜头是可以买到的——只要那一镜路由到 wan。真正买不到的由适配器的
+   * `validate()` 在提交前拦，不必在分镜层一刀切成最严的那家。
+   *
+   * 排除 mock：它宣称 1 秒起，把它算进来这道闸就永远是 1，等于没有。
+   */
+  const poolMinShotSec = (): number => {
+    const real = deps.providers.filter((p) => p.id !== 'mock')
+    const mins = (real.length > 0 ? real : deps.providers).map((p) => p.capabilities.minDurationSec)
+    return mins.length > 0 ? Math.min(...mins) : 1
+  }
+
   app.post('/api/episodes/:id/shotlist', async (req, reply) => {
     const { id } = Uuid.parse(req.params)
 
@@ -829,7 +845,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
      * 「总时长不对」，人读不出真正的原因是这一集的目标时长压根不可达。
      * `episodes.target_duration_sec` 没有 CHECK，PATCH 也放到 600。
      */
-    const unreachable = targetOutOfReach(ep.targetDurationSec)
+    const unreachable = targetOutOfReach(ep.targetDurationSec, poolMinShotSec())
     if (unreachable) throw new ApiError('VALIDATION_FAILED', unreachable)
 
     const sceneRows = await db
@@ -881,6 +897,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
             .filter(Boolean)
             .join('\n') || null,
         targetDurationSec: ep.targetDurationSec,
+        minShotSec: poolMinShotSec(),
         // `sceneRows` 本来就是整行，`lighting` 一直在手里被丢掉——「光照太单一」在这一层的直接原因
         scenes: sceneRows.map((sc) => ({
           summary: sc.summary,
