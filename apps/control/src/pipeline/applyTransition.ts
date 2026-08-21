@@ -112,11 +112,29 @@ export async function applyShotTransition(
     const [row] = await tx.select().from(s.shots).where(eq(s.shots.id, shotId)).for('update')
     if (!row) return null
 
+    /*
+     * **attempt 号取自 `generation_jobs` 的最大值，不是 `shots.attempt_count`。**
+     *
+     * 唯一约束 `gj_shot_attempt_uq` 建在 `(shot_id, attempt)` 上，而计数器在
+     * 另一张表——两者一旦漂开，下一次生成就会算出一个已经用过的号，插入时撞
+     * 唯一约束抛裸 pg 错。
+     *
+     * 实测漂过：一个镜头 `attempt_count=0` 却已经有一条 `attempt=1` 的 job
+     * （中间经过一次 ingest 失败与人工重新入队）。于是批量生成走到它时 500，
+     * 而**整批剩下的 8 个镜头再没入队**——面板上什么都没显示。
+     *
+     * 在 FOR UPDATE 事务里读，所以并发拿不到同一个号。
+     */
+    const [maxAttempt] = await tx
+      .select({ n: sql<number>`coalesce(max(${s.generationJobs.attempt}), 0)::int` })
+      .from(s.generationJobs)
+      .where(eq(s.generationJobs.shotId, shotId))
+
     const r = transition(
       {
         id: row.id,
         status: row.status,
-        attemptCount: row.attemptCount,
+        attemptCount: Math.max(row.attemptCount, maxAttempt?.n ?? 0),
         selectedTakeId: row.selectedTakeId,
       },
       event,

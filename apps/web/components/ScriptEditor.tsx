@@ -64,8 +64,14 @@ export function ScriptEditor({
       aria-modal="true"
       aria-label="剧本"
     >
+      {/*
+        **`h-[85vh]` 不是 `max-h-`。** 里面的 textarea 是 `flex-1`，而 flex-1
+        只在父容器有确定高度时才有东西可填——用 max-h 的话父容器按内容收缩，
+        textarea 就塌成两三行（实测：一整集 672 字的剧本只露出两行）。
+        剧本是这个抽屉唯一的内容，吃满高度是对的。
+      */}
       <div
-        className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-lg"
+        className="flex h-[85vh] w-full max-w-3xl flex-col rounded-lg"
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-strong)' }}
       >
         <div

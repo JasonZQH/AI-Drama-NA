@@ -122,7 +122,7 @@ export function SceneEditor({
       aria-label="场次"
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-lg"
+        className="flex max-h-[85vh] min-h-[40vh] w-full max-w-3xl flex-col rounded-lg"
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-strong)' }}
       >
         <div

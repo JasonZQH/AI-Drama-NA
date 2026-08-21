@@ -107,7 +107,16 @@ export interface EpisodeTree {
     timeOfDay: string | null
     locationId: string | null
   }[]
-  shots: { shot: Shot; takeCount: number; costMicroUsd: number; mockCostMicroUsd: number }[]
+  /** 最近一次成功渲染的成片。null = 还没渲染过 */
+  master: { assetId: string; finishedAt: string } | null
+  shots: {
+    shot: Shot
+    takeCount: number
+    costMicroUsd: number
+    mockCostMicroUsd: number
+    /** 封面用：选中的 take 优先，否则最后一次生成的产物。null = 还没出过片 */
+    posterAssetId: string | null
+  }[]
 }
 
 export interface DryRunPlan {
@@ -186,6 +195,8 @@ export interface ProjectSummary {
 }
 
 export interface EpisodeSummary {
+  /** 有没有渲染出成片。分集列表据此给「看成片」入口 */
+  hasMaster: boolean
   id: string
   index: number
   title: string | null

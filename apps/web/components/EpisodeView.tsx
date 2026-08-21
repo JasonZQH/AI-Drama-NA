@@ -318,6 +318,23 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
         >
           生成整集
         </button>
+        {/*
+          **看成片。** 此前面板上唯一通向 `/watch` 的路径是渲染那一刻的
+          `window.open`——关掉那个标签页，片子就再也找不到了。片子是这条流水线
+          的最终产物，它必须有一个常驻入口。
+        */}
+        {tree.master && (
+          <a
+            href={`/watch/${episodeId}`}
+            target="_blank"
+            rel="noopener"
+            title={`渲染于 ${new Date(tree.master.finishedAt).toLocaleString('zh-CN')}`}
+            className="rounded-md px-3 py-1 text-[12px] font-medium"
+            style={{ background: 'var(--accent-subtle)', color: 'var(--accent-text)' }}
+          >
+            ▶ 看成片 ↗
+          </a>
+        )}
         {/* 一个锁定镜头都没有时渲染必然以「没有已选定的镜头」失败，不如禁用 */}
         <button
           type="button"
@@ -327,7 +344,7 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
           className="rounded-md px-3 py-1 text-[12px] font-medium disabled:opacity-40"
           style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
         >
-          {busy ? '渲染中…' : `渲染成片 ${lockedCount}/${tree.shots.length}`}
+          {busy ? '渲染中…' : `${tree.master ? '重新渲染' : '渲染成片'} ${lockedCount}/${tree.shots.length}`}
         </button>
       </PageHeader>
 

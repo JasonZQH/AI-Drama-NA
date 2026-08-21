@@ -211,6 +211,15 @@ export function registerStats(app: FastifyInstance, deps: { db: Db }): void {
         review: sql<number>`count(distinct ${s.shots.id}) filter (where ${s.shots.status} = 'review')::int`,
         costMicroUsd: sql<string>`coalesce(sum(${s.generationJobs.costMicroUsd}), 0)`,
         mockCostMicroUsd: mockCostSql,
+        /*
+         * 有没有成片。分集列表是找片子最自然的地方，而此前唯一通向 `/watch`
+         * 的路径是渲染那一刻的 `window.open`——关掉标签页就再也找不到了。
+         */
+        hasMaster: sql<boolean>`exists (
+          select 1 from ${s.renderJobs} rj
+          join ${s.timelines} tl on tl.id = rj.timeline_id
+          where tl.episode_id = ${s.episodes.id} and rj.status = 'succeeded'
+        )`,
       })
       .from(s.episodes)
       .leftJoin(s.scenes, eq(s.scenes.episodeId, s.episodes.id))
@@ -223,6 +232,7 @@ export function registerStats(app: FastifyInstance, deps: { db: Db }): void {
     return {
       episodes: rows.map((r) => ({
         ...r.episode,
+        hasMaster: r.hasMaster,
         shots: r.shots,
         locked: r.locked,
         review: r.review,

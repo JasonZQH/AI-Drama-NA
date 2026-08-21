@@ -216,55 +216,79 @@ function Stat({
 
 function EpisodeRow({ ep }: { ep: EpisodeSummary }): React.ReactElement {
   return (
-    <a
-      href={`/episodes/${ep.id}`}
-      target="_blank"
-      rel="noopener"
-      className="flex items-center gap-4 px-3 py-2 text-left"
+    /*
+      外层是 div 不是 a：成片入口要能单独点，而链接不能嵌套链接。
+      整行仍然可点（里面那个 a 铺满），播放入口绝对定位压在右侧。
+    */
+    <div
+      className="relative"
       style={{
         borderTop: '1px solid var(--border)',
         // 阶段用左侧 3px 色条强化，扫视时一眼看出整季的分布（07 §6.2）
         borderLeft: `3px solid ${statusColor(ep.status, 'episode')}`,
       }}
     >
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="tnum shrink-0 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            #{ep.index}
-          </span>
-          <span className="min-w-0 truncate font-medium">{ep.title ?? '未命名'}</span>
-          <StatusPill status={ep.status} kind="episode" />
-          <span aria-hidden className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            ↗
-          </span>
-        </div>
-        {ep.logline && (
-          <div className="truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            {ep.logline}
+      {/*
+        **成片入口。** 此前唯一通向 /watch 的路径是渲染那一刻的 window.open
+        ——关掉标签页就再也找不到了。分集列表是找片子最自然的地方。
+      */}
+      {ep.hasMaster && (
+        <a
+          href={`/watch/${ep.id}`}
+          target="_blank"
+          rel="noopener"
+          title="看这一集的成片"
+          className="absolute top-1.5 right-2 z-10 rounded-md px-2 py-0.5 text-[11px]"
+          style={{ background: 'var(--accent-subtle)', color: 'var(--accent-text)' }}
+        >
+          ▶ 成片
+        </a>
+      )}
+      <a
+        href={`/episodes/${ep.id}`}
+        target="_blank"
+        rel="noopener"
+        className="flex items-center gap-4 px-3 py-2 text-left"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="tnum shrink-0 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              #{ep.index}
+            </span>
+            <span className="min-w-0 truncate font-medium">{ep.title ?? '未命名'}</span>
+            <StatusPill status={ep.status} kind="episode" />
+            <span aria-hidden className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              ↗
+            </span>
           </div>
-        )}
-      </div>
-
-      <div className="w-44 shrink-0">
-        <div className="tnum mb-0.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-          已锁定 {ep.locked} / {ep.shots}
+          {ep.logline && (
+            <div className="truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {ep.logline}
+            </div>
+          )}
         </div>
-        <Progress pct={ep.shots > 0 ? (ep.locked / ep.shots) * 100 : 0} />
-      </div>
 
-      <div className="w-20 shrink-0 text-right">
-        {ep.review > 0 ? (
-          <StatusPill status="review" count={ep.review} />
-        ) : (
-          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            —
-          </span>
-        )}
-      </div>
+        <div className="w-44 shrink-0">
+          <div className="tnum mb-0.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+            已锁定 {ep.locked} / {ep.shots}
+          </div>
+          <Progress pct={ep.shots > 0 ? (ep.locked / ep.shots) * 100 : 0} />
+        </div>
 
-      <div className="w-28 shrink-0 text-right text-[12px]">
-        <Cost microUsd={ep.costMicroUsd} mockMicroUsd={ep.mockCostMicroUsd} />
-      </div>
-    </a>
+        <div className="w-20 shrink-0 text-right">
+          {ep.review > 0 ? (
+            <StatusPill status="review" count={ep.review} />
+          ) : (
+            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              —
+            </span>
+          )}
+        </div>
+
+        <div className="w-28 shrink-0 text-right text-[12px]">
+          <Cost microUsd={ep.costMicroUsd} mockMicroUsd={ep.mockCostMicroUsd} />
+        </div>
+      </a>
+    </div>
   )
 }

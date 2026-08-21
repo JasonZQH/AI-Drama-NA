@@ -400,6 +400,81 @@ describe('generate-batch 的 dryRun（06 §4：必须先用的那个）', () => 
   })
 })
 
+/**
+ * dryRun 的估算必须按**每一镜自己的 provider** 算。
+ *
+ * 此前 `planBatch` 收单个 provider，调用方传 `deps.providers[0]` ——而
+ * `buildProviderPool` 把 mock 排在最前。于是同一集里指定了真 provider 的镜头
+ * 也按 mock 的价目表估价。
+ *
+ * 真钱实测撞到的数字：面板显示「预估 **$0.60**」，实际 11 × $0.3667 = **$4.03**
+ * ——低估 10 倍，而**预算闸门读的就是这个数**。
+ */
+describe('批量估算按每镜路由，不是拿池里第一个乘以镜头数', () => {
+  it('给镜头指定更贵的 provider，dryRun 的数要跟着涨', async () => {
+    const dry = () =>
+      app
+        .inject({
+          method: 'POST',
+          url: `/api/episodes/${episodeId}/generate-batch`,
+          headers: WRITE_HEADERS,
+          payload: { dryRun: true },
+        })
+        .then((r) => r.json() as { planned: number; estimatedCostMicroUsd: number })
+
+    const before = await dry()
+    expect(before.planned).toBeGreaterThan(0)
+
+    /*
+     * 造一个"更贵的 mock"塞进池子并指到某一镜上。用 mock 的变体而不是真
+     * provider：这条用例要验的是**路由参与了估算**，不是某一家的具体价钱。
+     */
+    const pricey = new MockProvider({ latencyScale: 0, failureRate: 0 })
+    Object.defineProperty(pricey, 'id', { value: 'mock-pricey' })
+    const original = pricey.estimateCost.bind(pricey)
+    pricey.estimateCost = (req) => original(req) * 100
+
+    const withPricey = buildServer({
+      db,
+      queues,
+      storage,
+      providers: [new MockProvider({ latencyScale: 0, failureRate: 0 }), pricey],
+      maxAttempts: 4,
+      media: { render: () => Promise.reject(new Error('未配置')) },
+      healthProbe: () => client`SELECT 1`,
+      makeSubscriber: () => createConnection(REDIS_URL),
+      apiKey: TEST_API_KEY,
+    })
+    await withPricey.ready()
+
+    const [shot] = await db
+      .select({ id: s.shots.id })
+      .from(s.shots)
+      .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+      .where(and(eq(s.scenes.episodeId, episodeId), eq(s.shots.status, 'ready')))
+      .limit(1)
+    if (!shot) return // 这一集当下没有 ready 的镜头，别的用例改过状态
+
+    await db.update(s.shots).set({ providerHint: 'mock-pricey' }).where(eq(s.shots.id, shot.id))
+    try {
+      const after = await withPricey
+        .inject({
+          method: 'POST',
+          url: `/api/episodes/${episodeId}/generate-batch`,
+          headers: WRITE_HEADERS,
+          payload: { dryRun: true },
+        })
+        .then((r) => r.json() as { estimatedCostMicroUsd: number })
+      expect(
+        after.estimatedCostMicroUsd,
+        '指定了贵 100 倍的 provider，估算却没变——说明估算没走路由，闸门读的是个假数',
+      ).toBeGreaterThan(before.estimatedCostMicroUsd)
+    } finally {
+      await db.update(s.shots).set({ providerHint: null }).where(eq(s.shots.id, shot.id))
+    }
+  })
+})
+
 describe('依赖解析（03 §6）', () => {
   it('前序未 locked 的镜头被阻塞，不入队', () => {
     const r = resolveDependencies([
@@ -1926,6 +2001,63 @@ describe('密钥探测（打桩，不打真实 OpenRouter）', () => {
  * 取数逻辑就是 PR-J 修掉的那类 bug 的翻版——两份会漂，而漂了之后预览显示的和
  * 真实发出去的不是一回事，那比没有预览更坏（人会照着一份假的去调措辞）。
  */
+/**
+ * 成片必须能在面板上找到。
+ *
+ * 此前面板里**唯一**通向 `/watch` 的路径是渲染那一刻的 `window.open`——
+ * 关掉那个标签页，片子就再也找不到了。而它是这条流水线的最终产物。
+ */
+describe('成片入口', () => {
+  it('GET /api/episodes/:id 回 master：有渲染过就给 assetId', async () => {
+    const before = (await app.inject({ method: 'GET', url: `/api/episodes/${episodeId}` })).json() as {
+      master: { assetId: string } | null
+    }
+    // 这一集有没有渲染过取决于别的用例，两种都合法——但形状必须在
+    expect(before).toHaveProperty('master')
+
+    // 造一条成功的 render_job，master 必须出现
+    const [tl] = await db.insert(s.timelines).values({ episodeId, version: 900, status: 'draft' }).returning()
+    const [asset] = await db
+      .insert(s.assets)
+      .values({
+        projectId,
+        kind: 'master',
+        storageKey: 'test/master-entry.mp4',
+        mime: 'video/mp4',
+        bytes: 1,
+        sha256: 'x'.repeat(64),
+        producedBy: 'render',
+      })
+      .returning()
+    const [rj] = await db
+      .insert(s.renderJobs)
+      .values({
+        timelineId: tl!.id,
+        status: 'succeeded',
+        outputAssetId: asset!.id,
+        finishedAt: new Date(),
+      })
+      .returning()
+    try {
+      const after = (await app.inject({ method: 'GET', url: `/api/episodes/${episodeId}` })).json() as {
+        master: { assetId: string } | null
+      }
+      expect(after.master?.assetId, '渲染过了却没给成片入口').toBe(asset!.id)
+    } finally {
+      await db.delete(s.renderJobs).where(eq(s.renderJobs.id, rj!.id))
+      await db.delete(s.assets).where(eq(s.assets.id, asset!.id))
+      await db.delete(s.timelines).where(eq(s.timelines.id, tl!.id))
+    }
+  })
+
+  it('分集列表带 hasMaster，列表页据此给入口', async () => {
+    const r = await app.inject({ method: 'GET', url: `/api/projects/${projectId}/episodes` })
+    const eps = (r.json() as { episodes: { id: string; hasMaster: boolean }[] }).episodes
+    expect(eps.length).toBeGreaterThan(0)
+    for (const e of eps) expect(typeof e.hasMaster, `${e.id} 没有 hasMaster`).toBe('boolean')
+  })
+})
+
 describe('提示词检视', () => {
   it('GET /api/prompts 回底座，且标出该改哪个文件', async () => {
     const r = await app.inject({ method: 'GET', url: '/api/prompts' })

@@ -123,7 +123,7 @@ export function AssetEditor({
       aria-label={`${editing ? '编辑' : '新建'}${LABEL[kind]}`}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-xl flex-col rounded-lg"
+        className="flex max-h-[85vh] min-h-[45vh] w-full max-w-xl flex-col rounded-lg"
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-strong)' }}
       >
         <div
