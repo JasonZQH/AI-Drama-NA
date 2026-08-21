@@ -136,45 +136,30 @@ export async function ensureTimeline(db: Db, episodeId: string): Promise<string>
 /** 按 locked 镜头的顺序铺 clip。空 timeline 与新建 timeline 共用 */
 async function fillClips(db: Db, timelineId: string, episodeId: string): Promise<void> {
   const shots = await db
-    .select({
-      id: s.shots.id,
-      index: s.shots.index,
-      takeId: s.shots.selectedTakeId,
-      durationSec: s.shots.durationSec,
-    })
+    .select({ id: s.shots.id, index: s.shots.index, takeId: s.shots.selectedTakeId })
     .from(s.shots)
     .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
     .where(eq(s.scenes.episodeId, episodeId))
     .orderBy(asc(s.shots.index))
 
   /*
-   * **按镜头的意图时长裁剪，不是拿到多长播多长。**
+   * **不按 `shots.duration_sec` 自动裁剪。**
    *
-   * provider 的时长是**档位**不是数值：seedance 最低 4 秒，所以一个 2 秒的镜头
-   * 拿回来的也是 4.04 秒的片子（`snapDuration` 的已知代价，钱照 4 秒付）。
-   * 之前这里不写 `trimEndSec`，`outpoint` 就是空，媒体 worker 整段拼进去——
-   * 真机实测：**一集 11 镜、目标 30 秒、成片 44.5 秒，偏差 +48%。**
+   * 一度这么做过，理由是「成片 44.5 秒而目标 30 秒」。真机看帧之后撤掉了：
+   * 模型是**按拿到的时长编排动作的**，尾巴不是冗余是落点。实测两例——
    *
-   * 后果不只是长了。整个时长规划层因此是装饰性的：分镜的 E3 判据守着 ±15%、
-   * 面板显示「30.0s / 目标 30s」、确认弹窗按秒估价——而成片跟这些数一个都对不上。
-   * 每个 2 秒的镜头实播 4 秒，节奏也被拖平。
+   * - 计划 2 秒那一镜：t=2.0 她还举着钥匙在头顶，**钥匙落到桌上是 t=4.0 的事**
+   * - 计划 3 秒那一镜：dolly 跑满 4 秒才到位，裁到 3 秒等于推到一半停住
    *
-   * 裁掉的是**已经付过钱的尾巴**——那笔钱在 `snapDuration` 那一层就花掉了，
-   * 这里留着它只会让成片不是你计划的那一集。人工调过 trim 的不受影响：
-   * `ensureTimeline` 只回填空的 timeline。
+   * 两次都把那一镜唯一的剧情动作切掉了。**长度对不上的根因在上游**：
+   * seedance 最短 4 秒，而分镜可以规划 2 秒——规划了一段买不到的片子。
+   * 那要在分镜层挡（按 provider 档位约束每镜时长），不是在这里拿剪刀补。
    *
-   * `outpoint` 是**源文件里的绝对时间**（concat demuxer 语义），自动回填时
-   * `trimStartSec` 取默认值 0，所以就是 durationSec 本身。
+   * `trim_end_sec` 这一列留给**人工**在时间线上调——那时人是看着画面剪的。
    */
   const clips = shots
     .filter((x) => x.takeId !== null)
-    .map((x, i) => ({
-      timelineId,
-      index: i + 1,
-      takeId: x.takeId!,
-      transition: 'cut' as const,
-      trimEndSec: x.durationSec,
-    }))
+    .map((x, i) => ({ timelineId, index: i + 1, takeId: x.takeId!, transition: 'cut' as const }))
 
   if (clips.length > 0) await db.insert(s.timelineClips).values(clips)
 }

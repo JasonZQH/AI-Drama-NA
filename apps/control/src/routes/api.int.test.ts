@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { and, desc, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createDb } from '../db/client.js'
@@ -8,7 +8,7 @@ import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
 import { createConnection, createQueues } from '../queue/queues.js'
 import { assertNoWorker } from '../queue/assertNoWorker.js'
-import { MediaWorkerUnavailable, ensureTimeline, renderEpisode } from '../pipeline/render.js'
+import { MediaWorkerUnavailable, renderEpisode } from '../pipeline/render.js'
 import { buildServer, type ServerDeps } from '../server.js'
 import { Storage, storageFromEnv } from '../storage/s3.js'
 import { resolveDependencies } from '../pipeline/batch.js'
@@ -747,38 +747,6 @@ describe('空 timeline 要回填，不能永久复用', () => {
 
     expect(reached, '空 timeline 没回填——这一集被永久钉死了').toBe(true)
     expect(await clipCount(), '回填后该有 clip').toBeGreaterThan(0)
-  })
-
-  /**
-   * **provider 的时长是档位不是数值。**
-   *
-   * seedance 最低 4 秒，所以一个 2 秒的镜头拿回来也是 4.04 秒的片子。不写
-   * `trimEndSec` 的话 `outpoint` 为空、媒体 worker 整段拼进去——真机实测
-   * 一集 11 镜、目标 30 秒、成片 **44.5 秒（+48%）**。
-   *
-   * 后果不只是长了：分镜的 E3 判据守着 ±15%、面板显示「30.0s / 目标 30s」、
-   * 确认弹窗按秒估价，而成片跟这些数一个都对不上——整个时长规划层是装饰性的。
-   */
-  it('clip 按镜头的意图时长裁剪，而不是拿到多长播多长', async () => {
-    await makeRenderable()
-    const tlId = await ensureTimeline(db, episodeId)
-    const clips = await db.select().from(s.timelineClips).where(eq(s.timelineClips.timelineId, tlId))
-    expect(clips.length).toBeGreaterThan(0)
-    for (const c of clips) {
-      expect(c.trimEndSec, 'trimEndSec 为空 = 整段拼进去，意图时长白规划').not.toBeNull()
-    }
-    // 与那一镜的 duration_sec 逐字相等——不是随便一个非空值
-    const byTake = new Map(clips.map((c) => [c.takeId, c.trimEndSec]))
-    const locked = await db
-      .select({ takeId: s.shots.selectedTakeId, durationSec: s.shots.durationSec })
-      .from(s.shots)
-      .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
-      .where(and(eq(s.scenes.episodeId, episodeId), isNotNull(s.shots.selectedTakeId)))
-    for (const l of locked) {
-      expect(Number(byTake.get(l.takeId!)), `镜头 ${l.takeId} 的裁剪点对不上意图时长`).toBe(
-        Number(l.durationSec),
-      )
-    }
   })
 })
 
