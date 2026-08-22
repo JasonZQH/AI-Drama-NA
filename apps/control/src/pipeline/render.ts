@@ -142,6 +142,21 @@ async function fillClips(db: Db, timelineId: string, episodeId: string): Promise
     .where(eq(s.scenes.episodeId, episodeId))
     .orderBy(asc(s.shots.index))
 
+  /*
+   * **不按 `shots.duration_sec` 自动裁剪。**
+   *
+   * 一度这么做过，理由是「成片 44.5 秒而目标 30 秒」。真机看帧之后撤掉了：
+   * 模型是**按拿到的时长编排动作的**，尾巴不是冗余是落点。实测两例——
+   *
+   * - 计划 2 秒那一镜：t=2.0 她还举着钥匙在头顶，**钥匙落到桌上是 t=4.0 的事**
+   * - 计划 3 秒那一镜：dolly 跑满 4 秒才到位，裁到 3 秒等于推到一半停住
+   *
+   * 两次都把那一镜唯一的剧情动作切掉了。**长度对不上的根因在上游**：
+   * seedance 最短 4 秒，而分镜可以规划 2 秒——规划了一段买不到的片子。
+   * 那要在分镜层挡（按 provider 档位约束每镜时长），不是在这里拿剪刀补。
+   *
+   * `trim_end_sec` 这一列留给**人工**在时间线上调——那时人是看着画面剪的。
+   */
   const clips = shots
     .filter((x) => x.takeId !== null)
     .map((x, i) => ({ timelineId, index: i + 1, takeId: x.takeId!, transition: 'cut' as const }))

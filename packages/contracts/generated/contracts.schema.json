@@ -288,6 +288,9 @@
             ]
           }
         },
+        "minDurationSec": {
+          "type": "number"
+        },
         "maxDurationSec": {
           "type": "number"
         },
@@ -362,6 +365,7 @@
       },
       "required": [
         "modes",
+        "minDurationSec",
         "maxDurationSec",
         "resolutions",
         "aspectRatios",
@@ -469,6 +473,13 @@
           "maximum": 10
         },
         "characterNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hiddenAnchors": {
+          "default": [],
           "type": "array",
           "items": {
             "type": "string"

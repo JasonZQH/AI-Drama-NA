@@ -217,7 +217,24 @@ async function cleanup(): Promise<void> {
     await db.delete(s.generationJobs).where(inArray(s.generationJobs.id, ids))
   }
 
-  await db.update(s.shots).set({ status: 'ready', selectedTakeId: null, attemptCount: 0 })
+  /*
+   * **这一行原来没有 `where`。**
+   *
+   * 于是每跑一次 `pnpm test:int`，afterAll 都会把**全库每一个镜头**抹成
+   * `ready` / `selectedTakeId=null` / `attemptCount=0`——包括用户自己那些已经
+   * 花了真钱、已经选片锁定、已经渲染成片的镜头。takes 与 generation_jobs 不动，
+   * `updated_at` 也不动（这里没写它），所以从数据上看不出是谁干的：
+   * 一集片子还在，状态却退回了「待生成」。
+   *
+   * 实测后果：用户一集 11 镜、$4.40 的成片被退回 ready，而
+   * `resolveDependencies` 只看 status——再点一次「生成整集」就是重付一遍。
+   *
+   * 只清本文件自己那一镜。别的用例、别的项目的数据一律不碰。
+   */
+  await db
+    .update(s.shots)
+    .set({ status: 'ready', selectedTakeId: null, attemptCount: 0 })
+    .where(eq(s.shots.id, shotId))
   await queues.generate.drain(true)
 }
 
@@ -813,6 +830,37 @@ describe('PATCH /api/shots/:id', () => {
     expect((await readBack()).promptOverride, '清空该回到自动拼装').toBeNull()
   })
 
+  /**
+   * 改一行就够，后面每一镜自动跟着变——这正是存事件不存投影换来的。
+   * 人工改它的场景是真实的：模型漏报了移除，或者报了个近义词被 E6 判死。
+   */
+  it('能改 hiddenAnchors，且投影跟着重算', async () => {
+    const [char] = await db
+      .insert(s.characters)
+      .values({ projectId, name: 'PATCH-anchor', description: 'x', anchorTokens: ['jade ring'] })
+      .returning({ id: s.characters.id })
+    await db
+      .update(s.shots)
+      .set({ characterIds: [char!.id] })
+      .where(eq(s.shots.id, shotId))
+    try {
+      expect((await resolvePrompt(db, shotId))!.prompt).toContain('jade ring')
+
+      await patch({ hiddenAnchors: ['  Jade Ring '] })
+      expect((await readBack()).hiddenAnchors, '存事件时要 trim').toEqual(['Jade Ring'])
+      expect(
+        (await resolvePrompt(db, shotId))!.prompt,
+        '改一行就够——投影在读时算，不用手写失效传播',
+      ).not.toContain('jade ring')
+
+      await patch({ hiddenAnchors: [] })
+      expect((await resolvePrompt(db, shotId))!.prompt, '撤销也该立刻回来').toContain('jade ring')
+    } finally {
+      await db.update(s.shots).set({ characterIds: [], hiddenAnchors: [] }).where(eq(s.shots.id, shotId))
+      await db.delete(s.characters).where(eq(s.characters.id, char!.id))
+    }
+  })
+
   it('空 body 拒收——不然是一次什么都没做的成功', async () => {
     expect((await patch({})).statusCode).toBe(422)
   })
@@ -856,6 +904,99 @@ describe('PATCH /api/shots/:id', () => {
       /状态 generating 不接受事件 intent\.edited/,
     )
     expect((await readBack()).action, '被拒时一个字段都不该动——所以迁移在写列之前').not.toBe('生成中偷偷改')
+  })
+})
+
+/**
+ * **投影：存事件，读时算累计。**
+ *
+ * `shots.hidden_anchors` 存的是「这一镜发生的移除」，「到这一镜为止哪些已经不在」
+ * 由 `resolvePrompt` 按 index 聚合前序算出来。
+ *
+ * 存累计集会快一点，但 `PATCH /api/shots/:id` 改了前面某一镜之后，后面每一行存
+ * 着的那份都是陈旧的——每条编辑路径都要手写一遍失效传播，漏一条就静默错，
+ * 而错法恰好就是这个字段要修的那个 bug（道具又回到身上）。
+ */
+describe('hiddenAnchors：事件入库，投影在读时算', () => {
+  let charId = ''
+  let shotIds: string[] = []
+  const ANCHOR = 'brass key on a cord at her neck'
+
+  beforeAll(async () => {
+    const [c] = await db
+      .insert(s.characters)
+      .values({
+        projectId,
+        name: 'MAYA-hidden',
+        description: 'woman in her twenties',
+        anchorTokens: ['faded blue scrubs', ANCHOR],
+      })
+      .returning({ id: s.characters.id })
+    charId = c!.id
+    const [sc] = await db
+      .insert(s.scenes)
+      .values({ episodeId, index: 950, summary: 'hidden-anchor 用例' })
+      .returning({ id: s.scenes.id })
+    const rows = await db
+      .insert(s.shots)
+      .values(
+        [1, 2, 3].map((i) => ({
+          sceneId: sc!.id,
+          index: 950 + i,
+          shotType: 'ms' as const,
+          action: `hidden anchor fixture ${i}`,
+          characterIds: [charId],
+          status: 'ready' as const,
+        })),
+      )
+      .returning({ id: s.shots.id })
+    shotIds = rows.map((r) => r.id)
+  })
+
+  afterAll(async () => {
+    await db.delete(s.shots).where(inArray(s.shots.id, shotIds))
+    await db.delete(s.scenes).where(eq(s.scenes.index, 950))
+    await db.delete(s.characters).where(eq(s.characters.id, charId))
+  })
+
+  const promptOf = async (i: number) => (await resolvePrompt(db, shotIds[i]!))!.prompt
+
+  it('没有移除事件时，锚点每一镜都在', async () => {
+    for (const i of [0, 1, 2]) expect(await promptOf(i)).toContain(ANCHOR)
+  })
+
+  it('第 2 镜报一次，第 2 镜起就不再带着它', async () => {
+    await db
+      .update(s.shots)
+      .set({ hiddenAnchors: [ANCHOR] })
+      .where(eq(s.shots.id, shotIds[1]!))
+
+    expect(await promptOf(0), '移除之前那一镜不受影响').toContain(ANCHOR)
+    expect(await promptOf(1), '就在这一镜摘的——同一句里不该既有它又有摘它的动作').not.toContain(ANCHOR)
+    expect(await promptOf(2), '后面的镜头自动继承，不用再报一次').not.toContain(ANCHOR)
+    expect(await promptOf(2), '别的锚点是身份，不能跟着没').toContain('faded blue scrubs')
+  })
+
+  it('撤销第 2 镜的移除，第 3 镜自动跟着回来——这就是不存投影的理由', async () => {
+    await db
+      .update(s.shots)
+      .set({ hiddenAnchors: [ANCHOR] })
+      .where(eq(s.shots.id, shotIds[1]!))
+    expect(await promptOf(2)).not.toContain(ANCHOR)
+
+    // 只改第 2 镜这一行，不碰第 3 镜
+    await db.update(s.shots).set({ hiddenAnchors: [] }).where(eq(s.shots.id, shotIds[1]!))
+    expect(await promptOf(2), '存累计集的话这里还是旧值——而没有任何东西会去重算').toContain(ANCHOR)
+  })
+
+  it('预览要透出 hiddenTraits，否则少一个词看起来就像 bug', async () => {
+    await db
+      .update(s.shots)
+      .set({ hiddenAnchors: [ANCHOR] })
+      .where(eq(s.shots.id, shotIds[1]!))
+    const r = await resolvePrompt(db, shotIds[2]!)
+    expect(r!.inputs.hiddenTraits).toContain(ANCHOR)
+    await db.update(s.shots).set({ hiddenAnchors: [] }).where(eq(s.shots.id, shotIds[1]!))
   })
 })
 
@@ -959,6 +1100,7 @@ describe('POST /api/episodes/:id/shotlist', () => {
         dialogue: i % 2 === 0 ? '' : 'You did.',
         durationSec: 4,
         characterNames: i % 2 === 0 ? [] : [names[0]!],
+        hiddenAnchors: [] as string[],
       })),
     })),
   })
@@ -1143,7 +1285,53 @@ describe('POST /api/episodes/:id/shotlist', () => {
      * 294 秒时**没有任何分镜表能同时过 E2 与 E3**。不提前拦的话是两轮 LLM 的
      * 钱花完，然后给一句「总时长不对」，人看不出真正的原因。
      */
-    it('目标时长本身不可达 → 调模型之前就拦下', async () => {
+    /**
+     * **目标够不着不拦生成，但要在生成结果里说清楚。**
+     *
+     * 时长是输出不是输入（见 `shotlist.ts` 的 W3）：一集多长由剧本决定。目标只
+     * 用来告诉人「你预想的和实际能做的差多少」——而这句话要在**第一次拿到分镜时**
+     * 就看见，不是等他渲染完发现成片比预期长 48% 才回头猜。
+     */
+    /**
+     * **落库存的是事件，不是累计集。**
+     *
+     * 累计集是投影，由 `resolvePrompt` 按 index 聚合前序算。存投影的话，
+     * `PATCH /api/shots/:id` 改了第 2 镜之后，后面每一行存着的那份都是陈旧的——
+     * 而没有任何东西会去重算，错法恰好就是这个字段要修的 bug（道具又回到身上）。
+     *
+     * 这条必须走**真实的分镜落库**：直接写列的用例绕过了这一步，改成前向填充
+     * 也照样绿。
+     */
+    it('hiddenAnchors 原样落事件，后续镜头不跟着复制一份', async () => {
+      await clearShots()
+      const [char] = await db
+        .select({ anchorTokens: s.characters.anchorTokens })
+        .from(s.characters)
+        .where(and(eq(s.characters.projectId, projectId), eq(s.characters.name, charNames[0]!)))
+      const token = char!.anchorTokens[0]
+      expect(token, '前提：夹具角色得有锚点，否则 E6 会先把这一份判死').toBeTruthy()
+
+      const d = draftOf(charNames)
+      // 第 1 场第 2 镜报一次移除
+      d.scenes[0]!.shots[1] = { ...d.scenes[0]!.shots[1]!, hiddenAnchors: [token!] }
+
+      const res = await post(
+        withStub(() => Promise.resolve({ draft: d, warnings: [], repaired: false, costUsd: 0 })),
+        epId,
+      )
+      expect(res.statusCode, (res.json() as { error?: { message: string } }).error?.message).toBe(201)
+
+      const rows = await db
+        .select({ index: s.shots.index, hidden: s.shots.hiddenAnchors })
+        .from(s.shots)
+        .where(inArray(s.shots.sceneId, sceneIds))
+        .orderBy(s.shots.index)
+      expect(rows[1]!.hidden, '报的那一镜要存下来').toEqual([token])
+      for (const r of rows.filter((x) => x.index !== 2))
+        expect(r.hidden, `第 ${r.index} 镜不该复制一份——那是投影，读时算`).toEqual([])
+    })
+
+    it('目标时长够不着 → 照常生成，但 warning 里要说明白', async () => {
       await clearShots()
       await db.update(s.episodes).set({ targetDurationSec: 600 }).where(eq(s.episodes.id, epId))
       let called = false
@@ -1152,9 +1340,10 @@ describe('POST /api/episodes/:id/shotlist', () => {
         return Promise.resolve({ draft: draftOf(charNames), warnings: [], repaired: false, costUsd: 0 })
       })
       const res = await post(app2, epId)
-      expect(res.statusCode).toBe(422)
-      expect(called, '钱不该花出去').toBe(false)
-      expect((res.json() as { error: { message: string } }).error.message).toMatch(/不可能达成/)
+      expect(res.statusCode, '够不着不是错误——剧情需要多长就多长').toBe(201)
+      expect(called, '模型该照常被调用').toBe(true)
+      const warnings = (res.json() as { warnings: string[] }).warnings
+      expect(warnings.join(), '够不着这件事要排在最前面').toMatch(/^这一集会明显短于你的预期/)
       await db.update(s.episodes).set({ targetDurationSec: 72 }).where(eq(s.episodes.id, epId))
     })
 

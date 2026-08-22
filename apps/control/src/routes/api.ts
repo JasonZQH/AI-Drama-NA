@@ -221,6 +221,14 @@ const shotBody = z.object({
    * 至今不存在。空串落 NULL 回到自动拼装。
    */
   promptOverride: z.string().nullish(),
+  /**
+   * 在这一镜发生的锚点移除**事件**（不是累计集）。
+   *
+   * 人工改它的场景是真实的：模型漏报了「她把钥匙摘了」，或者报了个近义词被 E6
+   * 判死之后想直接填对。投影由 `resolvePrompt` 读时算，所以改这一行就够——
+   * 后面每一镜自动跟着变，这正是存事件不存投影换来的。
+   */
+  hiddenAnchors: z.array(z.string()).optional(),
 })
 
 const shotPatch = (b: z.infer<typeof shotBody>): Record<string, unknown> => ({
@@ -232,6 +240,9 @@ const shotPatch = (b: z.infer<typeof shotBody>): Record<string, unknown> => ({
   ...(b.durationSec === undefined ? {} : { durationSec: String(b.durationSec) }),
   ...(b.characterIds === undefined ? {} : { characterIds: b.characterIds }),
   ...(b.promptOverride === undefined ? {} : { promptOverride: blankToNull(b.promptOverride) }),
+  ...(b.hiddenAnchors === undefined
+    ? {}
+    : { hiddenAnchors: b.hiddenAnchors.map((a) => a.trim()).filter(Boolean) }),
   ...(Object.keys(b).length > 0 ? { updatedAt: new Date() } : {}),
 })
 
@@ -622,6 +633,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
           synopsis: null,
           episodeBrief: null,
           targetDurationSec: sample.targetDurationSec,
+          minShotSec: poolMinShotSec(),
           scenes: Array.from({ length: sample.scenes }, () => ({
             summary: null,
             timeOfDay: null,
@@ -848,6 +860,21 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
    * ponytail: `usage.cost` 只随响应返回、不落账。要按文本模型出成本报表时再建
    * 一张表——现在建就是为一个不存在的报表付表结构的成本。
    */
+  /**
+   * 池里最宽松的那家 provider 的单镜时长下限。
+   *
+   * **取最小值不是最大值**：同时配了 wan（2 秒起）和 seedance（4 秒起）时，
+   * 2 秒的镜头是可以买到的——只要那一镜路由到 wan。真正买不到的由适配器的
+   * `validate()` 在提交前拦，不必在分镜层一刀切成最严的那家。
+   *
+   * 排除 mock：它宣称 1 秒起，把它算进来这道闸就永远是 1，等于没有。
+   */
+  const poolMinShotSec = (): number => {
+    const real = deps.providers.filter((p) => p.id !== 'mock')
+    const mins = (real.length > 0 ? real : deps.providers).map((p) => p.capabilities.minDurationSec)
+    return mins.length > 0 ? Math.min(...mins) : 1
+  }
+
   app.post('/api/episodes/:id/shotlist', async (req, reply) => {
     const { id } = Uuid.parse(req.params)
 
@@ -862,12 +889,15 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       )
 
     /*
-     * 目标时长本身可不可能被满足——在花那两轮 LLM 之前问。不问的话报错是
-     * 「总时长不对」，人读不出真正的原因是这一集的目标时长压根不可达。
-     * `episodes.target_duration_sec` 没有 CHECK，PATCH 也放到 600。
+     * 目标时长够不够得着——在花那两轮 LLM 之前算一次。
+     *
+     * **不再拦人。** 时长是输出不是输入（见 shotlist.ts 的 W3）：一集多长由剧本
+     * 决定，目标只用来告诉人「你预想的和实际能做的差多少」。硬约束只剩单镜时长
+     * 必须是这家 provider 真能产出的值（E8）。
+     *
+     * 但要在**生成之前**说，而不是等 W3 事后告诉他偏了 48%——那时钱已经花了。
      */
-    const unreachable = targetOutOfReach(ep.targetDurationSec)
-    if (unreachable) throw new ApiError('VALIDATION_FAILED', unreachable)
+    const unreachable = targetOutOfReach(ep.targetDurationSec, poolMinShotSec())
 
     const sceneRows = await db
       .select()
@@ -918,6 +948,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
             .filter(Boolean)
             .join('\n') || null,
         targetDurationSec: ep.targetDurationSec,
+        minShotSec: poolMinShotSec(),
         // `sceneRows` 本来就是整行，`lighting` 一直在手里被丢掉——「光照太单一」在这一层的直接原因
         scenes: sceneRows.map((sc) => ({
           summary: sc.summary,
@@ -979,6 +1010,16 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
           // 列是 numeric(4,1)。显式取整，别让 Postgres 悄悄替你截
           durationSec: i.durationSec.toFixed(1),
           characterIds: castIds(i.characterNames),
+          /*
+           * **原样落事件，不在这里前向填充成累计集。**
+           *
+           * 累计集是**投影**，由 `resolvePrompt` 读时按 index 聚合前序算出来。
+           * 存投影的话，`PATCH /api/shots/:id` 改了第 2 镜之后，第 3–11 镜存着
+           * 的那份就是陈旧的，而没有任何东西会去重算——每一条编辑路径都要手写
+           * 一遍失效传播，漏一条就静默错，而错的表现是「prompt 里那件道具又
+           * 回来了」，跟这个字段要修的 bug 一模一样。
+           */
+          hiddenAnchors: i.hiddenAnchors,
         }
       }),
     )
@@ -992,7 +1033,11 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       shots: rows.length,
       scenes: out.draft.scenes.length,
       repaired: out.repaired,
-      warnings: out.warnings,
+      /*
+       * 目标够不着那条排在最前面：它是**生成之前**就知道的，而 W3 是事后量出来的。
+       * 两条一起给人看，他才分得清「我的预期本来就不现实」和「这一集碰巧长了」。
+       */
+      warnings: unreachable ? [unreachable, ...out.warnings] : out.warnings,
       costUsd: out.costUsd,
     })
   })

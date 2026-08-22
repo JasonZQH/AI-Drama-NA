@@ -64,6 +64,38 @@ const draftShot = (names: readonly string[]) =>
        */
       .describe('本镜时长，1 到 10 秒之间，典型 4 秒'),
     /**
+     * 从这一镜起**不再出现**的角色锚点，逐字取自输入里给的锚点表。`[]` = 无变化。
+     *
+     * ## 为什么需要它
+     *
+     * 锚点是跨镜一致性的载体（ADR-0008）：每一镜都带同一串，模型才有机会把人
+     * 画成同一个。这对**身份**成立（发型、脸、那件一直穿着的外套），对**道具**
+     * 不成立——道具会被剧情拿走。一个字段混了两种语义。
+     *
+     * 真机实测：给角色配了锚点 `brass key on a cord at her neck`，剧本第 2 镜她
+     * 把钥匙摘下放到桌上。拼出来的 prompt 在同一句里自相矛盾——既有那串锚点，
+     * 又有「她把钥匙放到桌上」；而摘下之后的第 3、5、6、8、9、11 镜**照旧带着**
+     * 它。成片上肉眼可见：第 2 镜末帧钥匙在桌上，第 3 镜又回到脖子上。
+     *
+     * ## 为什么只报一次
+     *
+     * **跨镜记忆由代码承担，不由模型承担。** 落库时前向填充成累计集
+     * （见 `api.ts` 的分镜落库），于是 `resolvePrompt` 依旧是纯粹的单镜查询、
+     * `buildPrompt` 依旧是纯函数——这是唯一与现有架构相容的形状。
+     *
+     * ## 消费者
+     *
+     * `prompt.ts` 的 `characterClause` 拿它做**精确匹配**的 filter：把该锚点从
+     * 那一镜的特征表里**删掉**。**不是**拼一句「不再戴着项链」——
+     * `13-character-assets.md` 记的「最贵的一条教训」就是写「No held object」
+     * 模型偏偏塞了把武器。用删除表达消失，不用否定词。
+     */
+    hiddenAnchors: z
+      .array(z.string())
+      .describe(
+        'Anchor tokens that are no longer on the character from this shot onward, copied verbatim from the anchor list in CAST. Empty array in almost every shot. Report a token once, in the shot where it changes — later shots inherit it automatically.',
+      ),
+    /**
      * **角色名是唯一能在 schema 层钉死的叙事字段。**
      *
      * 把本项目 `characters` 表的实际名字灌成 enum，「LLM 编了个不存在的角色」
@@ -152,5 +184,7 @@ export function toIntent(d: DraftShot): ShotIntent {
     characterNames: d.characterNames,
     ...(d.emotion.trim() ? { emotion: d.emotion.trim() } : {}),
     ...(d.dialogue.trim() ? { dialogue: d.dialogue.trim() } : {}),
+    // 空数组原样带过：它是「这一镜没有变化」，不是缺省
+    hiddenAnchors: d.hiddenAnchors.map((a) => a.trim()).filter(Boolean),
   }
 }

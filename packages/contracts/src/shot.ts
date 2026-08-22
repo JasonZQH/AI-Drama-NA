@@ -23,6 +23,13 @@ export const ShotIntent = z.object({
    */
   durationSec: z.number().min(1).max(10),
   characterNames: z.array(z.string()),
+  /**
+   * 在这一镜发生的锚点移除**事件**（不是累计集，投影在 `resolvePrompt` 读时算）。
+   *
+   * 锚点是跨镜一致性的载体，但剧情把道具拿走之后它就变成自相矛盾。见
+   * `shotlist.ts` 的 `hiddenAnchors` 与 `db/schema.ts` 的同名列。
+   */
+  hiddenAnchors: z.array(z.string()).default([]),
 })
 export type ShotIntent = z.infer<typeof ShotIntent>
 

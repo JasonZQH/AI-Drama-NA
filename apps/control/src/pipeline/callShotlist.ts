@@ -1,11 +1,5 @@
 import { shotlistDraft, shotlistJsonSchema, type ShotlistDraft, type TimeOfDay } from '@ai-drama/contracts'
-import {
-  DURATION_TOLERANCE,
-  MAX_CAST_PER_SHOT,
-  SAME_SHOT_TYPE_RUN,
-  SHOT_COUNT,
-  lintShotlist,
-} from './shotlist.js'
+import { MAX_CAST_PER_SHOT, SAME_SHOT_TYPE_RUN, SHOT_COUNT, lintShotlist } from './shotlist.js'
 
 /**
  * 剧本 → 分镜表（`03-pipeline.md` S3）。**一个函数，一个实现。**
@@ -70,6 +64,14 @@ export interface ShotlistInput {
    */
   readonly episodeBrief: string | null
   readonly targetDurationSec: number
+  /**
+   * 池里最宽松的那家 provider 的单镜时长下限。
+   *
+   * 各家时长是**档位**不是连续值（seedance 全系最短 4 秒）。不发这个数，模型会
+   * 规划一堆买不到的 2 秒镜头——`snapDuration` 静默抬到 4 秒，钱按 4 秒付，
+   * 而整集按 2 秒那份计划算，成片跟面板上每一个数都对不上。
+   */
+  readonly minShotSec: number
   /** 顺序即场次号。模型必须一一对应，不能增删合并 */
   readonly scenes: readonly {
     readonly summary: string | null
@@ -150,7 +152,22 @@ export function systemPrompt(input: ShotlistInput): string {
     'Hard rules:',
     `- Return exactly ${input.scenes.length} scene objects, in the same order as the input scenes. Do not add, drop, or merge scenes.`,
     `- ${SHOT_COUNT.min} to ${SHOT_COUNT.max} shots total across all scenes. Typical is 18.`,
-    `- Shot durations must sum to about ${input.targetDurationSec} seconds (within ${DURATION_TOLERANCE * 100}%). Each shot 2-8 seconds.`,
+    /*
+     * **时长是输出不是输入。**
+     *
+     * 原来这里写的是「must sum to about N (within 15%)」，配一条 error 级的判据。
+     * 真机实测的后果：目标 30 秒的一集，模型交出 `3.0×8 + 2.0×3 = 30.0`，精确到
+     * 小数点后一位——它不是在导戏，是在解算术题。而那 30 秒**根本不可达**
+     * （seedance 最短 4 秒 × 至少 10 镜 = 40 秒），于是它被逼着写下一堆买不到的
+     * 数字，而 E3 给了满分。
+     *
+     * 现在硬约束只剩「单镜必须是这家 provider 真能产出的整秒数」。一集多长由
+     * 剧本决定，目标降级成一句 roughly。成本不靠它兜底：批量生成前有 dryRun
+     * 估价 + 预算闸门 + 确认弹窗三道。
+     */
+    `- Give each shot the length its action actually needs. Let the scene decide how many shots it takes; do not pad or compress to hit a number.`,
+    `- Whole seconds only, from ${input.minShotSec} to 8. **${input.minShotSec} is a hard floor** — the video model physically cannot make anything shorter, and a fraction of a second is rounded up to the next whole second you have to pay for.`,
+    `- The episode should land roughly around ${input.targetDurationSec} seconds. That is the author's expectation, not a quota — if the script needs more or fewer shots, follow the script.`,
     `- At most ${MAX_CAST_PER_SHOT} characters per shot. More than that interacting reliably breaks the video model.`,
     '- Every shot with dialogue must list its speaker in characterNames.',
     `- Vary shotType; never use the same one ${SAME_SHOT_TYPE_RUN} shots in a row.`,
@@ -169,6 +186,21 @@ export function systemPrompt(input: ShotlistInput): string {
     '  already in `dialogue`. Write what the body does while it is delivered.',
     '- Vary the sentence shape. Not every shot is a named person performing a verb — some shots',
     '  are a prop, a doorway, a reflection, or a hand. Some are four words long.',
+    /*
+     * **报一次，之后由代码接管。**
+     *
+     * 锚点是跨镜一致性的载体，每一镜都自动拼进去；剧情把道具拿走之后它就变成
+     * 自相矛盾。让模型每一镜重述「现在身上还有什么」是要求它跨镜记忆——那是
+     * 代码的活（`resolvePrompt` 按 index 聚合前序），模型只报变化那一次。
+     *
+     * 同时把 W2 的正向表述口径绑在这里：说「她把项链摘下来」（正向、看得见），
+     * 不说「她不再戴着项链」——扩散模型对否定词经常反向生效。
+     */
+    '- `hiddenAnchors` lists anchor tokens that are no longer on the character, copied verbatim',
+    '  from the bracketed anchor list in <cast>. Use it only in the shot where the change happens —',
+    '  every later shot inherits it automatically, so never repeat it.',
+    '- When a shot removes something, say so positively in `action` ("she pulls the chain over her',
+    '  head, bare collarbone") and put the token in `hiddenAnchors`. Never write "no necklace".',
     ...EXAMPLE,
   ].join('\n')
 }
@@ -211,7 +243,9 @@ const EXAMPLE = [
   '<example>',
   'One scene from a different episode, to show the writing and the rhythm. `<A>` and `<B>` are',
   'placeholders — this episode has its own people in <cast>. Never copy a name, a place, or a',
-  'prop out of this example, and never emit `<A>` or `<B>` yourself.',
+  'prop out of this example, and never emit `<A>` or `<B>` yourself. `<the pendant>` stands for',
+  'an anchor token; in your output every `hiddenAnchors` entry must be copied verbatim from the',
+  'bracketed anchor list in <cast>.',
   '',
   'SCRIPT',
   'INT. STAIRWELL - NIGHT',
@@ -221,10 +255,10 @@ const EXAMPLE = [
   '',
   'SHOTS FOR THAT SCENE',
   '[',
-  '  {"shotType":"establishing","cameraMove":"static","action":"a bare bulb burns over four flights of iron stair rail","emotion":"","dialogue":"","durationSec":3,"characterNames":[]},',
-  '  {"shotType":"ms","cameraMove":"handheld","action":"<A> halts mid-flight, one hand flat on the rail","emotion":"shoulders dropping, breathing hard","dialogue":"","durationSec":4,"characterNames":["<A>"]},',
-  '  {"shotType":"ecu","cameraMove":"static","action":"her thumb works the clasp open and the pendant drops into her coat pocket","emotion":"","dialogue":"","durationSec":2,"characterNames":["<A>"]},',
-  '  {"shotType":"ots","cameraMove":"dolly","action":"over <B> as <A> climbs the last three steps, collar open at her bare throat","emotion":"chin lifted","dialogue":"You came.","durationSec":5,"characterNames":["<A>","<B>"]}',
+  '  {"shotType":"establishing","cameraMove":"static","action":"a bare bulb burns over four flights of iron stair rail","emotion":"","dialogue":"","durationSec":3,"characterNames":[],"hiddenAnchors":[]},',
+  '  {"shotType":"ms","cameraMove":"handheld","action":"<A> halts mid-flight, one hand flat on the rail","emotion":"shoulders dropping, breathing hard","dialogue":"","durationSec":4,"characterNames":["<A>"],"hiddenAnchors":[]},',
+  '  {"shotType":"ecu","cameraMove":"static","action":"her thumb works the clasp open and the pendant drops into her coat pocket","emotion":"","dialogue":"","durationSec":2,"characterNames":["<A>"],"hiddenAnchors":["<the pendant>"]},',
+  '  {"shotType":"ots","cameraMove":"dolly","action":"over <B> as <A> climbs the last three steps, collar open at her bare throat","emotion":"chin lifted","dialogue":"You came.","durationSec":5,"characterNames":["<A>","<B>"],"hiddenAnchors":[]}',
   ']',
   '</example>',
 ] as const
@@ -298,6 +332,8 @@ function check(
   names: readonly string[],
   sceneCount: number,
   targetDurationSec: number,
+  minShotSec: number,
+  anchors: ReadonlySet<string>,
 ): { draft: ShotlistDraft; warnings: string[] } | { errors: string[] } {
   let parsed: unknown
   try {
@@ -315,13 +351,15 @@ function check(
   }
 
   // L2 集级 lint
-  const lint = lintShotlist(decoded.data, { sceneCount, targetDurationSec })
+  const lint = lintShotlist(decoded.data, { sceneCount, targetDurationSec, minShotSec, anchors })
   if (lint.errors.length > 0) return { errors: lint.errors }
   return { draft: decoded.data, warnings: lint.warnings }
 }
 
 export async function callShotlist(input: ShotlistInput, opts: ShotlistOptions): Promise<ShotlistOutcome> {
   const names = input.characters.map((c) => c.name)
+  // E6 的比对基准：全体角色的锚点，小写。现算不落库——它是输入的投影，不是状态
+  const anchors = new Set(input.characters.flatMap((c) => c.anchorTokens.map((a) => a.toLowerCase())))
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt(input) },
     { role: 'user', content: userPrompt(input) },
@@ -337,7 +375,7 @@ export async function callShotlist(input: ShotlistInput, opts: ShotlistOptions):
     costUsd += r.costUsd
     raw = r.content
 
-    const out = check(raw, names, input.scenes.length, input.targetDurationSec)
+    const out = check(raw, names, input.scenes.length, input.targetDurationSec, input.minShotSec, anchors)
     if ('draft' in out) return { ...out, repaired: round > 0, costUsd }
 
     last = out
