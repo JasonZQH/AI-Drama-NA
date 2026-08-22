@@ -247,6 +247,8 @@ POST /api/episodes/:id/shotlist                              // 已实现
      // 没有请求体。前置：有剧本、有场次、还没有镜头、目标时长可达。
 
 POST /api/ai/prompt-preview   { shotId, providerId? }
+→ 200 { prompt, negativePrompt, overridden, estimate, providerHint, pool,
+        inputs: { characters, location, style, timeOfDay, lighting, hiddenTraits } }
      → { prompt, negativePrompt, refImages: [{ role, assetId }] }
 </code></pre></div>
 <p><code>prompt-preview</code> 是<strong>调试利器</strong>：让人在花钱生成前先看清将要发出去的 prompt 长什么样。UI 的高级面板直接展示它。</p>
@@ -264,10 +266,38 @@ GET    /api/projects/:id/style-profiles
 <h2 id="4.-镜头与生成">4. 镜头与生成<a aria-label="链接到此节" class="anchor" href="#4.-镜头与生成">#</a></h2>
 <div class="codeblock"><pre><code>GET    /api/scenes/:id/shots
 POST   /api/scenes/:id/shots              创建单个 shot（Shot Intent）
-PATCH  /api/shots/:id                     改 intent；若已 locked 会重置为 ready
+PATCH  /api/shots/:id                     ✅ 已实现，见下
+PATCH  /api/shots/:id/provider            ✅ 已实现（provider_hint，文档原本没有这条）
 DELETE /api/shots/:id
 POST   /api/shots/reorder                 { sceneId, orderedIds[] }
 </code></pre></div>
+<h3 id="改一个镜头的内容">改一个镜头的内容<a aria-label="链接到此节" class="anchor" href="#改一个镜头的内容">#</a></h3>
+<div class="codeblock is-diagram"><pre><code>PATCH /api/shots/:id
+Body: { shotType?, cameraMove?, action?, emotion?, dialogue?,
+        durationSec?, characterIds?, promptOverride?, hiddenAnchors? }
+→ 200 { shot }
+</code></pre></div>
+<p><strong>在这条路由之前，<code>shots</code> 上唯一能写的字段是 <code>provider_hint</code></strong>——<code>action</code> /
+<code>emotion</code> / <code>shotType</code> / <code>durationSec</code> / <code>prompt_override</code> 面板改不了、API 也
+改不了。分镜一旦生成就是只读的：第 3 镜写错一个词，只有 redo（同一个 prompt
+重掷骰子，改不了内容）或者删掉整集重来两条路。</p>
+<p><strong>走 <code>intent.edited</code> 而不是裸 UPDATE。</strong> 改了内容，已经花钱生成的 take 就不再
+对应这一镜了；这个事件从第一版就在状态机里管这件事（<code>review</code>/<code>locked</code>/<code>failed</code>
+→ <code>ready</code> + 归档 take + 清 <code>selectedTakeId</code>），但在这条路由之前<strong>全仓零发射方</strong>。</p>
+<p><strong>顺序是先迁移后写列。</strong> <code>generating</code> 上 <code>intent.edited</code> 会被状态机拒（400，与
+generate/redo/reset 同一个 <code>INVALID_STATE_TRANSITION</code> 约定）——在飞的镜头不许改，
+否则产物回来时对应的是一份已经不存在的 intent。先迁移的话被拒时一个字段都没动；
+反过来先写列，改的就是一次正在计费的生成的规格。</p>
+<p><strong>不开的字段</strong>：<code>index</code> / <code>sceneId</code>（换场次、调顺序是时间线的事，而
+<code>shots_scene_idx</code> 是唯一约束）、<code>status</code> / <code>attemptCount</code> / <code>selectedTakeId</code>
+（状态机的账本）。</p>
+<div class="codeblock is-diagram"><pre><code>POST /api/shots/:id/redo
+→ 200 { shotId, status: 'ready' }
+</code></pre></div>
+<p>重做已锁定的镜头：清掉选中、把 take 归档、回到 <code>ready</code>。<code>redo.requested</code> 同样是
+状态机里从第一版就有、却零发射方的事件——而「已选定成片的镜头不再重复计费」那道
+闸给出的唯一出路正是它。<strong>闸门与出口必须同时存在</strong>，否则报错就是在教人做一件
+做不到的事。</p>
 <h3 id="生成">生成<a aria-label="链接到此节" class="anchor" href="#生成">#</a></h3>
 <div class="codeblock is-diagram"><pre><code>POST /api/shots/:id/generate
 Body: {
@@ -458,6 +488,7 @@ codegen 的净收益为负。等实现比例反过来了再说。</p><nav class=
 <a class="lvl-3" href="#llm-辅助端点">LLM 辅助端点</a>
 <a class="lvl-2" href="#3.-一致性资产">3. 一致性资产</a>
 <a class="lvl-2" href="#4.-镜头与生成">4. 镜头与生成</a>
+<a class="lvl-3" href="#改一个镜头的内容">改一个镜头的内容</a>
 <a class="lvl-3" href="#生成">生成</a>
 <a class="lvl-3" href="#选片">选片</a>
 <a class="lvl-2" href="#5.-资产音频与渲染">5. 资产、音频与渲染</a>

@@ -122,9 +122,30 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
     [tree],
   )
 
+  /**
+   * **「失败」按「最后一次尝试失败了」算，不按镜头状态算。**
+   *
+   * `RETRYABLE` 里的失败会把镜头退回 `ready`——于是它在页面上跟「从没生成过」
+   * 长得一模一样。真机实测撞到过：12 镜有 6 镜被 provider 的内容过滤拒了、
+   * **烧掉 $2.54**，而这个筛选显示 **0**，六张卡写着「待生成」。
+   *
+   * 状态没错（它们确实可以重试），错在**页面把「重试」和「还没开始」混成了
+   * 同一件事**——而这两者的区别是「已经花过钱」。
+   */
+  const isFailed = (x: ShotEntry): boolean =>
+    x.shot.status === 'failed' || (x.shot.status === 'ready' && x.lastFailureCode !== null)
+
   const counts = useMemo(() => {
     const c: Record<string, number> = {}
-    for (const x of tree?.shots ?? []) c[x.shot.status] = (c[x.shot.status] ?? 0) + 1
+    for (const x of tree?.shots ?? []) {
+      if (isFailed(x)) {
+        c['failed'] = (c['failed'] ?? 0) + 1
+        // 退回 ready 的仍然算「待生成」——它确实待生成，只是上次花过钱
+        if (x.shot.status === 'ready') c['ready'] = (c['ready'] ?? 0) + 1
+        continue
+      }
+      c[x.shot.status] = (c[x.shot.status] ?? 0) + 1
+    }
     return c
   }, [tree])
 
@@ -134,7 +155,9 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
       .map((scene) => ({
         scene,
         shots: tree.shots.filter(
-          (x) => x.shot.sceneId === scene.id && (filter === 'all' || x.shot.status === filter),
+          (x) =>
+            x.shot.sceneId === scene.id &&
+            (filter === 'all' || (filter === 'failed' ? isFailed(x) : x.shot.status === filter)),
         ),
       }))
       .filter((g) => g.shots.length > 0)
@@ -362,7 +385,16 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
         <ScriptEditor
           episodeId={episodeId}
           initial={tree.episode.scriptMd ?? ''}
-          onSaved={(md) => setTree((t) => (t ? { ...t, episode: { ...t.episode, scriptMd: md } } : t))}
+          brief={{
+            logline: tree.episode.logline,
+            hook: tree.episode.hook,
+            cliffhanger: tree.episode.cliffhanger,
+          }}
+          onSaved={(md) => {
+            setTree((t) => (t ? { ...t, episode: { ...t.episode, scriptMd: md } } : t))
+            // brief 三行也变了，重取一次才不会下次打开还是旧值
+            void load()
+          }}
           onClose={() => setScriptOpen(false)}
         />
       )}
@@ -438,7 +470,12 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
           <ShotGrid groups={groups} selectedId={selectedId} onSelect={setSelectedId} progress={progress} />
         )}
 
-        <ShotDrawer shotId={selectedId} shot={selected?.shot ?? null} onClose={() => setSelectedId(null)} />
+        <ShotDrawer
+          shotId={selectedId}
+          shot={selected?.shot ?? null}
+          onClose={() => setSelectedId(null)}
+          onChanged={() => void load()}
+        />
       </div>
 
       {plan && (

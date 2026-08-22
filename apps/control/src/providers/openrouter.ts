@@ -399,9 +399,24 @@ function sizeOf(resolution: string): [number, number] {
  * 上游代码永远不该分支在厂商的原始字符串上（04 §3）。匹配用小写子串而不是
  * 精确相等——OpenRouter 转发的是各家自己的措辞，形状不稳定。
  */
-function mapFailure(raw: string): ProviderFailure['code'] {
+export function mapFailure(raw: string): ProviderFailure['code'] {
   const s = raw.toLowerCase()
-  if (/(safety|policy|moderat|content filter|blocked|nsfw)/.test(s)) return 'content_filtered'
+  /*
+   * **`copyright` 也算内容过滤。**
+   *
+   * 真机实测烧掉的一笔：seedance 拒稿的原话是
+   * 「The request failed because the output video may be related to **copyright
+   * restrictions**」——上面那串词一个都不命中，于是落进 `provider_error`。
+   * 而 `provider_error` 在 `RETRYABLE` 白名单里、注释写着「多为临时故障」，
+   * 于是编排层拿**同一个 prompt** 撞了 4 次（maxAttempts），
+   * **每次 $0.3629，一个镜头烧掉 $1.45**，四次的报错一模一样。
+   *
+   * 内容过滤是**确定性**的：同一个 prompt 重试必然再被拒（`enums.ts` 的
+   * `NON_RETRYABLE` 注释原话）。落到 `content_filtered` 之后，第一次就停下来
+   * 交给人改措辞——这正是那条注释说的「错的方向便宜得多」。
+   */
+  if (/(safety|policy|moderat|content filter|blocked|nsfw|copyright|infring)/.test(s))
+    return 'content_filtered'
   if (/(quota|rate limit|insufficient credit|payment|billing)/.test(s)) return 'quota_exceeded'
   if (/(timeout|timed out|deadline)/.test(s)) return 'timeout'
   if (/(invalid|unsupported|bad request|validation)/.test(s)) return 'invalid_output'

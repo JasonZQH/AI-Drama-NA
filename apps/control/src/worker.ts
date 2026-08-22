@@ -55,10 +55,30 @@ const base = {
 
 const globalConcurrency = Number(process.env['MAX_GLOBAL_CONCURRENT'] ?? 32)
 
+/**
+ * **提交串行，默认一次一个。**
+ *
+ * 别的队列（轮询、ingest、渲染）不花钱；`generate` 每一条都是一笔真钱。
+ * FIFO + 并发 1 ⇒ 按入队顺序提交，而 `generate-batch` 按 `shots.index` 入队，
+ * 所以提交顺序就是镜头顺序。
+ *
+ * **但它只串了提交，没串生成。** 云 provider 是异步的：`submit` 拿到 handle 就
+ * 返回（实测 2–3 秒），真正的等待在 `poll` 队列，而那里的并发仍是
+ * `MAX_GLOBAL_CONCURRENT`。真机时间戳：10 镜提交间隔 2–3 秒（串行），十个却在
+ * 同一分钟里跑完（并发）。
+ *
+ * 所以它挡不住「第一个失败就别发后面的」——失败在 poll 阶段才浮现，那时十个
+ * 早就都提交、都计费了。要做到那件事需要一个**按集的顺序器**（镜 N 到终态之后
+ * 才提交镜 N+1），那是另一段编排逻辑，不是一个常量。
+ *
+ * 它现在真正买到的是：提交不再瞬时打爆，且失败发生时后面的还在队列里没走完。
+ */
+const generateConcurrency = Number(process.env['MAX_GENERATE_CONCURRENT'] ?? 1)
+
 const workers = [
   new Worker(QUEUE.generate, (job) => handleGenerate(deps, job.data), {
     ...base,
-    concurrency: globalConcurrency,
+    concurrency: generateConcurrency,
     // 令牌桶，防瞬时打爆
     limiter: { max: 32, duration: 1000 },
   }),

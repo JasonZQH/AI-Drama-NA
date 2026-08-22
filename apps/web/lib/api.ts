@@ -86,6 +86,9 @@ export interface Shot {
   selectedTakeId: string | null
   attemptCount: number
   sceneId: string
+  promptOverride: string | null
+  /** **本镜自己报的**锚点移除事件，不是投影。投影由服务端 resolvePrompt 读时算 */
+  hiddenAnchors: string[]
 }
 
 export interface EpisodeTree {
@@ -96,6 +99,10 @@ export interface EpisodeTree {
     /** 分镜的输入。列一直有，写入口到 P1 才补上 */
     scriptMd: string | null
     targetDurationSec: number
+    /** 戏剧目标三行。拼成 episodeBrief 进分镜提示词（callShotlist.ts） */
+    logline: string | null
+    hook: string | null
+    cliffhanger: string | null
     /** 端点一直在返回整行，页面要靠它渲染项目侧边栏 */
     projectId: string
   }
@@ -118,6 +125,11 @@ export interface EpisodeTree {
     mockCostMicroUsd: number
     /** 封面用：选中的 take 优先，否则最后一次生成的产物。null = 还没出过片 */
     posterAssetId: string | null
+    /**
+     * 最后一次尝试的失败码。**可重试的失败会把镜头退回 ready**，于是它在页面上
+     * 跟「从没生成过」长得一模一样——而两者的区别是「已经花过钱」。
+     */
+    lastFailureCode: string | null
   }[]
 }
 

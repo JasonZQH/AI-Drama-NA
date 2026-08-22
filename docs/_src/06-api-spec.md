@@ -106,6 +106,8 @@ POST /api/episodes/:id/shotlist                              // 已实现
      // 没有请求体。前置：有剧本、有场次、还没有镜头、目标时长可达。
 
 POST /api/ai/prompt-preview   { shotId, providerId? }
+→ 200 { prompt, negativePrompt, overridden, estimate, providerHint, pool,
+        inputs: { characters, location, style, timeOfDay, lighting, hiddenTraits } }
      → { prompt, negativePrompt, refImages: [{ role, assetId }] }
 ```
 
@@ -130,10 +132,48 @@ GET    /api/projects/:id/style-profiles
 ```
 GET    /api/scenes/:id/shots
 POST   /api/scenes/:id/shots              创建单个 shot（Shot Intent）
-PATCH  /api/shots/:id                     改 intent；若已 locked 会重置为 ready
+PATCH  /api/shots/:id                     ✅ 已实现，见下
+PATCH  /api/shots/:id/provider            ✅ 已实现（provider_hint，文档原本没有这条）
 DELETE /api/shots/:id
 POST   /api/shots/reorder                 { sceneId, orderedIds[] }
 ```
+
+### 改一个镜头的内容
+
+```
+PATCH /api/shots/:id
+Body: { shotType?, cameraMove?, action?, emotion?, dialogue?,
+        durationSec?, characterIds?, promptOverride?, hiddenAnchors? }
+→ 200 { shot }
+```
+
+**在这条路由之前，`shots` 上唯一能写的字段是 `provider_hint`**——`action` /
+`emotion` / `shotType` / `durationSec` / `prompt_override` 面板改不了、API 也
+改不了。分镜一旦生成就是只读的：第 3 镜写错一个词，只有 redo（同一个 prompt
+重掷骰子，改不了内容）或者删掉整集重来两条路。
+
+**走 `intent.edited` 而不是裸 UPDATE。** 改了内容，已经花钱生成的 take 就不再
+对应这一镜了；这个事件从第一版就在状态机里管这件事（`review`/`locked`/`failed`
+→ `ready` + 归档 take + 清 `selectedTakeId`），但在这条路由之前**全仓零发射方**。
+
+**顺序是先迁移后写列。** `generating` 上 `intent.edited` 会被状态机拒（400，与
+generate/redo/reset 同一个 `INVALID_STATE_TRANSITION` 约定）——在飞的镜头不许改，
+否则产物回来时对应的是一份已经不存在的 intent。先迁移的话被拒时一个字段都没动；
+反过来先写列，改的就是一次正在计费的生成的规格。
+
+**不开的字段**：`index` / `sceneId`（换场次、调顺序是时间线的事，而
+`shots_scene_idx` 是唯一约束）、`status` / `attemptCount` / `selectedTakeId`
+（状态机的账本）。
+
+```
+POST /api/shots/:id/redo
+→ 200 { shotId, status: 'ready' }
+```
+
+重做已锁定的镜头：清掉选中、把 take 归档、回到 `ready`。`redo.requested` 同样是
+状态机里从第一版就有、却零发射方的事件——而「已选定成片的镜头不再重复计费」那道
+闸给出的唯一出路正是它。**闸门与出口必须同时存在**，否则报错就是在教人做一件
+做不到的事。
 
 ### 生成
 

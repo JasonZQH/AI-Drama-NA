@@ -39,6 +39,44 @@ export function Shell({
   )
 }
 
+/**
+ * **这台部署现在真正会用哪一家生成。**
+ *
+ * 原来这里写死着「M0 · mock provider」——那是 M0 时代的事实，而池早就是
+ * `mock + openrouter:bytedance/seedance-2.0-fast` 了。写死的里程碑号会随时间
+ * 变成谎话，而这一格恰恰是人扫一眼「我这次点生成会花钱吗」的地方。
+ *
+ * 只显示真 provider（mock 恒在池里当兜底，列出来没有信息量）；一家都没有时
+ * 明说是 mock，并指向密钥页——那是唯一能改这件事的地方。
+ */
+function PoolFooter(): React.ReactElement {
+  const [pool, setPool] = useState<string[] | null>(null)
+  useEffect(() => {
+    void api<{ runtime: { providers: string[] } }>('/api/keys')
+      .then((r) => setPool(r.runtime.providers))
+      .catch(() => setPool([]))
+  }, [])
+
+  const real = (pool ?? []).filter((p) => p !== 'mock')
+  return (
+    <div className="text-[10px] leading-4" style={{ color: 'var(--text-muted)' }}>
+      {pool === null ? (
+        '…'
+      ) : real.length === 0 ? (
+        <a href="/keys" title="池里只有 mock：点生成不花钱，也不会出真片子">
+          mock only · 去配密钥 ↗
+        </a>
+      ) : (
+        real.map((p) => (
+          <div key={p} className="truncate" title={p}>
+            {p.replace(/^openrouter:/, '')}
+          </div>
+        ))
+      )}
+    </div>
+  )
+}
+
 function Sidebar({ children }: { children?: React.ReactNode }): React.ReactElement {
   return (
     <nav
@@ -53,9 +91,7 @@ function Sidebar({ children }: { children?: React.ReactNode }): React.ReactEleme
       </SideGroup>
       {children}
       <div className="mt-auto px-3 pt-4">
-        <div className="text-[10px] leading-4" style={{ color: 'var(--text-muted)' }}>
-          M0 · mock provider
-        </div>
+        <PoolFooter />
       </div>
     </nav>
   )

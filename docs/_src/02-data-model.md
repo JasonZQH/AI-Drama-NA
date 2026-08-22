@@ -112,6 +112,10 @@ export const shots = pgTable('shots', {
 
   // ── 一致性引用 ──
   characterIds: uuid('character_ids').array().notNull().default(sql`'{}'`),
+  // 在这一镜发生的锚点移除**事件**——不是累计集。投影（到这一镜为止哪些已经不在）
+  // 由 resolvePrompt 按 index 聚合前序算。存投影的话，改了前面某一镜之后后面每一行
+  // 都是陈旧的，而没有任何东西会去重算。见 03-pipeline.md「锚点被剧情拿走之后」
+  hiddenAnchors: text('hidden_anchors').array().notNull().default(sql`'{}'`),
   continuityFromShotId: uuid('continuity_from_shot_id'),   // 依赖的前序镜头；生成时解析其 selectedTake 末帧作首帧条件
 
   // ── 生成控制 ──

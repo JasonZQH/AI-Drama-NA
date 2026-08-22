@@ -1,7 +1,8 @@
+import { RETRYABLE } from '@ai-drama/contracts'
 import { createServer, type Server } from 'node:http'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { makeRequest } from './contractSuite.js'
-import { OpenRouterProvider } from './openrouter.js'
+import { OpenRouterProvider, mapFailure } from './openrouter.js'
 import { estimateMicroUsd, findModel, pricingFamily, sizeFor, snapDuration } from './openrouterModels.js'
 import { buildProviderPool } from './registry.js'
 
@@ -150,6 +151,44 @@ describe('OpenRouter 能力快照', () => {
 
   it('cancel 是 no-op：OpenRouter 没有这个端点，不该假装取消成功', async () => {
     await expect(make().cancel()).resolves.toBeUndefined()
+  })
+})
+
+/**
+ * **厂商的拒稿文本 → 统一 FailureCode。**
+ *
+ * 这个函数此前既没导出也没测过——于是它漏掉一整类没人发现，直到真钱撞上：
+ * seedance 拒稿的原话是「output video may be related to **copyright
+ * restrictions**」，原来那串词一个都不命中，落进 `provider_error`；而它在
+ * `RETRYABLE` 里、注释写着「多为临时故障」，于是编排层拿**同一个 prompt**
+ * 撞了 4 次（maxAttempts），每次 $0.3629，**一个镜头烧掉 $1.45**。
+ *
+ * 分类错的代价不是「标签不好看」，是**把确定性失败当成偶发失败重试**。
+ */
+describe('mapFailure：分类错 = 拿同一个 prompt 重复付钱', () => {
+  const cases: [string, ReturnType<typeof mapFailure>][] = [
+    // 真机实测的那一条，逐字
+    [
+      'The request failed because the output video may be related to copyright restrictions. Request id: 0217873756957',
+      'content_filtered',
+    ],
+    ['Output blocked by safety policy', 'content_filtered'],
+    ['content filter triggered', 'content_filtered'],
+    ['possible copyright infringement detected', 'content_filtered'],
+    ['insufficient credits on your account', 'quota_exceeded'],
+    ['upstream request timed out', 'timeout'],
+    ['invalid duration for this model', 'invalid_output'],
+    // 兜底：认不出的才是 provider_error，而它是唯一会被自动重试的
+    ['upstream connection reset', 'provider_error'],
+  ]
+  for (const [raw, want] of cases)
+    it(`「${raw.slice(0, 40)}…」→ ${want}`, () => {
+      expect(mapFailure(raw)).toBe(want)
+    })
+
+  it('content_filtered 不在 RETRYABLE 里——这条才是钱的闸', () => {
+    expect(RETRYABLE).not.toContain('content_filtered')
+    expect(RETRYABLE, 'provider_error 是可重试的，所以分类必须准').toContain('provider_error')
   })
 })
 

@@ -30,6 +30,8 @@ interface Preview {
     location: { description: string; interior: boolean; anchorTokens: string[] } | null
     style: { description: string; negativePrompt: string | null } | null
     timeOfDay: string | null
+    /** 到这一镜为止已经不在角色身上的锚点。少一个词看起来最像 bug，所以要能看见 */
+    hiddenTraits: string[]
   }
 }
 
@@ -37,11 +39,22 @@ export function PromptPreview({
   shotId,
   canGenerate,
   onGenerated,
+  ownEvents,
+  onChanged,
 }: {
   shotId: string
   /** 只有 ready 的镜头能生成。别的状态下不给按钮，省得点了才被状态机拒 */
   canGenerate: boolean
   onGenerated: () => void
+  /**
+   * **本镜自己报的**那些移除（`shots.hidden_anchors`），不是投影。
+   *
+   * 勾选框显示的是投影（到这一镜为止哪些不在了），但写回去只能写本镜的事件——
+   * 前面某一镜标掉的东西，要去那一镜取消。两者混起来的话，用户会以为自己在
+   * 这一镜取消了，实际什么都没发生。
+   */
+  ownEvents: readonly string[]
+  onChanged: () => void
 }): React.ReactElement {
   const [p, setP] = useState<Preview | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -104,6 +117,46 @@ export function PromptPreview({
         …
       </div>
     )
+
+  /**
+   * **锚点开关：勾掉的那一项从这一镜起不再拼进 prompt。**
+   *
+   * 用勾选不用手打，理由是硬的：`hiddenAnchors` 的匹配是**逐字精确**的，
+   * 而拦逐字写错的那条 lint（E6）只跑在 LLM 输出上——`PATCH /api/shots/:id`
+   * 绕过它。手打一个错字不会报错，只会静默无效：prompt 里那件道具照旧在，
+   * 而人以为自己已经把它去掉了。那正是这个功能要修的 bug 换了个入口。
+   *
+   * 只列本镜出场角色的锚点：别人的锚点本来就不会进这一镜的 prompt。
+   */
+  const allAnchors = p.inputs.characters.flatMap((c) => c.anchorTokens)
+  const hidden = new Set(p.inputs.hiddenTraits.map((h) => h.toLowerCase()))
+
+  async function toggleAnchor(token: string): Promise<void> {
+    setBusy(true)
+    setErr(null)
+    try {
+      /*
+       * 只写**本镜**的事件，不写累计集。投影由服务端按 index 聚合前序算，
+       * 所以取消勾选时要判断这一项是不是本镜报的——是前面某一镜报的话，
+       * 得去那一镜取消，这里给一句话说清楚，而不是静默无效。
+       */
+      const own = new Set(ownEvents.map((x) => x.toLowerCase()))
+      if (hidden.has(token.toLowerCase()) && !own.has(token.toLowerCase())) {
+        setErr(`「${token}」是前面某一镜标掉的。要让它回来，去那一镜取消勾选。`)
+        return
+      }
+      const next = own.has(token.toLowerCase())
+        ? ownEvents.filter((x) => x.toLowerCase() !== token.toLowerCase())
+        : [...ownEvents, token]
+      await api(`/api/shots/${shotId}`, { method: 'PATCH', body: JSON.stringify({ hiddenAnchors: next }) })
+      onChanged()
+      await load()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const missing = [
     p.inputs.characters.length === 0 ? '角色' : null,
@@ -258,6 +311,49 @@ export function PromptPreview({
         <div className="text-[11px]" style={{ color: 'var(--status-review)' }}>
           ⚠ 没有取到{missing.join(' / ')}
           {!p.inputs.style && '（风格要先在项目上挂 styleProfileId 才会进 prompt）'}
+        </div>
+      )}
+
+      {allAnchors.length > 0 && (
+        <div
+          className="rounded-md p-2"
+          style={{ background: 'var(--bg-inset)', border: '1px solid var(--border)' }}
+        >
+          <div className="mb-1.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+            锚点 · 取消勾选 = 从这一镜起不再出现
+          </div>
+          <div className="flex flex-col gap-1">
+            {allAnchors.map((a) => {
+              const off = hidden.has(a.toLowerCase())
+              return (
+                <label key={a} className="flex cursor-pointer items-center gap-2 text-[12px]">
+                  <input
+                    type="checkbox"
+                    checked={!off}
+                    disabled={busy}
+                    onChange={() => void toggleAnchor(a)}
+                  />
+                  <span
+                    style={{
+                      color: off ? 'var(--text-muted)' : 'var(--text-primary)',
+                      textDecoration: off ? 'line-through' : 'none',
+                    }}
+                  >
+                    {a}
+                  </span>
+                  {off && !ownEvents.some((x) => x.toLowerCase() === a.toLowerCase()) && (
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      前面某一镜标的
+                    </span>
+                  )}
+                </label>
+              )
+            })}
+          </div>
+          <div className="mt-1.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            剧情把东西拿走之后，锚点会从一致性手段变成自相矛盾——同一句 prompt
+            里既有它在身上、又有把它拿走的动作。
+          </div>
         </div>
       )}
     </div>
