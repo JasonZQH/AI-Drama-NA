@@ -17,12 +17,13 @@ import { resolveDependencies } from '../pipeline/batch.js'
 import { createGenerationJob } from '../queue/ingest.js'
 import { ShotlistRejected } from '../pipeline/callShotlist.js'
 import { BreakdownRejected } from '../pipeline/callBreakdown.js'
+import { ScriptRejected } from '../pipeline/callScript.js'
 import { resolvePrompt } from '../pipeline/resolvePrompt.js'
 import { probeOpenRouter, type ProbeResult } from '../credentials/probe.js'
 import { deleteCredential, resolveKey, upsertCredential } from '../credentials/store.js'
 import { LivePool, publishProvidersChanged, subscribeProviderChanges } from '../providers/pool.js'
 import { DURATION_TOLERANCE, SHOT_COUNT } from '../pipeline/shotlist.js'
-import type { BreakdownFn, ShotlistFn } from './api.js'
+import type { BreakdownFn, ScriptFn, ShotlistFn } from './api.js'
 
 /**
  * API 集成测试：真起 Fastify，打真实 Postgres / Redis / MinIO。
@@ -1318,6 +1319,89 @@ describe('PATCH /api/episodes/:id', () => {
  *
  * 「能让 LLM 定的让 LLM 定，人做复验」——所以这个端点只回建议，人确认后才建。
  */
+/**
+ * **素材 → 剧本提案。不落库。**
+ *
+ * `script_md` 此前只有人能写。而真实用法是「我手上有一部小说，要把它改成一集」
+ * ——把 S1 留成纯人工，等于要求人先完成最难的那一步。
+ */
+describe('POST /api/episodes/:id/script', () => {
+  let epId = ''
+  const draft = { title: '最后一班', scriptMd: '## 一 · 站台\n\n内景 · 站台 — 夜\n\n她坐在长椅上。' }
+
+  const withScript = (fn: ScriptFn): FastifyInstance =>
+    buildServer({
+      db,
+      queues,
+      storage,
+      providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })],
+      maxAttempts: 4,
+      media: { render: () => Promise.reject(new Error('未配置')) },
+      healthProbe: () => client`SELECT 1`,
+      makeSubscriber: () => createConnection(REDIS_URL),
+      apiKey: TEST_API_KEY,
+      script: fn,
+    })
+
+  const post = (a: FastifyInstance, body: Record<string, unknown>) =>
+    a.inject({
+      method: 'POST',
+      url: `/api/episodes/${epId}/script`,
+      headers: WRITE_HEADERS,
+      payload: body,
+    })
+
+  beforeAll(async () => {
+    const [ep] = await db
+      .insert(s.episodes)
+      .values({ projectId, index: 904, title: '改编用例', targetDurationSec: 60 })
+      .returning()
+    epId = ep!.id
+  })
+  afterAll(async () => {
+    await db.delete(s.episodes).where(eq(s.episodes.id, epId))
+  })
+
+  it('回草稿，且**一个字都不落库**', async () => {
+    const r = await post(
+      withScript(() => Promise.resolve({ draft, costUsd: 0.004 })),
+      { source: '深夜末班地铁上只有两个人，一个女孩和一个睡着的男人。' },
+    )
+    expect(r.statusCode).toBe(200)
+    expect((r.json() as { draft: { title: string } }).draft.title).toBe('最后一班')
+    const [ep] = await db.select().from(s.episodes).where(eq(s.episodes.id, epId))
+    expect(ep!.scriptMd, '剧本是作者的东西——系统起草，人改完按保存才算数').toBeNull()
+  })
+
+  it('素材太短就拒收——那不是改编，是让模型凭空编', async () => {
+    const r = await post(
+      withScript(() => Promise.reject(new Error('不该走到这里'))),
+      { source: '短' },
+    )
+    expect(r.statusCode).toBe(422)
+  })
+
+  it('模型不就范时 422 带原文', async () => {
+    const r = await post(
+      withScript(() => Promise.reject(new ScriptRejected(['scriptMd: 太短了'], '{}'))),
+      { source: '深夜末班地铁上只有两个人，一个女孩和一个睡着的男人。' },
+    )
+    expect(r.statusCode).toBe(422)
+    expect((r.json() as { error: { details: { errors: string[] } } }).error.details.errors).toContain(
+      'scriptMd: 太短了',
+    )
+  })
+
+  it('写路径要 x-api-key', async () => {
+    const r = await withScript(() => Promise.reject(new Error('x'))).inject({
+      method: 'POST',
+      url: `/api/episodes/${epId}/script`,
+      payload: { source: '深夜末班地铁上只有两个人，一个女孩和一个睡着的男人。' },
+    })
+    expect(r.statusCode).toBe(401)
+  })
+})
+
 describe('POST /api/episodes/:id/breakdown', () => {
   let epId = ''
   const proposal = {

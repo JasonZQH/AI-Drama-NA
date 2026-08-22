@@ -7,6 +7,7 @@ import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { budgetFromEnv, planBatch } from '../pipeline/batch.js'
 import { MediaWorkerUnavailable, renderEpisode, type MediaWorkerClient } from '../pipeline/render.js'
+import { ScriptRejected, callScript, type ScriptInput, type ScriptOutcome } from '../pipeline/callScript.js'
 import {
   BreakdownRejected,
   callBreakdown,
@@ -63,6 +64,8 @@ export interface ApiDeps {
   readonly shotlist?: ShotlistFn
   /** 场次拆解。同一个 seam，同一个理由——不注入就会真去打 OpenRouter */
   readonly breakdown?: BreakdownFn
+  /** 剧本改编。同上 */
+  readonly script?: ScriptFn
   /**
    * 密钥探测。同样是 seam：不注入的话 `POST /api/keys` 会真的打
    * openrouter.ai，而「无效 key 直接拒收」正是这组端点最该被守住的行为，
@@ -80,6 +83,7 @@ export interface ApiDeps {
 
 export type ShotlistFn = (input: ShotlistInput) => Promise<ShotlistOutcome>
 export type BreakdownFn = (input: BreakdownInput) => Promise<BreakdownOutcome>
+export type ScriptFn = (input: ScriptInput) => Promise<ScriptOutcome>
 
 /**
  * 没配 key 时给的是 **503 + 可行动的报错**，不是 500「fetch failed」。
@@ -926,6 +930,42 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
    * 参考图那条路还没通，文字是描述环境的唯一通道——列不全，那一镜的环境只能靠
    * 模型猜（真机撞到过：人「站在门外」而背景是屋内）。
    */
+  /**
+   * **素材 → 剧本提案。不落库。**
+   *
+   * `episodes.script_md` 此前只有人能写。而真实用法是「我手上有一部小说/一段素材，
+   * 要把它改成一集竖屏短剧」——把 S1 留成纯人工，等于要求用户先完成最难的那一步，
+   * 系统只帮他做后面容易的。与 `breakdown` 同一个立场：回草稿，人改完保存才算数。
+   */
+  app.post('/api/episodes/:id/script', async (req) => {
+    const { id } = Uuid.parse(req.params)
+    const body = z.object({ source: z.string().min(20), genre: z.string().nullish() }).parse(req.body ?? {})
+    const [ep] = await db.select().from(s.episodes).where(eq(s.episodes.id, id))
+    if (!ep) throw new ApiError('NOT_FOUND', `episode ${id} 不存在`)
+
+    const [proj] = await db.select().from(s.projects).where(eq(s.projects.id, ep.projectId))
+    const chars = await db
+      .select({ name: s.characters.name })
+      .from(s.characters)
+      .where(eq(s.characters.projectId, ep.projectId))
+
+    const run =
+      deps.script ??
+      (async (i: ScriptInput) => callScript(i, { apiKey: await resolveKeyOr503(db, 'openrouter') }))
+    const out = await run({
+      source: body.source,
+      genre: body.genre ?? null,
+      synopsis: proj?.synopsis ?? null,
+      minShotSec: poolMinShotSec(),
+      knownCharacters: chars.map((c) => c.name),
+    }).catch((e: unknown) => {
+      if (e instanceof ScriptRejected)
+        throw new ApiError('VALIDATION_FAILED', e.message, { errors: [...e.errors] })
+      throw e
+    })
+    return { draft: out.draft, costUsd: out.costUsd }
+  })
+
   app.post('/api/episodes/:id/breakdown', async (req) => {
     const { id } = Uuid.parse(req.params)
     const [ep] = await db.select().from(s.episodes).where(eq(s.episodes.id, id))

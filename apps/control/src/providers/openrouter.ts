@@ -54,16 +54,28 @@ const BASE_URL = 'https://openrouter.ai/api/v1'
 const HTTP_TIMEOUT_MS = 30_000
 
 /**
- * **是否让 provider 自带音轨——一个常量，两处使用，不许分叉。**
+ * **是否让 provider 自带音轨——一个值，三处使用，不许分叉。**
  *
- * 关掉：我们的音频走 M3 的 TTS 链路，让 provider 自带既贵又会和后期对不上。
+ * 原来写死 `false`，理由是「音频走 M3 的 TTS 链路，provider 自带既贵又会和后期
+ * 对不上」。**「既贵」这半句在当前池里不成立**：
  *
- * 提成常量是因为它同时决定 `submit` 的请求体和 `estimateCost` 选哪条价目表键。
- * 两处各写一遍的话就会出现「估算按有音轨、账单按无音轨」——实测在
- * veo-3.1-lite 上是 $0.05/s vs $0.03/s，估算高出 67%，M1 验收第 2 条
+ * | 模型 | 有音轨 | 无音轨 |
+ * |---|---|---|
+ * | `alibaba/wan-2.7` | `duration_seconds: 0.1` | 同一个键，**同一个价** |
+ * | `bytedance/seedance-2.0-fast` | `video_tokens: 0.0000042` | `video_tokens_without_audio`：**同一个数** |
+ *
+ * 而「和后期对不上」预设了 M3 已经有 TTS 链路可对——**M3 还没做**。于是这个常量
+ * 的实际效果是：把一个免费的功能关掉，然后交付一集彻底无声的片子。
+ *
+ * 改成**按模型的 `generateAudio` 能力决定**：能出就出。哪天 M3 的 TTS 链路真的
+ * 落地、需要 clean 母版，那时的开关是**按镜或按集**的（`10-media-storage.md` §5
+ * 的 M&E 分层），不是一个全局常量——所以那时也不该把这行改回 `false`。
+ *
+ * 计价必须与它同源：两处各写一遍就会出现「估算按有音轨、账单按无音轨」。
+ * 实测在 veo-3.1-lite 上是 $0.05/s vs $0.03/s，估算高出 67%，M1 验收第 2 条
  * （误差 <20%）当场不成立。这正是 probe 与真实请求分叉的同一类 bug。
  */
-const GENERATE_AUDIO = false
+const generateAudio = (model: OpenRouterModel): boolean => model.generateAudio
 
 export interface OpenRouterOptions {
   readonly apiKey: string
@@ -152,7 +164,7 @@ export class OpenRouterProvider implements VideoProvider {
       costModel: {
         unit: pricingFamily(opts.model) === 'per_token' ? 'per_token' : 'per_second',
         microUsdPerUnit: Math.round(
-          estimateMicroUsd(opts.model, referenceRequest(opts.model), GENERATE_AUDIO) / 4,
+          estimateMicroUsd(opts.model, referenceRequest(opts.model), generateAudio(opts.model)) / 4,
         ),
       },
     }
@@ -209,7 +221,7 @@ export class OpenRouterProvider implements VideoProvider {
    */
   estimateCost(req: GenerationRequest): number {
     // 与 submit 用同一个音轨常量。分开写就是估算与账单按不同价目表键算
-    return estimateMicroUsd(this.model, req, GENERATE_AUDIO)
+    return estimateMicroUsd(this.model, req, generateAudio(this.model))
   }
 
   async submit(req: GenerationRequest): Promise<ProviderHandle> {
@@ -222,7 +234,7 @@ export class OpenRouterProvider implements VideoProvider {
       duration: seconds,
       resolution: req.resolution,
       aspect_ratio: req.aspectRatio,
-      generate_audio: GENERATE_AUDIO, // 与 estimateCost 同源，见常量注释
+      generate_audio: generateAudio(this.model), // 与 estimateCost 同源，见上面的注释
       ...(this.capabilities.supportsSeed && req.seed !== undefined ? { seed: req.seed } : {}),
       ...(req.refImages.length > 0 ? { input_references: refPayload(req) } : {}),
       ...negativePassthrough(this.model, req.negativePrompt),

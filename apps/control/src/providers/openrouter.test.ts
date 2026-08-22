@@ -77,13 +77,34 @@ describe('OpenRouter 能力快照', () => {
    */
   it('估价按取整后的时长，不是请求时长', () => {
     const p = make()
-    // 2.5s 的镜头按 4s 付：4 × $0.03 = $0.12 = 120000 微美元
-    expect(p.estimateCost(makeRequest({ durationSec: 2.5 }))).toBe(120_000)
-    expect(p.estimateCost(makeRequest({ durationSec: 4 }))).toBe(120_000)
-    // 线性估算会给出 2.5 × 0.03 = 75000，比真实账单低 38%
-    expect(p.estimateCost(makeRequest({ durationSec: 2.5 }))).not.toBe(75_000)
-    // wan 档位密，2.5s 只付 3s
+    /*
+     * 2.5s 的镜头按 4s 付。单价是**有音轨**那一档（$0.05/s）——`generateAudio` 从
+     * 写死的 false 改成按模型能力之后，veo 系的估价就该是这个数；估价与请求体
+     * 同源正是那个值提成一处的理由（两处各写一遍 = 估算按有音轨、账单按无音轨）。
+     * 4 × $0.05 = $0.20 = 200000 微美元。
+     */
+    expect(p.estimateCost(makeRequest({ durationSec: 2.5 }))).toBe(200_000)
+    expect(p.estimateCost(makeRequest({ durationSec: 4 }))).toBe(200_000)
+    // 线性估算会给出 2.5 × 0.05 = 125000，比真实账单低 38%
+    expect(p.estimateCost(makeRequest({ durationSec: 2.5 }))).not.toBe(125_000)
+    // wan 档位密，2.5s 只付 3s；而它有没有音轨是**同一个价**（只有 duration_seconds 一个键）
     expect(make(WAN).estimateCost(makeRequest({ durationSec: 2.5 }))).toBe(300_000)
+  })
+
+  /**
+   * **音轨跟着模型能力走，不是写死的 false。**
+   *
+   * 原来那个常量的理由是「provider 自带既贵又会和后期对不上」。「既贵」在当前池里
+   * 不成立——wan 只有 `duration_seconds` 一个价目键，seedance 的
+   * `video_tokens` 与 `video_tokens_without_audio` 是同一个数；而「和后期对不上」
+   * 预设了 M3 的 TTS 链路已经存在，**它还没做**。净效果是：关掉一个免费功能，
+   * 然后交付一集彻底无声的片子。
+   */
+  it('三家都出音轨，且 wan 有没有音轨同一个价', () => {
+    for (const m of [VEO_LITE, WAN, SEEDANCE])
+      expect(make(m).capabilities.supportsAudio, `${m.id} 该出音轨`).toBe(true)
+    // 同一个时长档，有无音轨的估价必须一致——wan 的价目表里只有一个键
+    expect(make(WAN).estimateCost(makeRequest({ durationSec: 4 }))).toBe(400_000)
   })
 
   /**

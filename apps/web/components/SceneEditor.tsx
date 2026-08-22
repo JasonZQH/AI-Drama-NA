@@ -44,6 +44,25 @@ const TIMES = [
   { v: 'dusk', label: '黄昏 dusk light' },
 ]
 
+/** 场次拆解提案的形状。与 `POST /api/episodes/:id/breakdown` 的响应同构 */
+interface Proposal {
+  breakdown: {
+    scenes: {
+      summary: string
+      locationName: string
+      characterNames: string[]
+      timeOfDay: string
+      lighting: string
+    }[]
+    targetDurationSec: number
+  }
+  missing: { locations: string[]; characters: string[] }
+  durationNote: string | null
+}
+
+/** 服务端认的四格。别的一律落 null——猜一个错的时段比留空更贵 */
+const TIME_OF_DAY = new Set(['day', 'night', 'dawn', 'dusk'])
+
 export function SceneEditor({
   episodeId,
   projectId,
@@ -60,6 +79,53 @@ export function SceneEditor({
   const [locations, setLocations] = useState<ProjectAssets['locations']>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [proposing, setProposing] = useState(false)
+  const [proposal, setProposal] = useState<Proposal | null>(null)
+
+  /** 读剧本，回一份场次建议。**不建场次**——看完再决定 */
+  async function propose(): Promise<void> {
+    setProposing(true)
+    setErr(null)
+    try {
+      setProposal(await api<Proposal>(`/api/episodes/${episodeId}/breakdown`, { method: 'POST' }))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setProposing(false)
+    }
+  }
+
+  /**
+   * 采用建议：逐场建。
+   *
+   * **地点只在名字对得上现有资产时才挂**——建议里的名字是自由文本（那正是它能报出
+   * 「你缺门外走廊」的原因），挂一个不存在的 id 会 500。对不上的留空，人去资产页
+   * 补完再回来挂。
+   */
+  async function adopt(): Promise<void> {
+    if (!proposal) return
+    const byName = new Map(locations.map((l) => [l.name.trim().toLowerCase(), l.id]))
+    await run(async () => {
+      for (const sc of proposal.breakdown.scenes) {
+        const locationId = byName.get(sc.locationName.trim().toLowerCase()) ?? null
+        await api(`/api/episodes/${episodeId}/scenes`, {
+          method: 'POST',
+          body: JSON.stringify({
+            summary: sc.summary,
+            lighting: sc.lighting || null,
+            timeOfDay: TIME_OF_DAY.has(sc.timeOfDay) ? sc.timeOfDay : null,
+            locationId,
+          }),
+        })
+      }
+      // 建议时长是这一步顺带产出的，一并落到分集上——人当初填的那个是凭空的
+      await api(`/api/episodes/${episodeId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ targetDurationSec: proposal.breakdown.targetDurationSec }),
+      })
+      setProposal(null)
+    })
+  }
 
   const loadLocations = useCallback(async () => {
     try {
@@ -136,6 +202,23 @@ export function SceneEditor({
             {scenes.length} 场 · 分镜按它切镜头
           </div>
           <div className="flex-1" />
+          {/*
+            **从剧本读场次。** 场次此前只有人能建，而系统不读剧本——下游却把场次数
+            当硬约束（分镜提示词「Do not add, drop, or merge scenes」+ lint 的 E1）。
+            五场的剧本手建两场，模型必须把五场塞进两格，而没有任何一层会说一句话。
+
+            这里回的是**建议**：看完再决定采不采用，采用了才真的建场次。
+          */}
+          <button
+            type="button"
+            disabled={busy || proposing}
+            onClick={() => void propose()}
+            title="读剧本，给一份场次划分建议（约 $0.002）。不会直接建场次"
+            className="rounded-md px-2 py-1 text-[12px] disabled:opacity-40"
+            style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+          >
+            {proposing ? '读取中…' : '✎ 从剧本读场次'}
+          </button>
           <button
             type="button"
             disabled={busy}
@@ -161,6 +244,63 @@ export function SceneEditor({
         {err !== null && (
           <div className="px-4 pt-3 text-[12px]" style={{ color: 'var(--danger-text)' }}>
             ✕ {err}
+          </div>
+        )}
+
+        {proposal && (
+          <div
+            className="mx-4 mt-3 flex flex-col gap-2 rounded-md p-3"
+            style={{ background: 'var(--bg-inset)', border: '1px solid var(--accent)' }}
+          >
+            <div className="flex items-baseline gap-2">
+              <span className="text-[12px] font-medium">建议 {proposal.breakdown.scenes.length} 场</span>
+              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                建议整集 {proposal.breakdown.targetDurationSec} 秒
+              </span>
+              <div className="flex-1" />
+              <button
+                type="button"
+                onClick={() => setProposal(null)}
+                className="rounded-md px-2 py-0.5 text-[11px]"
+                style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+              >
+                丢弃
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void adopt()}
+                className="rounded-md px-2 py-0.5 text-[11px] font-medium disabled:opacity-40"
+                style={{ background: 'var(--accent)', color: '#fff' }}
+              >
+                采用（建 {proposal.breakdown.scenes.length} 场）
+              </button>
+            </div>
+            {proposal.breakdown.scenes.map((x, i) => (
+              <div key={i} className="text-[12px]">
+                <span style={{ color: 'var(--text-muted)' }}>
+                  {i + 1}. [{x.locationName || '未指定'}]{' '}
+                </span>
+                {x.summary}
+                {x.lighting && <span style={{ color: 'var(--text-muted)' }}> · 光：{x.lighting}</span>}
+              </div>
+            ))}
+            {/*
+              「剧本里的资产要列全」唯一能被系统查出来的时刻。参考图那条路还没通，
+              文字是描述环境的唯一来源——列不全，那一镜的环境只能靠模型猜。
+            */}
+            {(proposal.missing.locations.length > 0 || proposal.missing.characters.length > 0) && (
+              <div className="text-[11px]" style={{ color: 'var(--status-review)' }}>
+                ⚠ 资产库里还没有：
+                {[...proposal.missing.locations, ...proposal.missing.characters].join('、')}
+                —— 去资产页补上，不然这些场的环境／人物只能靠模型猜
+              </div>
+            )}
+            {proposal.durationNote && (
+              <div className="text-[11px]" style={{ color: 'var(--status-review)' }}>
+                ⚠ {proposal.durationNote}
+              </div>
+            )}
           </div>
         )}
 
