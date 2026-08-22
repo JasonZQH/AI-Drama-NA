@@ -262,7 +262,13 @@ function Panel({
             <div className="mb-3">
               <PromptPreview
                 shotId={shotId}
-                canGenerate={shot?.status === 'ready'}
+                /*
+                  `locked` 也给生成按钮：「这条能用，但我想再试一个」是常规需求，
+                  而原来只有「重做」一条路——它先把现有成片归档，等于逼人拿一条
+                  已经花过钱的片子去赌下一条。状态机现在接 locked → generating，
+                  selectedTakeId 原样留着。
+                */
+                canGenerate={shot?.status === 'ready' || shot?.status === 'locked'}
                 onGenerated={() => setReload((n) => n + 1)}
                 ownEvents={shot?.hiddenAnchors ?? []}
                 onChanged={onChanged}
@@ -340,7 +346,14 @@ function Panel({
             ) : (
               <div className="grid grid-cols-2 gap-2">
                 {(takes ?? []).map((t) => (
-                  <TakeCard key={t.take.id} row={t} />
+                  <TakeCard
+                    key={t.take.id}
+                    row={t}
+                    onSelected={() => {
+                      setReload((n) => n + 1)
+                      onChanged()
+                    }}
+                  />
                 ))}
               </div>
             )}
@@ -757,8 +770,21 @@ function JobCard({
   )
 }
 
-function TakeCard({ row }: { row: TakeRow }): React.ReactElement {
+/**
+ * **每一条不是当前选中的片段都要能就地选中——包括已归档的。**
+ *
+ * 在这之前这一格是纯展示：抽屉里摆着两条 take，而**没有任何按钮**。选片只在
+ * 选片页有，那是个「一次一镜」的排队流；而人来抽屉的时刻恰恰是「我刚为这一镜
+ * 重新生成了一条，想拿它换掉旧的」，那时排队流是绕路。
+ *
+ * **已归档的也给按钮。** 归档不是销毁——那条片子花过钱、字节还在。「重做」把它
+ * 归了档，然后新的一条不如它，这时唯一合理的动作就是把旧的选回来。不给按钮
+ * 等于告诉人「你刚才那一步不可逆」，而它本来是可逆的。
+ */
+function TakeCard({ row, onSelected }: { row: TakeRow; onSelected: () => void }): React.ReactElement {
   const st = TAKE_STATUS[row.take.status] ?? { label: row.take.status, color: 'var(--status-idle)' }
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
   return (
     <figure className="overflow-hidden rounded-md" style={{ border: '1px solid var(--border)' }}>
       <video
@@ -786,6 +812,34 @@ function TakeCard({ row }: { row: TakeRow }): React.ReactElement {
             </>
           )}
         </div>
+        {row.take.status !== 'selected' && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true)
+              setErr(null)
+              void api(`/api/takes/${row.take.id}/select`, { method: 'POST' })
+                .then(onSelected)
+                .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+                .finally(() => setBusy(false))
+            }}
+            className="mt-1.5 w-full rounded-md px-2 py-1 text-[12px] font-medium disabled:opacity-40"
+            style={
+              row.take.status === 'archived'
+                ? { border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }
+                : { background: 'var(--accent)', color: '#fff' }
+            }
+            title="选它 = 这一镜用这条进成片。归档的也能选回来——归档不是销毁"
+          >
+            {busy ? '选中中…' : row.take.status === 'archived' ? '↩ 用回这条' : '✓ 选它'}
+          </button>
+        )}
+        {err !== null && (
+          <div className="mt-1 text-[11px]" style={{ color: 'var(--danger-text)' }}>
+            ✕ {err}
+          </div>
+        )}
         {row.asset.durationSec !== null && (
           <div className="tnum text-[11px]" style={{ color: 'var(--text-muted)' }}>
             {Number(row.asset.durationSec).toFixed(1)}s

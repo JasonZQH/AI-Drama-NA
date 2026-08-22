@@ -1,6 +1,6 @@
 import type { GenerationRequest, ProviderProgress, StudioEvent, VideoProvider } from '@ai-drama/contracts'
 import { TERMINAL_JOB_STATUSES, isTerminalJobStatus } from '@ai-drama/contracts'
-import { and, eq, inArray, isNull, notInArray } from 'drizzle-orm'
+import { and, eq, inArray, isNull, notExists, notInArray, sql } from 'drizzle-orm'
 import type IORedis from 'ioredis'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
@@ -496,6 +496,8 @@ export async function reconcileOnBoot(deps: OrchestratorDeps): Promise<{
   inDoubt: number
   /** 控制面在渲染途中重启留下的孤儿 render_jobs，已判失败 */
   staleRenders: number
+  /** 卡在 generating 却没有任何在飞 job 的镜头，已放回 ready */
+  orphanShots: number
 }> {
   const stuck = await deps.db
     .select()
@@ -575,5 +577,47 @@ export async function reconcileOnBoot(deps: OrchestratorDeps): Promise<{
     .where(eq(s.renderJobs.status, 'running'))
     .returning({ id: s.renderJobs.id })
 
-  return { requeued, resumed, inFlight, inDoubt, staleRenders: orphanRenders.length }
+  /*
+   * **卡在 `generating` 却一个在飞 job 都没有的镜头。**
+   *
+   * 上面那一整段扫的是 `generation_jobs`，而顶栏的「N 生成中」数的是
+   * `shots.status='generating'`——**两边算的不是一件事**。于是「镜头是
+   * generating、job 已经终态或压根不存在」这个状态没有任何东西会收回来：
+   * 顶栏永远转着一个假的 1，而那一镜在面板上既不能生成也不能选片。
+   *
+   * 真机撞到过（集成测试直接造 `generating` 状态、清理时没还原）。但成因不重要
+   * ——崩溃恢复的职责就是「把跑到一半留下的半成品收干净」，而这正是一种。
+   *
+   * 回 `ready` 不回 `failed`：没有任何证据说它失败过，只是没人在管它了。
+   * `ready` 上人点一下就能继续，而 `failed` 需要额外一次 reset。
+   */
+  const orphanShots = await deps.db
+    .update(s.shots)
+    .set({ status: 'ready', updatedAt: new Date() })
+    .where(
+      and(
+        eq(s.shots.status, 'generating'),
+        notExists(
+          deps.db
+            .select({ one: sql`1` })
+            .from(s.generationJobs)
+            .where(
+              and(
+                eq(s.generationJobs.shotId, s.shots.id),
+                notInArray(s.generationJobs.status, [...TERMINAL_JOB_STATUSES]),
+              ),
+            ),
+        ),
+      ),
+    )
+    .returning({ id: s.shots.id })
+
+  return {
+    requeued,
+    resumed,
+    inFlight,
+    inDoubt,
+    staleRenders: orphanRenders.length,
+    orphanShots: orphanShots.length,
+  }
 }

@@ -24,6 +24,7 @@ const input: ShotlistInput = {
   episodeBrief: 'She has ten minutes to decide.\nHook: the letter is addressed to someone else.',
   targetDurationSec: 72,
   minShotSec: 2,
+  locations: [{ name: 'ROOFTOP', description: 'city rooftop at night' }],
   scenes: [
     // 第一场给自由文本光照，后两场只有枚举——两条回落分支都要被 userPrompt 覆盖到
     { summary: 'Lena returns', timeOfDay: 'night', lighting: 'one bare bulb over the door' },
@@ -48,6 +49,7 @@ const goodDraft = {
       durationSec: 4,
       characterNames: ['Lena'],
       hiddenAnchors: [] as string[],
+      locationName: '',
     })),
   })),
 }
@@ -204,6 +206,7 @@ describe('systemPrompt 的硬规则与判据同源', () => {
     episodeBrief: null,
     targetDurationSec: 72,
     minShotSec: 2,
+    locations: [],
     scenes: [
       { summary: null, timeOfDay: null, lighting: null },
       { summary: null, timeOfDay: null, lighting: null },
@@ -265,6 +268,7 @@ describe('systemPrompt 的硬规则与判据同源', () => {
       episodeBrief: null,
       targetDurationSec: 72,
       minShotSec: 4,
+      locations: [],
       scenes: [{ summary: null, timeOfDay: null, lighting: null }],
       characters: [],
     })
@@ -335,6 +339,7 @@ describe('systemPrompt 里那条案例', () => {
     episodeBrief: null,
     targetDurationSec: 72,
     minShotSec: 2,
+    locations: [],
     scenes: [{ summary: null, timeOfDay: null, lighting: null }],
     characters: [],
   })
@@ -434,11 +439,12 @@ describe('shotlistJsonSchema（发出去的那份）', () => {
       'emotion',
       'dialogue',
       'durationSec',
+      'locationName',
       'hiddenAnchors',
       'characterNames',
     ])
     // properties 的键是字段名，不能被白名单筛掉
-    expect(Object.keys(shot['properties'] as object)).toHaveLength(8)
+    expect(Object.keys(shot['properties'] as object)).toHaveLength(9)
   })
 
   it('角色名 enum 与 shotType enum 都还在', () => {

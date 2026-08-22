@@ -157,6 +157,35 @@ export function transition(shot: ShotState, event: ShotEvent, ctx: TransitionCon
 
     case 'locked':
       switch (event.type) {
+        /*
+         * **锁定之后仍然可以换片。** 在几条已经付过钱的 take 之间改主意不销毁
+         * 任何东西，也不该先把当前这条归档——那是「重做」干的事。
+         *
+         * 停在 `locked`：换的是哪一条进成片，不是这一镜做完没有。
+         * `set.selectedTake` 顺带把 `generation_jobs.accepted` 挪过去，
+         * 「每可用镜头成本」的分母才不会因为改主意而虚高。
+         */
+        case 'take.selected':
+          return to(shot.id, 'locked', {
+            type: 'set.selectedTake',
+            shotId: shot.id,
+            takeId: event.takeId,
+          })
+        /*
+         * **锁定之后仍然可以再生成一条。** 「这条能用，但我想再试一个」是常规
+         * 需求，而原来只有「重做」一条路——它先把现有成片归档，等于逼人拿一条
+         * 已经花过钱的片子去赌下一条。
+         *
+         * 回到 `generating`，`selectedTakeId` 原样留着：新片子回来时走
+         * `take.accepted` 进 `review`，那时人手上有新旧两条可挑。挑不中新的就
+         * 把旧的重新选回来（上面那条）——两条都在，谁都没被销毁。
+         */
+        case 'generate.requested':
+          return to(shot.id, 'generating', {
+            type: 'enqueue.generation',
+            shotId: shot.id,
+            attempt: shot.attemptCount + 1,
+          })
         case 'redo.requested':
         case 'intent.edited':
           // 已选定的 take 归档而非删除，selectedTakeId 清空

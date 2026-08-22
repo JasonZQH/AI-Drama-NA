@@ -58,6 +58,13 @@ export interface LintContext {
    * 空集 = 这个项目还没配锚点，那么任何 `hiddenAnchors` 都是模型编的。
    */
   readonly anchors: ReadonlySet<string>
+  /**
+   * 资产库里有的地点名（小写）。`locationName` 只能逐字引用其中之一。
+   *
+   * 这一格是「剧本里的资产要列全」唯一能被系统查出来的地方——模型说它需要
+   * 「门外走廊」而库里没有，就该判错并把名字报出来，而不是渲成错的那个房间。
+   */
+  readonly locations: ReadonlySet<string>
 }
 
 /**
@@ -247,6 +254,28 @@ export function lintShotlist(draft: ShotlistDraft, ctx: LintContext): LintResult
         `${at(l)} 时长 ${l.s.durationSec} 秒低于当前 provider 的档位下限 ${ctx.minShotSec} 秒。` +
           `低于下限的会被静默抬到下一档：片子按 ${ctx.minShotSec} 秒出、钱按 ${ctx.minShotSec} 秒付，` +
           `而整集时长是按你写的那个数算的。改成 ${ctx.minShotSec} 秒或更长。`,
+      )
+    }
+
+    /*
+     * E9 · `locationName` 指向一个资产库里没有的地点。
+     *
+     * **参考图那条路还没通（P6 的 U1–U3），文字是描述环境的唯一通道。** 所以
+     * 剧本里出现的每一个空间都必须有对应的地点资产，否则那一镜的环境要么落到
+     * 场次的默认地点（错的房间），要么什么都没有（模型自由发挥）。
+     *
+     * 真机实测撞到过：猫眼 POV 那一镜，陈默「站在门外」而背景是屋内——因为整场
+     * 只有「客厅」一个地点，而「门外走廊」这个资产压根不存在，且**没有任何一层
+     * 告诉过人这件事**。
+     *
+     * 是 E 不是 W：那一轮免费的修复换不掉它（模型改不出一个不存在的资产），
+     * 但报错会把缺的名字列出来，人去资产页补上再生成——比事后对着成片猜便宜。
+     */
+    if (l.s.locationName.trim() && !ctx.locations.has(l.s.locationName.trim().toLowerCase())) {
+      errors.push(
+        `${at(l)} 需要地点「${l.s.locationName}」，但资产库里没有它。` +
+          `现有的地点：${[...ctx.locations].join('、') || '(这个项目还没有地点)'}。` +
+          `去资产页建一个并写清它长什么样——参考图那条路还没通，文字是这一镜环境的唯一来源。`,
       )
     }
 

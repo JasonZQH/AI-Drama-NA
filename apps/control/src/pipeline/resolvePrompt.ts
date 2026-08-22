@@ -94,7 +94,12 @@ export async function resolvePrompt(tx: DbOrTx, shotId: string): Promise<Resolve
     .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
     .innerJoin(s.episodes, eq(s.scenes.episodeId, s.episodes.id))
     .innerJoin(s.projects, eq(s.episodes.projectId, s.projects.id))
-    .leftJoin(s.locations, eq(s.scenes.locationId, s.locations.id))
+    /*
+     * **镜级地点压过场级。** `coalesce(shots.location_id, scenes.location_id)`
+     * ——绝大多数镜头跟着场次走，跨空间的那一镜（猫眼 POV：场次在客厅、主体在
+     * 门外）自己指一个。没有这一跳的话那一镜会渲出错的房间，而没有任何一层会说。
+     */
+    .leftJoin(s.locations, eq(sql`coalesce(${s.shots.locationId}, ${s.scenes.locationId})`, s.locations.id))
     // 风格要经 projects.style_profile_id 这一跳。不回填的话建了也进不来
     .leftJoin(s.styleProfiles, eq(s.projects.styleProfileId, s.styleProfiles.id))
     .where(eq(s.shots.id, shotId))

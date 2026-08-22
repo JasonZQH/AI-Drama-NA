@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { toWireSchema } from './wire.js'
 import { CameraMove, ShotType } from './enums.js'
 import type { ShotIntent } from './shot.js'
 
@@ -64,6 +65,22 @@ const draftShot = (names: readonly string[]) =>
        */
       .describe('本镜时长，1 到 10 秒之间，典型 4 秒'),
     /**
+     * 这一镜发生在哪儿。`''` = 跟这一场的默认地点一样（绝大多数镜头都是）。
+     *
+     * **只在这一镜跨到别的空间时才填**：猫眼 POV——场次在客厅，主体在门外走廊。
+     * 场次与地点是一对一的，而同一场里跨空间是常事；不给这一格的话，那一镜的
+     * 环境描述会是**错的那个房间**，而参考图那条路还没通，文字是唯一通道。
+     *
+     * 逐字取自输入里 `<locations>` 给的名字。写了表里没有的名字不会被静默忽略，
+     * 而是判错并把缺的那个报出来——**那正是「剧本里的资产要列全」这件事唯一能被
+     * 系统查出来的时刻**。
+     */
+    locationName: z
+      .string()
+      .describe(
+        'Where this shot happens, copied verbatim from <locations>. Empty string = the same place as the rest of the scene, which is the normal case. Only fill it when this shot is somewhere else — a view through a door, a cutaway, a window looking in.',
+      ),
+    /**
      * 从这一镜起**不再出现**的角色锚点，逐字取自输入里给的锚点表。`[]` = 无变化。
      *
      * ## 为什么需要它
@@ -119,56 +136,9 @@ export const shotlistDraft = (characterNames: readonly string[] = []) =>
 export type ShotlistDraft = z.infer<ReturnType<typeof shotlistDraft>>
 export type DraftShot = ShotlistDraft['scenes'][number]['shots'][number]
 
-/**
- * 方言交集的白名单。`z.toJSONSchema()` 会把 zod 的校验忠实地渲染成
- * `minLength` / `minimum` / `maximum` / `minItems`——**那些恰好是本文件第 2 条
- * 忌讳说的数值 bounds**，留着就是在赌各家转换器：
- *
- * 各家对这些关键字的支持是**分叉且在动**的（有的整份 schema 拒收、有的静默
- * 丢弃、有的按版本变）。与其跟着任何一家的当期文档走，不如只发**交集**——
- * 这个判断不依赖任何一家下个月改不改。
- *
- * 而它们留下来也没有收益：**JSON Schema 是转向器，闸门是下一行的
- * `safeParse`**。zod 那边一个字不改，长度和区间照样拦得住；给模型的软性提示
- * 走 `description`（白名单里放行了它，`durationSec` 就是这么把 1–10 说出去的）。
- */
-const WIRE_KEYS = new Set([
-  'type',
-  'properties',
-  'required',
-  'additionalProperties',
-  'items',
-  'enum',
-  'description',
-])
-
-/** `properties` 的键是字段名（shotType…），只能递归它的值，不能拿白名单去筛 */
-function toWire(node: unknown): unknown {
-  if (node === null || typeof node !== 'object' || Array.isArray(node)) return node
-  /*
-   * `$ref` 不在白名单里，剃掉之后剩一个 `{}` ——那在 JSON Schema 里是**「任意
-   * 值」**，strict 会照收，于是整棵子树的约束静默消失。
-   *
-   * 当前触发不了（全仓零 `.meta()`/`register()`，zod v4 默认 `reused: 'inline'`），
-   * 但给任一子 schema 加个 id 就会冒出来。**而这条测不出来**：toWire 已经把
-   * `$ref` 抹掉了，断言输出里没有 `$ref` 永远是绿的。所以只能在这里炸。
-   */
-  if ('$ref' in node) throw new Error('shotlistJsonSchema: schema 里出现了 $ref，白名单会把它剃成「任意值」')
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(node)) {
-    if (!WIRE_KEYS.has(k)) continue
-    out[k] =
-      k === 'properties' && v !== null && typeof v === 'object'
-        ? Object.fromEntries(Object.entries(v).map(([f, sub]) => [f, toWire(sub)]))
-        : toWire(v)
-  }
-  return out
-}
-
 /** 发给 `response_format.json_schema.schema` 的那份。见 `WIRE_KEYS` 的注释 */
 export function shotlistJsonSchema(characterNames: readonly string[] = []): Record<string, unknown> {
-  const full = z.toJSONSchema(shotlistDraft(characterNames), { io: 'input', unrepresentable: 'any' })
-  return toWire(full) as Record<string, unknown>
+  return toWireSchema(shotlistDraft(characterNames))
 }
 
 /**
@@ -186,5 +156,6 @@ export function toIntent(d: DraftShot): ShotIntent {
     ...(d.dialogue.trim() ? { dialogue: d.dialogue.trim() } : {}),
     // 空数组原样带过：它是「这一镜没有变化」，不是缺省
     hiddenAnchors: d.hiddenAnchors.map((a) => a.trim()).filter(Boolean),
+    ...(d.locationName.trim() ? { locationName: d.locationName.trim() } : {}),
   }
 }

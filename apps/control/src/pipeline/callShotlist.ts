@@ -79,6 +79,11 @@ export interface ShotlistInput {
     /** `scenes.lighting`。自由文本优先、没有才回落枚举——与 `prompt.ts` 同一口径 */
     readonly lighting: string | null
   }[]
+  /**
+   * 这个项目有哪些地点资产。发出去是为了让模型能在跨空间的那一镜指名道姓，
+   * 而不是让整场的默认地点渲出一个错的房间。
+   */
+  readonly locations: readonly { readonly name: string; readonly description: string }[]
   readonly characters: readonly {
     readonly name: string
     readonly description: string
@@ -255,10 +260,10 @@ const EXAMPLE = [
   '',
   'SHOTS FOR THAT SCENE',
   '[',
-  '  {"shotType":"establishing","cameraMove":"static","action":"a bare bulb burns over four flights of iron stair rail","emotion":"","dialogue":"","durationSec":3,"characterNames":[],"hiddenAnchors":[]},',
-  '  {"shotType":"ms","cameraMove":"handheld","action":"<A> halts mid-flight, one hand flat on the rail","emotion":"shoulders dropping, breathing hard","dialogue":"","durationSec":4,"characterNames":["<A>"],"hiddenAnchors":[]},',
-  '  {"shotType":"ecu","cameraMove":"static","action":"her thumb works the clasp open and the pendant drops into her coat pocket","emotion":"","dialogue":"","durationSec":2,"characterNames":["<A>"],"hiddenAnchors":["<the pendant>"]},',
-  '  {"shotType":"ots","cameraMove":"dolly","action":"over <B> as <A> climbs the last three steps, collar open at her bare throat","emotion":"chin lifted","dialogue":"You came.","durationSec":5,"characterNames":["<A>","<B>"],"hiddenAnchors":[]}',
+  '  {"shotType":"establishing","cameraMove":"static","action":"a bare bulb burns over four flights of iron stair rail","emotion":"","dialogue":"","durationSec":3,"characterNames":[],"hiddenAnchors":[],"locationName":""},',
+  '  {"shotType":"ms","cameraMove":"handheld","action":"<A> halts mid-flight, one hand flat on the rail","emotion":"shoulders dropping, breathing hard","dialogue":"","durationSec":4,"characterNames":["<A>"],"hiddenAnchors":[],"locationName":""},',
+  '  {"shotType":"ecu","cameraMove":"static","action":"her thumb works the clasp open and the pendant drops into her coat pocket","emotion":"","dialogue":"","durationSec":2,"characterNames":["<A>"],"hiddenAnchors":["<the pendant>"],"locationName":""},',
+  '  {"shotType":"ots","cameraMove":"dolly","action":"over <B> as <A> climbs the last three steps, collar open at her bare throat","emotion":"chin lifted","dialogue":"You came.","durationSec":5,"characterNames":["<A>","<B>"],"hiddenAnchors":[],"locationName":""}',
   ']',
   '</example>',
 ] as const
@@ -303,6 +308,9 @@ export function userPrompt(input: ShotlistInput): string {
     input.episodeBrief ? `<episode>\n${input.episodeBrief}\n</episode>` : '',
     `<script>\n${input.scriptMd}\n</script>`,
     `<cast use-these-names-verbatim>\n${cast || '(none)'}\n</cast>`,
+    `<locations use-these-names-verbatim>\n${
+      input.locations.map((l) => `- ${l.name} — ${l.description}`).join('\n') || '(none)'
+    }\n</locations>`,
     `<scenes count="${input.scenes.length}">\n${scenes}\n</scenes>`,
     [
       'Based on the script above, break it into shots.',
@@ -311,6 +319,7 @@ export function userPrompt(input: ShotlistInput): string {
       `- Shot durations must sum to about ${input.targetDurationSec} seconds.`,
       '- The text after each · in <scenes> is the lighting for that whole scene. It is attached to every shot automatically — use it to decide what is visible, do not retype it in `action`.',
       '- Everything in <cast>, including the bracketed items, is attached to every shot automatically. `action` is for what changes from shot to shot.',
+      '- Each scene already has a place. Leave `locationName` empty unless this particular shot is somewhere else — looking through a door, out a window, a cutaway. Then name it verbatim from <locations>.',
     ].join('\n'),
   ]
     .filter(Boolean)
@@ -334,6 +343,7 @@ function check(
   targetDurationSec: number,
   minShotSec: number,
   anchors: ReadonlySet<string>,
+  locations: ReadonlySet<string>,
 ): { draft: ShotlistDraft; warnings: string[] } | { errors: string[] } {
   let parsed: unknown
   try {
@@ -351,7 +361,7 @@ function check(
   }
 
   // L2 集级 lint
-  const lint = lintShotlist(decoded.data, { sceneCount, targetDurationSec, minShotSec, anchors })
+  const lint = lintShotlist(decoded.data, { sceneCount, targetDurationSec, minShotSec, anchors, locations })
   if (lint.errors.length > 0) return { errors: lint.errors }
   return { draft: decoded.data, warnings: lint.warnings }
 }
@@ -360,6 +370,7 @@ export async function callShotlist(input: ShotlistInput, opts: ShotlistOptions):
   const names = input.characters.map((c) => c.name)
   // E6 的比对基准：全体角色的锚点，小写。现算不落库——它是输入的投影，不是状态
   const anchors = new Set(input.characters.flatMap((c) => c.anchorTokens.map((a) => a.toLowerCase())))
+  const locations = new Set(input.locations.map((l) => l.name.toLowerCase()))
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt(input) },
     { role: 'user', content: userPrompt(input) },
@@ -375,7 +386,15 @@ export async function callShotlist(input: ShotlistInput, opts: ShotlistOptions):
     costUsd += r.costUsd
     raw = r.content
 
-    const out = check(raw, names, input.scenes.length, input.targetDurationSec, input.minShotSec, anchors)
+    const out = check(
+      raw,
+      names,
+      input.scenes.length,
+      input.targetDurationSec,
+      input.minShotSec,
+      anchors,
+      locations,
+    )
     if ('draft' in out) return { ...out, repaired: round > 0, costUsd }
 
     last = out
@@ -397,12 +416,30 @@ async function post(
   names: readonly string[],
   opts: ShotlistOptions,
 ): Promise<{ content: string; costUsd: number }> {
+  return postChat(
+    messages,
+    { name: 'shotlist', schema: shotlistJsonSchema(names) },
+    { apiKey: opts.apiKey, ...(opts.baseUrl ? { baseUrl: opts.baseUrl } : {}), model: opts.model ?? MODEL },
+  )
+}
+
+/**
+ * **一次 strict json_schema 的 chat 调用。** 抽出来共用而不是每个调用点复制一遍。
+ *
+ * 三行必配（见下面的注释）漏任何一行都是静默降级，而症状是「偶尔莫名其妙解析
+ * 失败」——最难查的那一类。复制两份 = 两份都要记得改，迟早只改了一份。
+ */
+export async function postChat(
+  messages: readonly ChatMessage[],
+  schema: { name: string; schema: Record<string, unknown> },
+  opts: { apiKey: string; baseUrl?: string; model: string },
+): Promise<{ content: string; costUsd: number }> {
   const body = {
-    model: opts.model ?? MODEL,
+    model: opts.model,
     messages,
     response_format: {
       type: 'json_schema',
-      json_schema: { name: 'shotlist', strict: true, schema: shotlistJsonSchema(names) },
+      json_schema: { name: schema.name, strict: true, schema: schema.schema },
     },
     /**
      * **最容易漏的一行。** 缺了它 OpenRouter 可以把请求路由到不声明

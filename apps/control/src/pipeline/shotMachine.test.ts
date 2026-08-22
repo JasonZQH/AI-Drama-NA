@@ -52,6 +52,9 @@ const LEGAL: Record<string, ShotStatus> = {
   'review|intent.edited': 'ready',
   'review|skip.requested': 'skipped',
 
+  // 锁定之后仍然可以换片、可以再生成——两条都不销毁已经付过钱的 take
+  'locked|take.selected': 'locked',
+  'locked|generate.requested': 'generating',
   'locked|redo.requested': 'ready',
   'locked|intent.edited': 'ready',
   'locked|skip.requested': 'skipped',
@@ -62,6 +65,51 @@ const LEGAL: Record<string, ShotStatus> = {
 
   'skipped|manual.reset': 'ready',
 }
+
+/**
+ * **锁定之后仍然可以换片、可以再生成。**
+ *
+ * 原来 `locked` 只接 redo / intent.edited，两条都先把现有成片归档——于是
+ * 「这条能用，但我想再试一个」这件常规需求，只能拿一条已经花过钱的片子去赌
+ * 下一条；而在几条已付费的 take 之间改主意，本来什么都不该销毁。
+ */
+describe('locked 上的两条新路', () => {
+  const locked = { id: 'sh', status: 'locked' as const, attemptCount: 2, selectedTakeId: 'tk-old' }
+
+  it('换片：停在 locked，只改选中的是哪一条', () => {
+    const r = transition(locked, { type: 'take.selected', takeId: 'tk-new' }, { maxAttempts: 4 })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.next, '换的是哪一条进成片，不是这一镜做完没有').toBe('locked')
+    expect(r.effects).toContainEqual({ type: 'set.selectedTake', shotId: 'sh', takeId: 'tk-new' })
+    expect(
+      r.effects.some((e) => e.type === 'archive.takes'),
+      '换片不销毁任何东西——归档是「重做」干的事',
+    ).toBe(false)
+  })
+
+  it('再生成：回 generating，attempt 接着数，选中的不动', () => {
+    const r = transition(locked, { type: 'generate.requested' }, { maxAttempts: 4 })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.next).toBe('generating')
+    expect(r.effects).toContainEqual({ type: 'enqueue.generation', shotId: 'sh', attempt: 3 })
+    expect(
+      r.effects.some((e) => e.type === 'clear.selectedTake' || e.type === 'archive.takes'),
+      '旧的要留着——新片子不如它时得选得回来',
+    ).toBe(false)
+  })
+
+  it('重做仍然归档并清选中——它和「再生成一条」是两件事', () => {
+    const r = transition(locked, { type: 'redo.requested' }, { maxAttempts: 4 })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.next).toBe('ready')
+    expect(r.effects.map((e) => e.type)).toEqual(
+      expect.arrayContaining(['clear.selectedTake', 'archive.takes']),
+    )
+  })
+})
 
 describe('穷举全部 状态 × 事件 组合', () => {
   const combos = ShotStatus.options.flatMap((s) => ALL_EVENTS.map((e) => [s, e] as const))

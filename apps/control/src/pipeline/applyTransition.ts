@@ -166,7 +166,15 @@ export async function applyShotTransition(
             .from(s.takes)
             .where(and(eq(s.takes.shotId, e.shotId), eq(s.takes.status, 'selected')))
             .limit(1)
-          if (live)
+          /*
+           * **只拦 `ready`。** 这道闸防的是「镜头看起来没生成过、底下却压着已付费
+           * 的成片」——那正是烧掉 $4.03 的那个状态，而批量生成只会挑 `ready`。
+           *
+           * 从 `locked` 过来是另一回事：人正看着成片、明确要再试一条，价钱在确认
+           * 弹窗里写着。把这条也拦掉的话，「再生成一条」就只剩「先毁掉现有的」
+           * 这一条路。
+           */
+          if (live && row.status === 'ready')
             throw new Error(
               `镜头 ${e.shotId} 已经有选定的成片（take ${live.id}），不再重复生成。` +
                 `要重来请点「重做」（POST /api/shots/:id/redo）——它会把这条归档再放行。`,

@@ -1,4 +1,4 @@
-import { asc, eq, sql } from 'drizzle-orm'
+import { asc, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { s3Key } from '../storage/s3.js'
@@ -119,7 +119,10 @@ export async function ensureTimeline(db: Db, episodeId: string): Promise<string>
       .select({ n: sql<number>`count(*)::int` })
       .from(s.timelineClips)
       .where(eq(s.timelineClips.timelineId, existing.id))
-    if ((c?.n ?? 0) > 0) return existing.id
+    if ((c?.n ?? 0) > 0) {
+      await reconcileClips(db, existing.id, episodeId)
+      return existing.id
+    }
     await fillClips(db, existing.id, episodeId)
     return existing.id
   }
@@ -134,6 +137,82 @@ export async function ensureTimeline(db: Db, episodeId: string): Promise<string>
 }
 
 /** 按 locked 镜头的顺序铺 clip。空 timeline 与新建 timeline 共用 */
+/**
+ * **时间线是「已锁定镜头 + 它们当前选中的 take」的投影，只有顺序与 trim 归人。**
+ *
+ * `ensureTimeline` 原来是「非空就原样复用」，理由是别覆盖人工调过的顺序与 trim。
+ * 那条理由现在还成立，但它顺带保住了**已经不对的 take 引用**：
+ *
+ * 真机实测撞到的——第 8、9 镜的地点配错了（人在门外、背景是屋内），改完地点重新
+ * 生成、重新选片之后，时间线里那两条 clip **仍然指着已归档的旧 take**。再点渲染，
+ * 出来的还是旧画面，**而且不报错**。人会以为是模型没听话，实际是渲染读了一份
+ * 陈旧的投影。
+ *
+ * 这与 `hidden_anchors` 存事件不存投影是同一课：**能算出来的东西不要存两份。**
+ * 这里存的那一份（顺序、trim）是人给的、算不出来，所以留着；take 引用是算得出来
+ * 的，所以每次渲染前对齐。
+ *
+ * 三件事，都只动 take 引用，不动顺序与 trim：
+ * 1. 指向的 take 与镜头当前选中的不一致 → 改指过去
+ * 2. 镜头已经不再锁定（selectedTakeId 为空）→ 删掉那条 clip
+ * 3. 新锁定的镜头还不在时间线里 → 按 index 追加
+ */
+async function reconcileClips(db: Db, timelineId: string, episodeId: string): Promise<void> {
+  const shots = await db
+    .select({ id: s.shots.id, index: s.shots.index, takeId: s.shots.selectedTakeId })
+    .from(s.shots)
+    .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+    .where(eq(s.scenes.episodeId, episodeId))
+    .orderBy(asc(s.shots.index))
+
+  const clips = await db
+    .select({ id: s.timelineClips.id, index: s.timelineClips.index, takeId: s.timelineClips.takeId })
+    .from(s.timelineClips)
+    .where(eq(s.timelineClips.timelineId, timelineId))
+
+  // clip → 它属于哪一镜（经 takes.shot_id，因为 clip 只认 take）
+  const clipTakeIds = clips.map((c) => c.takeId).filter((x): x is string => x !== null)
+  const takeOwner = new Map(
+    clipTakeIds.length === 0
+      ? []
+      : (
+          await db
+            .select({ takeId: s.takes.id, shotId: s.takes.shotId })
+            .from(s.takes)
+            .where(inArray(s.takes.id, clipTakeIds))
+        ).map((t) => [t.takeId, t.shotId] as const),
+  )
+
+  const wanted = new Map(shots.filter((x) => x.takeId !== null).map((x) => [x.id, x.takeId!]))
+  const covered = new Set<string>()
+
+  for (const c of clips) {
+    const shotId = c.takeId === null ? undefined : takeOwner.get(c.takeId)
+    const want = shotId === undefined ? undefined : wanted.get(shotId)
+    if (want === undefined) {
+      // 这一镜不再锁定：留着就是把一段作废的素材拼进成片
+      await db.delete(s.timelineClips).where(eq(s.timelineClips.id, c.id))
+      continue
+    }
+    if (shotId !== undefined) covered.add(shotId)
+    if (want !== c.takeId)
+      await db.update(s.timelineClips).set({ takeId: want }).where(eq(s.timelineClips.id, c.id))
+  }
+
+  // 新锁定的镜头补进去。index 接在现有最大值之后——**不重排**，顺序归人
+  let next = Math.max(0, ...clips.map((c) => c.index))
+  const missing = shots.filter((x) => x.takeId !== null && !covered.has(x.id))
+  if (missing.length > 0)
+    await db.insert(s.timelineClips).values(
+      missing.map((x) => ({
+        timelineId,
+        index: ++next,
+        takeId: x.takeId!,
+        transition: 'cut' as const,
+      })),
+    )
+}
+
 async function fillClips(db: Db, timelineId: string, episodeId: string): Promise<void> {
   const shots = await db
     .select({ id: s.shots.id, index: s.shots.index, takeId: s.shots.selectedTakeId })

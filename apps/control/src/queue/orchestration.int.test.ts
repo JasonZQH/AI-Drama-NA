@@ -298,6 +298,37 @@ describe('每行至多 submit 一次（花钱的不变量）', () => {
     expect(row!.status).toBe('failed')
   })
 
+  /**
+   * **卡在 `generating` 却一个在飞 job 都没有的镜头。**
+   *
+   * 上面那些扫的是 `generation_jobs`，而顶栏的「N 生成中」数的是
+   * `shots.status='generating'`——**两边算的不是一件事**。于是这个状态没有任何
+   * 东西会收回来：顶栏永远转着一个假的计数，而那一镜在面板上既不能生成也不能
+   * 选片。真机撞到过。
+   */
+  it('镜头卡在 generating 但没有在飞 job → 放回 ready', async () => {
+    await db.delete(s.generationJobs).where(eq(s.generationJobs.shotId, shotId))
+    await db.update(s.shots).set({ status: 'generating' }).where(eq(s.shots.id, shotId))
+
+    const r = await reconcileOnBoot(deps)
+    expect(r.orphanShots).toBeGreaterThanOrEqual(1)
+    const [row] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
+    expect(row!.status, '回 ready 不回 failed——没有任何证据说它失败过').toBe('ready')
+  })
+
+  it('真有在飞 job 的 generating 镜头不能被动', async () => {
+    const id = await newJob()
+    await db.update(s.shots).set({ status: 'generating' }).where(eq(s.shots.id, shotId))
+
+    await reconcileOnBoot(deps)
+    const [row] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
+    expect(row!.status, 'job 还在队列里，这一镜确实在生成').toBe('generating')
+
+    await db.delete(s.generationJobs).where(eq(s.generationJobs.id, id))
+    await db.update(s.shots).set({ status: 'ready' }).where(eq(s.shots.id, shotId))
+    await queues.generate.drain(true)
+  })
+
   it('认领很新时 reconcile 不动它——可能有 worker 正在 submit 里', async () => {
     const id = await newJob()
     await db.update(s.generationJobs).set({ startedAt: new Date() }).where(eq(s.generationJobs.id, id))
@@ -503,11 +534,30 @@ describe('状态迁移是原子的（同一镜头不会被并发付两次钱）'
       applyShotTransition(tdeps(other.db), shotId, { type: 'take.selected', takeId: takes[1]!.id }),
     ])
 
-    expect([a, b].filter((r) => r?.ok)).toHaveLength(1)
+    /*
+     * **两个都会成功——`locked` 现在也接 `take.selected`（锁定之后仍然可以换片）。**
+     *
+     * 原来第二个会从 `locked` 被拒，这条断言的是「只有一个能赢」。那个前提没了，
+     * 但真正要守的东西没变：**两次写不能互相撕开**。`FOR UPDATE` 把它们排成
+     * 队，所以最终状态必须是自洽的一份——选中的是其中一条，而 `accepted` 恰好
+     * 落在那一条对应的 job 上（`usdPerAcceptedMicro` 的分母靠它）。
+     */
+    expect(
+      [a, b].filter((r) => r?.ok),
+      '换片不销毁任何东西，两个都该成功',
+    ).toHaveLength(2)
     const [shot] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
     expect(shot!.status).toBe('locked')
-    // 选中的必须是赢的那一个，不能是两次写互相覆盖后的残留
+    // 选中的必须是其中一条，不能是两次写互相覆盖后的残留
     expect([takes[0]!.id, takes[1]!.id]).toContain(shot!.selectedTakeId)
+
+    const accepted = await db
+      .select({ id: s.generationJobs.id })
+      .from(s.generationJobs)
+      .where(and(eq(s.generationJobs.shotId, shotId), eq(s.generationJobs.accepted, true)))
+    expect(accepted, 'accepted 只能有一条——两条就说明两次写撕开了').toHaveLength(1)
+    const [winner] = await db.select().from(s.takes).where(eq(s.takes.id, shot!.selectedTakeId!))
+    expect(accepted[0]!.id, 'accepted 要落在选中的那一条上').toBe(winner!.jobId)
 
     await db.delete(s.takes).where(
       inArray(

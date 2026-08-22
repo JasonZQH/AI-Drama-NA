@@ -30,6 +30,8 @@ export const ShotIntent = z.object({
    * `shotlist.ts` 的 `hiddenAnchors` 与 `db/schema.ts` 的同名列。
    */
   hiddenAnchors: z.array(z.string()).default([]),
+  /** 这一镜自己的地点名。缺省 = 跟这一场一样 */
+  locationName: z.string().optional(),
 })
 export type ShotIntent = z.infer<typeof ShotIntent>
 

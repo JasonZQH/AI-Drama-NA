@@ -50,6 +50,13 @@
       "when": 1787357604290,
       "tag": "0006_neat_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787378851385,
+      "tag": "0007_thin_pestilence",
+      "breakpoints": true
     }
   ]
 }

@@ -9,18 +9,20 @@ import * as s from '../db/schema.js'
 import { MockProvider } from '../providers/mock.js'
 import { createConnection, createQueues } from '../queue/queues.js'
 import { assertNoWorker } from '../queue/assertNoWorker.js'
-import { MediaWorkerUnavailable, renderEpisode } from '../pipeline/render.js'
+import { MediaWorkerUnavailable, ensureTimeline, renderEpisode } from '../pipeline/render.js'
+import { applyShotTransition } from '../pipeline/applyTransition.js'
 import { buildServer, type ServerDeps } from '../server.js'
 import { Storage, storageFromEnv } from '../storage/s3.js'
 import { resolveDependencies } from '../pipeline/batch.js'
 import { createGenerationJob } from '../queue/ingest.js'
 import { ShotlistRejected } from '../pipeline/callShotlist.js'
+import { BreakdownRejected } from '../pipeline/callBreakdown.js'
 import { resolvePrompt } from '../pipeline/resolvePrompt.js'
 import { probeOpenRouter, type ProbeResult } from '../credentials/probe.js'
 import { deleteCredential, resolveKey, upsertCredential } from '../credentials/store.js'
 import { LivePool, publishProvidersChanged, subscribeProviderChanges } from '../providers/pool.js'
 import { DURATION_TOLERANCE, SHOT_COUNT } from '../pipeline/shotlist.js'
-import type { ShotlistFn } from './api.js'
+import type { BreakdownFn, ShotlistFn } from './api.js'
 
 /**
  * API 集成测试：真起 Fastify，打真实 Postgres / Redis / MinIO。
@@ -766,6 +768,140 @@ describe('空 timeline 要回填，不能永久复用', () => {
  * 分镜一旦生成就是只读的：第 3 镜写错一个词，只有 redo（同一个 prompt 重掷骰子）
  * 或者删掉整集重来两条路。
  */
+/**
+ * **时间线是「已锁定镜头 + 当前选中的 take」的投影，只有顺序与 trim 归人。**
+ *
+ * `ensureTimeline` 原来「非空就原样复用」——那保住了人工调过的顺序与 trim，
+ * 但也顺带保住了**已经不对的 take 引用**。
+ *
+ * 真机实测撞到的：第 8、9 镜地点配错（人在门外、背景是屋内），改完地点重新生成、
+ * 重新选片之后，时间线里那两条 clip 仍然指着已归档的旧 take。再点渲染，出来的
+ * 还是旧画面，**而且不报错**——人会以为是模型没听话。
+ */
+describe('渲染前对齐时间线：能算出来的不存两份', () => {
+  let shotA = ''
+  let takeOld = ''
+  let takeNew = ''
+
+  const clipsOf = async (tlId: string) =>
+    db
+      .select({ index: s.timelineClips.index, takeId: s.timelineClips.takeId })
+      .from(s.timelineClips)
+      .where(eq(s.timelineClips.timelineId, tlId))
+      .orderBy(s.timelineClips.index)
+
+  const newTake = async (shotId: string): Promise<string> => {
+    const [asset] = await db
+      .insert(s.assets)
+      .values({
+        projectId,
+        kind: 'video',
+        storageKey: `test/reconcile/${fixtureAttempt}.mp4`,
+        mime: 'video/mp4',
+        bytes: 1,
+        sha256: 'c'.repeat(64),
+        producedBy: 'generation',
+      })
+      .returning({ id: s.assets.id })
+    const jobId = await createGenerationJob(db, {
+      shotId,
+      attempt: fixtureAttempt++,
+      providerId: 'mock',
+      modelId: 'mock-v1',
+      mode: 't2v',
+      promptText: 'reconcile fixture',
+    })
+    const [t] = await db
+      .insert(s.takes)
+      .values({ shotId, jobId, assetId: asset!.id, status: 'candidate' })
+      .returning({ id: s.takes.id })
+    return t!.id
+  }
+
+  beforeAll(async () => {
+    const [shot] = await db
+      .select({ id: s.shots.id })
+      .from(s.shots)
+      .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+      .where(eq(s.scenes.episodeId, episodeId))
+      .orderBy(s.shots.index)
+      .limit(1)
+    shotA = shot!.id
+    takeOld = await newTake(shotA)
+    takeNew = await newTake(shotA)
+  })
+
+  afterAll(async () => {
+    await dropTimelines()
+    await db.update(s.shots).set({ selectedTakeId: null, status: 'ready' }).where(eq(s.shots.id, shotA))
+    await db.delete(s.takes).where(inArray(s.takes.id, [takeOld, takeNew]))
+  })
+
+  /*
+   * `render_jobs.timeline_id` 有外键且无级联，而渲染那组用例会留下 render_jobs
+   * ——不先删它，这里的 delete 会 23503，整个 describe 全挂。同一条链在
+   * `cleanup()` 里也踩过一次。
+   */
+  const dropTimelines = async (): Promise<void> => {
+    const ids = (
+      await db.select({ id: s.timelines.id }).from(s.timelines).where(eq(s.timelines.episodeId, episodeId))
+    ).map((t) => t.id)
+    if (ids.length === 0) return
+    await db.delete(s.renderJobs).where(inArray(s.renderJobs.timelineId, ids))
+    await db.delete(s.timelineClips).where(inArray(s.timelineClips.timelineId, ids))
+    await db.delete(s.timelines).where(inArray(s.timelines.id, ids))
+  }
+
+  beforeEach(dropTimelines)
+
+  it('选了新 take 之后，时间线跟着改指——不然渲出来还是旧画面', async () => {
+    await db.update(s.shots).set({ status: 'locked', selectedTakeId: takeOld }).where(eq(s.shots.id, shotA))
+    const tl = await ensureTimeline(db, episodeId)
+    expect(
+      (await clipsOf(tl)).map((c) => c.takeId),
+      '第一次按当前选中建',
+    ).toContain(takeOld)
+
+    // 改选：地点配错重新生成之后就是这个状态
+    await db.update(s.shots).set({ selectedTakeId: takeNew }).where(eq(s.shots.id, shotA))
+    await ensureTimeline(db, episodeId)
+    const after = (await clipsOf(tl)).map((c) => c.takeId)
+    expect(after, '要改指到新的').toContain(takeNew)
+    expect(after, '旧的不能还留着——那就是渲出旧画面的原因').not.toContain(takeOld)
+  })
+
+  it('镜头不再锁定，它那条 clip 要删掉——留着就是把作废素材拼进成片', async () => {
+    await db.update(s.shots).set({ status: 'locked', selectedTakeId: takeOld }).where(eq(s.shots.id, shotA))
+    const tl = await ensureTimeline(db, episodeId)
+    const before = (await clipsOf(tl)).length
+
+    await db.update(s.shots).set({ status: 'ready', selectedTakeId: null }).where(eq(s.shots.id, shotA))
+    await ensureTimeline(db, episodeId)
+    expect((await clipsOf(tl)).length).toBe(before - 1)
+  })
+
+  it('人工调过的顺序与 trim 不能被动——那两样算不出来，只有人知道', async () => {
+    await db.update(s.shots).set({ status: 'locked', selectedTakeId: takeOld }).where(eq(s.shots.id, shotA))
+    const tl = await ensureTimeline(db, episodeId)
+    // 人把这一条挪到最后并 trim 了
+    await db
+      .update(s.timelineClips)
+      .set({ index: 99, trimStartSec: '0.5', trimEndSec: '2.5' })
+      .where(and(eq(s.timelineClips.timelineId, tl), eq(s.timelineClips.takeId, takeOld)))
+
+    await db.update(s.shots).set({ selectedTakeId: takeNew }).where(eq(s.shots.id, shotA))
+    await ensureTimeline(db, episodeId)
+
+    const [c] = await db
+      .select()
+      .from(s.timelineClips)
+      .where(and(eq(s.timelineClips.timelineId, tl), eq(s.timelineClips.takeId, takeNew)))
+    expect(c!.index, '顺序是人给的，算不出来').toBe(99)
+    expect(Number(c!.trimStartSec), 'trim 同理').toBe(0.5)
+    expect(Number(c!.trimEndSec)).toBe(2.5)
+  })
+})
+
 describe('PATCH /api/shots/:id', () => {
   const patch = (body: Record<string, unknown>, id = shotId) =>
     app.inject({ method: 'PATCH', url: `/api/shots/${id}`, headers: WRITE_HEADERS, payload: body })
@@ -895,6 +1031,47 @@ describe('PATCH /api/shots/:id', () => {
     expect(t!.status, '归档而非删除：系统不自动销毁花过钱的东西').toBe('archived')
   })
 
+  /**
+   * **重复计费闸只拦 `ready`。**
+   *
+   * 它防的是「镜头看起来没生成过、底下却压着已付费成片」——那正是烧掉 $4.03 的
+   * 状态，而批量生成只挑 `ready`。从 `locked` 过来是另一回事：人正看着成片、
+   * 明确要再试一条。两者都拦的话，「再生成一条」就只剩「先毁掉现有的」这一条路。
+   */
+  it('locked 上可以再生成一条，ready 上仍然被闸门拦住', async () => {
+    const countJobs = async (): Promise<number> =>
+      (await db.select().from(s.generationJobs).where(eq(s.generationJobs.shotId, shotId))).length
+    const takeId = await lockWithTake()
+    const before = await countJobs()
+
+    // locked：放行
+    await applyShotTransition(
+      { db, queues, providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })], maxAttempts: 4 },
+      shotId,
+      { type: 'generate.requested' },
+    )
+    expect(await countJobs(), 'locked 上该放行').toBe(before + 1)
+    const [afterGen] = await db.select().from(s.shots).where(eq(s.shots.id, shotId))
+    expect(afterGen!.selectedTakeId, '旧的要留着——新片子不如它时得选得回来').toBe(takeId)
+
+    // ready + 有 selected take：仍然拦
+    await db.update(s.shots).set({ status: 'ready' }).where(eq(s.shots.id, shotId))
+    const n = await countJobs()
+    await expect(
+      applyShotTransition(
+        { db, queues, providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })], maxAttempts: 4 },
+        shotId,
+        { type: 'generate.requested' },
+      ),
+    ).rejects.toThrow(/已经有选定的成片/)
+    expect(await countJobs()).toBe(n)
+
+    await queues.generate.drain(true)
+    // takes.job_id 引用着 job 且无级联——先删 take 再删 job
+    await db.delete(s.takes).where(eq(s.takes.shotId, shotId))
+    await db.delete(s.generationJobs).where(eq(s.generationJobs.shotId, shotId))
+  })
+
   it('在飞的镜头不许改——产物回来时会对不上一份已经不存在的 intent', async () => {
     await db.update(s.shots).set({ status: 'generating' }).where(eq(s.shots.id, shotId))
     const r = await patch({ action: '生成中偷偷改' })
@@ -920,6 +1097,7 @@ describe('PATCH /api/shots/:id', () => {
 describe('hiddenAnchors：事件入库，投影在读时算', () => {
   let charId = ''
   let shotIds: string[] = []
+  let sceneIdForFixture = ''
   const ANCHOR = 'brass key on a cord at her neck'
 
   beforeAll(async () => {
@@ -937,6 +1115,7 @@ describe('hiddenAnchors：事件入库，投影在读时算', () => {
       .insert(s.scenes)
       .values({ episodeId, index: 950, summary: 'hidden-anchor 用例' })
       .returning({ id: s.scenes.id })
+    sceneIdForFixture = sc!.id
     const rows = await db
       .insert(s.shots)
       .values(
@@ -960,6 +1139,10 @@ describe('hiddenAnchors：事件入库，投影在读时算', () => {
   })
 
   const promptOf = async (i: number) => (await resolvePrompt(db, shotIds[i]!))!.prompt
+  const sceneIdOf = (shotId: string): string => {
+    void shotId
+    return sceneIdForFixture
+  }
 
   it('没有移除事件时，锚点每一镜都在', async () => {
     for (const i of [0, 1, 2]) expect(await promptOf(i)).toContain(ANCHOR)
@@ -987,6 +1170,53 @@ describe('hiddenAnchors：事件入库，投影在读时算', () => {
     // 只改第 2 镜这一行，不碰第 3 镜
     await db.update(s.shots).set({ hiddenAnchors: [] }).where(eq(s.shots.id, shotIds[1]!))
     expect(await promptOf(2), '存累计集的话这里还是旧值——而没有任何东西会去重算').toContain(ANCHOR)
+  })
+
+  /**
+   * **镜级地点压过场级。**
+   *
+   * 场次与地点原本一对一，而同一场里跨空间是常事：猫眼 POV——场次在客厅、主体在
+   * 门外走廊。真机实测撞到过：渲出来的人「站在门外」而背景是屋内，因为整场只有
+   * 一个地点，而门外那个资产压根不存在。参考图那条路还没通，文字是唯一通道。
+   */
+  it('镜级 locationId 压过场级，没写就跟着场次走', async () => {
+    const [outside] = await db
+      .insert(s.locations)
+      .values({
+        projectId,
+        name: '门外走廊-用例',
+        description: 'a bare tenement corridor, one dead bulb, a metal fire door',
+        interior: true,
+      })
+      .returning({ id: s.locations.id })
+    const [inside] = await db
+      .insert(s.locations)
+      .values({
+        projectId,
+        name: '客厅-用例',
+        description: 'a small living room with a low coffee table',
+        interior: true,
+      })
+      .returning({ id: s.locations.id })
+    await db
+      .update(s.scenes)
+      .set({ locationId: inside!.id })
+      .where(eq(s.scenes.id, sceneIdOf(shotIds[0]!)))
+    try {
+      expect((await resolvePrompt(db, shotIds[0]!))!.prompt, '没写就跟着场次').toContain('low coffee table')
+
+      await db.update(s.shots).set({ locationId: outside!.id }).where(eq(s.shots.id, shotIds[0]!))
+      const p = (await resolvePrompt(db, shotIds[0]!))!.prompt
+      expect(p, '写了就用自己的').toContain('tenement corridor')
+      expect(p, '场次那个不该再出现——同一镜不能有两个房间').not.toContain('low coffee table')
+    } finally {
+      await db.update(s.shots).set({ locationId: null }).where(eq(s.shots.id, shotIds[0]!))
+      await db
+        .update(s.scenes)
+        .set({ locationId: null })
+        .where(eq(s.scenes.id, sceneIdOf(shotIds[0]!)))
+      await db.delete(s.locations).where(inArray(s.locations.id, [outside!.id, inside!.id]))
+    }
   })
 
   it('预览要透出 hiddenTraits，否则少一个词看起来就像 bug', async () => {
@@ -1079,6 +1309,150 @@ describe('PATCH /api/episodes/:id', () => {
   })
 })
 
+/**
+ * **剧本 → 场次拆解提案。不落库。**
+ *
+ * 场次此前只有人能建，而系统不读剧本；下游却把场次数当硬约束（分镜提示词
+ * 「Do not add, drop, or merge scenes」+ lint 的 E1）。粘一个五场的剧本、手建两场，
+ * 模型必须把五场塞进两格，**而没有任何一层会说一句话**。
+ *
+ * 「能让 LLM 定的让 LLM 定，人做复验」——所以这个端点只回建议，人确认后才建。
+ */
+describe('POST /api/episodes/:id/breakdown', () => {
+  let epId = ''
+  const proposal = {
+    scenes: [
+      {
+        summary: '她在玄关把戒指放进碟子',
+        locationName: '玄关',
+        characterNames: ['林知夏'],
+        timeOfDay: 'night',
+        lighting: '一盏小夜灯',
+      },
+      {
+        summary: '楼道里门铃响了一声',
+        locationName: '门外走廊',
+        characterNames: ['林知夏', '陈默'],
+        timeOfDay: 'dawn',
+        lighting: '',
+      },
+    ],
+    targetDurationSec: 48,
+    logline: 'x',
+    hook: 'y',
+    cliffhanger: 'z',
+  }
+
+  const withBreakdown = (fn: BreakdownFn): FastifyInstance =>
+    buildServer({
+      db,
+      queues,
+      storage,
+      providers: [new MockProvider({ latencyScale: 0, failureRate: 0 })],
+      maxAttempts: 4,
+      media: { render: () => Promise.reject(new Error('未配置')) },
+      healthProbe: () => client`SELECT 1`,
+      makeSubscriber: () => createConnection(REDIS_URL),
+      apiKey: TEST_API_KEY,
+      breakdown: fn,
+    })
+
+  const post = (a: FastifyInstance, id: string) =>
+    a.inject({ method: 'POST', url: `/api/episodes/${id}/breakdown`, headers: WRITE_HEADERS })
+
+  beforeAll(async () => {
+    const [ep] = await db
+      .insert(s.episodes)
+      .values({ projectId, index: 903, title: '拆解用例', targetDurationSec: 72 })
+      .returning()
+    epId = ep!.id
+  })
+
+  afterAll(async () => {
+    await db.delete(s.episodes).where(eq(s.episodes.id, epId))
+  })
+
+  it('没有剧本时先拦下来，不去花那 $0.003', async () => {
+    const r = await post(
+      withBreakdown(() => Promise.reject(new Error('这条用例在调模型之前就该被拦下'))),
+      epId,
+    )
+    expect(r.statusCode).toBe(422)
+    expect((r.json() as { error: { message: string } }).error.message).toMatch(/剧本/)
+  })
+
+  describe('有剧本之后', () => {
+    beforeAll(async () => {
+      await db
+        .update(s.episodes)
+        .set({ scriptMd: '## 一\n\n她把戒指放进碟子。' })
+        .where(eq(s.episodes.id, epId))
+    })
+
+    it('回建议，且**一个场次都不落库**', async () => {
+      const before = (await db.select().from(s.scenes).where(eq(s.scenes.episodeId, epId))).length
+      const r = await post(
+        withBreakdown(() => Promise.resolve({ breakdown: proposal, costUsd: 0.003 })),
+        epId,
+      )
+      expect(r.statusCode).toBe(200)
+      const b = r.json() as { breakdown: { scenes: unknown[] } }
+      expect(b.breakdown.scenes).toHaveLength(2)
+      expect(
+        (await db.select().from(s.scenes).where(eq(s.scenes.episodeId, epId))).length,
+        '提案不写库——场次划分是作者的结构决定',
+      ).toBe(before)
+    })
+
+    /**
+     * 「剧本里的资产要列全」唯一能被系统查出来的时刻。参考图那条路还没通，
+     * 文字是描述环境的唯一通道——真机撞到过：人「站在门外」而背景是屋内。
+     */
+    it('把缺的资产算出来告诉人', async () => {
+      const r = await post(
+        withBreakdown(() => Promise.resolve({ breakdown: proposal, costUsd: 0.003 })),
+        epId,
+      )
+      const b = r.json() as { missing: { locations: string[]; characters: string[] } }
+      expect(b.missing.locations, '门外走廊在剧本里、不在资产库里').toContain('门外走廊')
+      expect(b.missing.locations, '玄关这个项目里没有，也该报').toContain('玄关')
+      expect(b.missing.characters.length).toBeGreaterThan(0)
+    })
+
+    it('建议时长够不着当前 provider 时，把话说在生成之前', async () => {
+      // 池里只有 mock（地板 1 秒），10 × 1 = 10 秒，所以要更短才够不着
+      const short = { ...proposal, targetDurationSec: 5 }
+      const r = await post(
+        withBreakdown(() => Promise.resolve({ breakdown: short, costUsd: 0.003 })),
+        epId,
+      )
+      const b = r.json() as { durationNote: string | null }
+      expect(b.durationNote, '5 秒做不出 10 镜——话要说在生成之前').toBeTruthy()
+    })
+
+    it('模型不就范时 422 带上原文，不静默给一份空建议', async () => {
+      const r = await post(
+        withBreakdown(() => Promise.reject(new BreakdownRejected(['scenes: 至少一场'], '{}'))),
+        epId,
+      )
+      expect(r.statusCode).toBe(422)
+      expect((r.json() as { error: { details: { errors: string[] } } }).error.details.errors).toContain(
+        'scenes: 至少一场',
+      )
+    })
+
+    it('写路径要 x-api-key', async () => {
+      const r = await withBreakdown(() => Promise.reject(new Error('这条用例在调模型之前就该被拦下'))).inject(
+        {
+          method: 'POST',
+          url: `/api/episodes/${epId}/breakdown`,
+        },
+      )
+      expect(r.statusCode).toBe(401)
+    })
+  })
+})
+
 describe('POST /api/episodes/:id/shotlist', () => {
   /**
    * 自建一集，不借 seed 的那一集——它已经有 12 个镜头，会被「已有镜头」那道闸挡下。
@@ -1101,6 +1475,7 @@ describe('POST /api/episodes/:id/shotlist', () => {
         durationSec: 4,
         characterNames: i % 2 === 0 ? [] : [names[0]!],
         hiddenAnchors: [] as string[],
+        locationName: '',
       })),
     })),
   })

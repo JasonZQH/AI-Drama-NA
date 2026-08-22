@@ -484,6 +484,9 @@
           "items": {
             "type": "string"
           }
+        },
+        "locationName": {
+          "type": "string"
         }
       },
       "required": [

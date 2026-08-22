@@ -8,6 +8,12 @@ import * as s from '../db/schema.js'
 import { budgetFromEnv, planBatch } from '../pipeline/batch.js'
 import { MediaWorkerUnavailable, renderEpisode, type MediaWorkerClient } from '../pipeline/render.js'
 import {
+  BreakdownRejected,
+  callBreakdown,
+  type BreakdownInput,
+  type BreakdownOutcome,
+} from '../pipeline/callBreakdown.js'
+import {
   MODEL as SHOTLIST_MODEL,
   ShotlistRejected,
   callShotlist,
@@ -55,6 +61,8 @@ export interface ApiDeps {
    * OpenRouter 的话每跑一次 CI 就是一次真实计费。
    */
   readonly shotlist?: ShotlistFn
+  /** 场次拆解。同一个 seam，同一个理由——不注入就会真去打 OpenRouter */
+  readonly breakdown?: BreakdownFn
   /**
    * 密钥探测。同样是 seam：不注入的话 `POST /api/keys` 会真的打
    * openrouter.ai，而「无效 key 直接拒收」正是这组端点最该被守住的行为，
@@ -71,6 +79,7 @@ export interface ApiDeps {
 }
 
 export type ShotlistFn = (input: ShotlistInput) => Promise<ShotlistOutcome>
+export type BreakdownFn = (input: BreakdownInput) => Promise<BreakdownOutcome>
 
 /**
  * 没配 key 时给的是 **503 + 可行动的报错**，不是 500「fetch failed」。
@@ -229,6 +238,14 @@ const shotBody = z.object({
    * 后面每一镜自动跟着变，这正是存事件不存投影换来的。
    */
   hiddenAnchors: z.array(z.string()).optional(),
+  /**
+   * 这一镜自己的地点，覆盖场次的那个。`null` = 跟着场次走。
+   *
+   * 跨空间的那一镜（猫眼 POV：场次在客厅、主体在门外）靠它。模型能在分镜阶段
+   * 指定，但**人也得改得动**——真机实测就是人先看到成片里「门外」是屋内，
+   * 才发现门外那个地点资产压根不存在。
+   */
+  locationId: z.string().uuid().nullish(),
 })
 
 const shotPatch = (b: z.infer<typeof shotBody>): Record<string, unknown> => ({
@@ -243,6 +260,7 @@ const shotPatch = (b: z.infer<typeof shotBody>): Record<string, unknown> => ({
   ...(b.hiddenAnchors === undefined
     ? {}
     : { hiddenAnchors: b.hiddenAnchors.map((a) => a.trim()).filter(Boolean) }),
+  ...(b.locationId === undefined ? {} : { locationId: b.locationId ?? null }),
   ...(Object.keys(b).length > 0 ? { updatedAt: new Date() } : {}),
 })
 
@@ -634,6 +652,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
           episodeBrief: null,
           targetDurationSec: sample.targetDurationSec,
           minShotSec: poolMinShotSec(),
+          locations: [],
           scenes: Array.from({ length: sample.scenes }, () => ({
             summary: null,
             timeOfDay: null,
@@ -892,6 +911,78 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
     return mins.length > 0 ? Math.min(...mins) : 1
   }
 
+  /**
+   * **剧本 → 场次拆解提案。不落库。**
+   *
+   * 场次此前只有人能建，而系统不读剧本——机械枚举 `insert(s.scenes)` 的写入方，
+   * 只有 `db/seed.ts` 和「+ 加一场」那一个端点。而下游把场次数当**硬约束**
+   * （分镜提示词「Do not add, drop, or merge scenes」+ lint 的 E1）。所以你粘一个
+   * 五场的剧本、手建两场，模型必须把五场塞进两格，**而没有任何一层会说一句话**。
+   *
+   * 「能让 LLM 定的让 LLM 定，人做复验」：这里回一份建议，人在面板上改、确认之后
+   * 才建场次。场次划分是作者的结构决定，系统该建议不该代替。
+   *
+   * 顺带回答「资产列全了没有」：把提案里提到的地点/角色与现有资产做**差集**。
+   * 参考图那条路还没通，文字是描述环境的唯一通道——列不全，那一镜的环境只能靠
+   * 模型猜（真机撞到过：人「站在门外」而背景是屋内）。
+   */
+  app.post('/api/episodes/:id/breakdown', async (req) => {
+    const { id } = Uuid.parse(req.params)
+    const [ep] = await db.select().from(s.episodes).where(eq(s.episodes.id, id))
+    if (!ep) throw new ApiError('NOT_FOUND', `episode ${id} 不存在`)
+    const script = ep.scriptMd?.trim()
+    if (!script)
+      throw new ApiError(
+        'VALIDATION_FAILED',
+        '这一集还没有剧本。先在分集页的「剧本」里粘一段进去，再让它读场次。',
+      )
+
+    const [proj] = await db.select().from(s.projects).where(eq(s.projects.id, ep.projectId))
+    const locs = await db
+      .select({ name: s.locations.name })
+      .from(s.locations)
+      .where(eq(s.locations.projectId, ep.projectId))
+    const chars = await db
+      .select({ name: s.characters.name })
+      .from(s.characters)
+      .where(eq(s.characters.projectId, ep.projectId))
+
+    const run =
+      deps.breakdown ??
+      (async (i: BreakdownInput) => callBreakdown(i, { apiKey: await resolveKeyOr503(db, 'openrouter') }))
+    const out = await run({
+      scriptMd: script,
+      synopsis: proj?.synopsis ?? null,
+      minShotSec: poolMinShotSec(),
+      knownLocations: locs.map((l) => l.name),
+      knownCharacters: chars.map((c) => c.name),
+    }).catch((e: unknown) => {
+      if (e instanceof BreakdownRejected)
+        throw new ApiError('VALIDATION_FAILED', e.message, { errors: [...e.errors] })
+      throw e
+    })
+
+    /*
+     * 差集用小写比。资产名是人起的，大小写和首尾空格不该算成「缺一个」——
+     * 那会把人引去建一个重复的。
+     */
+    const haveL = new Set(locs.map((l) => l.name.trim().toLowerCase()))
+    const haveC = new Set(chars.map((c) => c.name.trim().toLowerCase()))
+    const wantL = new Set(out.breakdown.scenes.map((x) => x.locationName.trim()).filter((x) => x.length > 0))
+    const wantC = new Set(out.breakdown.scenes.flatMap((x) => x.characterNames.map((n) => n.trim())))
+
+    return {
+      breakdown: out.breakdown,
+      missing: {
+        locations: [...wantL].filter((n) => !haveL.has(n.toLowerCase())),
+        characters: [...wantC].filter((n) => n.length > 0 && !haveC.has(n.toLowerCase())),
+      },
+      /** 建议时长够不够得着当前 provider 的档位。够不着时这句话直接给人看 */
+      durationNote: targetOutOfReach(out.breakdown.targetDurationSec, poolMinShotSec()),
+      costUsd: out.costUsd,
+    }
+  })
+
   app.post('/api/episodes/:id/shotlist', async (req, reply) => {
     const { id } = Uuid.parse(req.params)
 
@@ -937,6 +1028,15 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       )
 
     const [proj] = await db.select().from(s.projects).where(eq(s.projects.id, ep.projectId))
+    /*
+     * 地点资产。发给模型是为了让它能在**跨空间的那一镜**指名道姓——场次与地点是
+     * 一对一的，而同一场里跨空间是常事（猫眼 POV：场次在客厅，主体在门外）。
+     * 不发的话那一镜只能落到场次的默认地点，渲出错的房间，而没有任何一层会说。
+     */
+    const locationRows = await db
+      .select({ id: s.locations.id, name: s.locations.name, description: s.locations.description })
+      .from(s.locations)
+      .where(eq(s.locations.projectId, ep.projectId))
     const characters = await db
       .select({
         id: s.characters.id,
@@ -966,6 +1066,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
             .join('\n') || null,
         targetDurationSec: ep.targetDurationSec,
         minShotSec: poolMinShotSec(),
+        locations: locationRows.map((l) => ({ name: l.name, description: l.description })),
         // `sceneRows` 本来就是整行，`lighting` 一直在手里被丢掉——「光照太单一」在这一层的直接原因
         scenes: sceneRows.map((sc) => ({
           summary: sc.summary,
@@ -1037,6 +1138,19 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
            * 回来了」，跟这个字段要修的 bug 一模一样。
            */
           hiddenAnchors: i.hiddenAnchors,
+          /*
+           * 名字 → id。E9 已经保证它逐字存在，所以查不到只可能是 lint 与这里
+           * 的归一方式漂了——那要立刻炸，不能静默落 null 渲出错的房间。
+           */
+          ...(i.locationName === undefined
+            ? {}
+            : {
+                locationId: (() => {
+                  const hit = locationRows.find((l) => l.name.toLowerCase() === i.locationName!.toLowerCase())
+                  if (!hit) throw new Error(`地点「${i.locationName}」过了 E9 却查不到，归一方式漂了`)
+                  return hit.id
+                })(),
+              }),
         }
       }),
     )
