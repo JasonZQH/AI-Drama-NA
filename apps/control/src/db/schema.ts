@@ -190,6 +190,23 @@ export const shots = pgTable(
       .notNull()
       .default(sql`'{}'`),
     /** 依赖的前序镜头；生成时解析其 selectedTake 末帧作首帧条件 */
+    /**
+     * **在这一镜发生的锚点移除事件**——不是累计集。
+     *
+     * 锚点是跨镜一致性的载体（ADR-0008），但剧情把道具拿走之后，它就从一致性
+     * 手段变成了自相矛盾：同一句 prompt 里既有 `brass key on a cord at her neck`
+     * 又有「她把钥匙放到桌上」。真机实测过，成片上肉眼可见。
+     *
+     * **存事件不存投影。** 投影（「到这一镜为止哪些锚点已经不在了」）由
+     * `resolvePrompt` 按 index 聚合前序算出来。存累计集的话，`PATCH /api/shots/:id`
+     * 改了第 2 镜之后，第 3–11 镜存着的那份就是陈旧的，而没有任何东西会去重算——
+     * 每一条编辑路径都要手写一遍失效传播，漏一条就静默错。
+     */
+    hiddenAnchors: text('hidden_anchors')
+      .array()
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     continuityFromShotId: uuid('continuity_from_shot_id'),
 
     // ── 生成控制 ──

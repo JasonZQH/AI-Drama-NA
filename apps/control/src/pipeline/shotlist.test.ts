@@ -11,6 +11,7 @@ const shot = (over: Partial<ShotlistDraft['scenes'][number]['shots'][number]> = 
   dialogue: '',
   durationSec: 4,
   characterNames: [] as string[],
+  hiddenAnchors: [] as string[],
   ...over,
 })
 
@@ -28,7 +29,8 @@ const draft = (n: number, sceneCount = 3, over: Partial<ReturnType<typeof shot>>
 
 // minShotSec 取 2：夹具用 4 秒一镜，2 秒让 E8 在基准上保持沉默，
 // 而 E8 自己的用例显式传更高的下限
-const ctx = { sceneCount: 3, targetDurationSec: 72, minShotSec: 2 }
+const ANCHORS = new Set(['silver crescent pendant', 'beige trench coat'])
+const ctx = { sceneCount: 3, targetDurationSec: 72, minShotSec: 2, anchors: ANCHORS }
 
 describe('shotlistDraft（LLM 方言 schema）', () => {
   it('角色名灌成 enum——编造的角色在解码阶段就被拒', () => {
@@ -142,7 +144,7 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
    * 累加 18 次的误差方向决定这条用例的红绿。边界断言不该建在那上面。
    */
   it('恰好 ±15% 之内不标黄，多一点点才标', () => {
-    const c = { sceneCount: 3, targetDurationSec: 80, minShotSec: 2 }
+    const c = { sceneCount: 3, targetDurationSec: 80, minShotSec: 2, anchors: ANCHORS }
     expect(16 * 5.75).toBe(92) // 前提：这一步没有浮点误差
     expect(lintShotlist(draft(16, 3, { durationSec: 5.75 }), c).warnings.join()).not.toMatch(/总时长/)
     // 再多 0.25 秒/镜就越界
@@ -180,6 +182,39 @@ describe('lintShotlist · errors（触发一轮修复）', () => {
     expect(lintShotlist(ok, seedance).errors.join()).not.toMatch(/档位下限/)
     // 档位细的模型（wan 支持 2 秒）不该被误伤
     expect(lintShotlist(d, { ...ctx, minShotSec: 2 }).errors.join()).not.toMatch(/档位下限/)
+  })
+
+  /**
+   * E6 · `hiddenAnchors` 里出现了锚点表里没有的项。
+   *
+   * `characterClause` 的 filter 是**精确匹配**，所以「the pendant」这种自由发挥
+   * 的近义词永远匹配不上任何锚点：filter 静默失效、prompt 照旧带着那件道具，
+   * 而四层校验全绿——正是这个字段要修的 bug 换了个入口又回来了。
+   */
+  it('E6 hiddenAnchors 不是逐字引用锚点表', () => {
+    const d = draft(18)
+    d.scenes[2]!.shots[3] = shot({ hiddenAnchors: ['the pendant'] })
+    const msg = lintShotlist(d, ctx).errors.join()
+    expect(msg).toMatch(/第 3 场第 4 镜（全集第 16 镜） 的 hiddenAnchors 里有「the pendant」/)
+    expect(msg, '要把可选项列出来，模型才照着改得动').toMatch(/silver crescent pendant/)
+
+    // 逐字引用是合法的
+    const ok = draft(18)
+    ok.scenes[2]!.shots[3] = shot({ hiddenAnchors: ['silver crescent pendant'] })
+    expect(lintShotlist(ok, ctx).errors.join()).not.toMatch(/hiddenAnchors/)
+  })
+
+  it('E6 大小写与首尾空格不算写错——filter 那侧也是这么归一的', () => {
+    const d = draft(18)
+    d.scenes[0]!.shots[0] = shot({ hiddenAnchors: ['  Silver Crescent Pendant '] })
+    expect(lintShotlist(d, ctx).errors.join()).not.toMatch(/hiddenAnchors/)
+  })
+
+  it('E6 项目没配锚点时，任何 hiddenAnchors 都是编的', () => {
+    const d = draft(18)
+    d.scenes[0]!.shots[0] = shot({ hiddenAnchors: ['whatever'] })
+    const msg = lintShotlist(d, { ...ctx, anchors: new Set<string>() }).errors.join()
+    expect(msg).toMatch(/这个项目还没有配锚点/)
   })
 
   it('E5 三人以上同框，并回显是哪三个', () => {
@@ -358,7 +393,7 @@ describe('seed 的 12 镜夹具是刻意的最小规模，只会被 W3 标黄', 
     }
     expect(durs.reduce((a, b) => a + b, 0)).toBe(42.5)
 
-    const r = lintShotlist(d, { sceneCount: 3, targetDurationSec: 75, minShotSec: 2 })
+    const r = lintShotlist(d, { sceneCount: 3, targetDurationSec: 75, minShotSec: 2, anchors: ANCHORS })
     expect(r.errors, '12 镜 42.5 秒是合法的一集——短，但不该判错').toEqual([])
     expect(r.warnings.join(), '42.5s vs 75s 偏差 −43%，W3 要标出来').toMatch(/总时长 42.5 秒/)
     expect(r.warnings.join()).toMatch(/-43%/)

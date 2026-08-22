@@ -1,4 +1,4 @@
-import { eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, lte, sql } from 'drizzle-orm'
 import type { DbOrTx } from '../db/client.js'
 import * as s from '../db/schema.js'
 import { buildPrompt, type BuiltPrompt, type PromptCharacter } from './prompt.js'
@@ -29,6 +29,8 @@ export interface ResolvedPrompt extends BuiltPrompt {
     readonly style: { description: string; negativePrompt: string | null } | null
     readonly timeOfDay: string | null
     readonly lighting: string | null
+    /** 到这一镜为止已经不在角色身上的锚点。预览要能回答「那把钥匙为什么不见了」 */
+    readonly hiddenTraits: readonly string[]
   }
 }
 
@@ -45,10 +47,38 @@ export async function resolvePrompt(tx: DbOrTx, shotId: string): Promise<Resolve
       emotion: s.shots.emotion,
       characterIds: s.shots.characterIds,
       promptOverride: s.shots.promptOverride,
+      index: s.shots.index,
+      sceneId: s.shots.sceneId,
     })
     .from(s.shots)
     .where(eq(s.shots.id, shotId))
   if (!row) return null
+
+  /*
+   * **投影：到这一镜为止，哪些锚点已经不在角色身上了。**
+   *
+   * `shots.hidden_anchors` 存的是**事件**（这一镜发生的移除），累计集在这里算。
+   * 存投影会快一点，但 `PATCH /api/shots/:id` 改了前面某一镜之后，后面每一行
+   * 存着的那份都是陈旧的，而没有任何东西会去重算——每条编辑路径都要手写一遍
+   * 失效传播，漏一条就静默错，错法恰好就是这个字段要修的那个 bug。
+   *
+   * 代价是这里不再是单行查询，变成一次按集扫描（`shots_scene_idx` 覆盖）。
+   * 它仍是 DB 状态的纯函数：同样的库、同样的 shotId，永远同样的结果。
+   *
+   * `<=` 而不是 `<`：移除发生在**这一镜之内**（「她把钥匙摘下来」），所以这一镜
+   * 的 prompt 里就不该再带着它——否则同一句话里既有钥匙在脖子上又有她把它摘下。
+   */
+  const prior = await tx
+    .select({ hidden: s.shots.hiddenAnchors })
+    .from(s.shots)
+    .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))
+    .where(
+      and(
+        eq(s.scenes.episodeId, sql`(select episode_id from ${s.scenes} where id = ${row.sceneId})`),
+        lte(s.shots.index, row.index),
+      ),
+    )
+  const hiddenTraits = [...new Set(prior.flatMap((p) => p.hidden))]
 
   const [ctx] = await tx
     .select({
@@ -103,6 +133,11 @@ export async function resolvePrompt(tx: DbOrTx, shotId: string): Promise<Resolve
     style,
     timeOfDay: ctx?.timeOfDay ?? null,
     lighting: ctx?.lighting ?? null,
+    /*
+     * 预览要能回答「那把钥匙为什么不见了」。不透出来的话，人看到的是一段少了
+     * 一个词的 prompt，而少的那个词恰恰是他自己配的锚点——最像 bug 的正常行为。
+     */
+    hiddenTraits,
   }
 
   // promptOverride 是人工旁路：写了就原样用，不再拼装（当前无写入方）
@@ -122,6 +157,7 @@ export async function resolvePrompt(tx: DbOrTx, shotId: string): Promise<Resolve
       emotion: row.emotion,
       timeOfDay: ctx?.timeOfDay ?? null,
       lighting: ctx?.lighting ?? null,
+      hiddenTraits,
     },
     { characters, location, style },
   )

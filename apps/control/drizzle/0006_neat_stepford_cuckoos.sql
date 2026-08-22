@@ -1,0 +1,1 @@
+ALTER TABLE "shots" ADD COLUMN "hidden_anchors" text[] DEFAULT '{}'::text[] NOT NULL;

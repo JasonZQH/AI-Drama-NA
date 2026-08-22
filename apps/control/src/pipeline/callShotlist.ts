@@ -186,6 +186,21 @@ export function systemPrompt(input: ShotlistInput): string {
     '  already in `dialogue`. Write what the body does while it is delivered.',
     '- Vary the sentence shape. Not every shot is a named person performing a verb — some shots',
     '  are a prop, a doorway, a reflection, or a hand. Some are four words long.',
+    /*
+     * **报一次，之后由代码接管。**
+     *
+     * 锚点是跨镜一致性的载体，每一镜都自动拼进去；剧情把道具拿走之后它就变成
+     * 自相矛盾。让模型每一镜重述「现在身上还有什么」是要求它跨镜记忆——那是
+     * 代码的活（`resolvePrompt` 按 index 聚合前序），模型只报变化那一次。
+     *
+     * 同时把 W2 的正向表述口径绑在这里：说「她把项链摘下来」（正向、看得见），
+     * 不说「她不再戴着项链」——扩散模型对否定词经常反向生效。
+     */
+    '- `hiddenAnchors` lists anchor tokens that are no longer on the character, copied verbatim',
+    '  from the bracketed anchor list in <cast>. Use it only in the shot where the change happens —',
+    '  every later shot inherits it automatically, so never repeat it.',
+    '- When a shot removes something, say so positively in `action` ("she pulls the chain over her',
+    '  head, bare collarbone") and put the token in `hiddenAnchors`. Never write "no necklace".',
     ...EXAMPLE,
   ].join('\n')
 }
@@ -228,7 +243,9 @@ const EXAMPLE = [
   '<example>',
   'One scene from a different episode, to show the writing and the rhythm. `<A>` and `<B>` are',
   'placeholders — this episode has its own people in <cast>. Never copy a name, a place, or a',
-  'prop out of this example, and never emit `<A>` or `<B>` yourself.',
+  'prop out of this example, and never emit `<A>` or `<B>` yourself. `<the pendant>` stands for',
+  'an anchor token; in your output every `hiddenAnchors` entry must be copied verbatim from the',
+  'bracketed anchor list in <cast>.',
   '',
   'SCRIPT',
   'INT. STAIRWELL - NIGHT',
@@ -238,10 +255,10 @@ const EXAMPLE = [
   '',
   'SHOTS FOR THAT SCENE',
   '[',
-  '  {"shotType":"establishing","cameraMove":"static","action":"a bare bulb burns over four flights of iron stair rail","emotion":"","dialogue":"","durationSec":3,"characterNames":[]},',
-  '  {"shotType":"ms","cameraMove":"handheld","action":"<A> halts mid-flight, one hand flat on the rail","emotion":"shoulders dropping, breathing hard","dialogue":"","durationSec":4,"characterNames":["<A>"]},',
-  '  {"shotType":"ecu","cameraMove":"static","action":"her thumb works the clasp open and the pendant drops into her coat pocket","emotion":"","dialogue":"","durationSec":2,"characterNames":["<A>"]},',
-  '  {"shotType":"ots","cameraMove":"dolly","action":"over <B> as <A> climbs the last three steps, collar open at her bare throat","emotion":"chin lifted","dialogue":"You came.","durationSec":5,"characterNames":["<A>","<B>"]}',
+  '  {"shotType":"establishing","cameraMove":"static","action":"a bare bulb burns over four flights of iron stair rail","emotion":"","dialogue":"","durationSec":3,"characterNames":[],"hiddenAnchors":[]},',
+  '  {"shotType":"ms","cameraMove":"handheld","action":"<A> halts mid-flight, one hand flat on the rail","emotion":"shoulders dropping, breathing hard","dialogue":"","durationSec":4,"characterNames":["<A>"],"hiddenAnchors":[]},',
+  '  {"shotType":"ecu","cameraMove":"static","action":"her thumb works the clasp open and the pendant drops into her coat pocket","emotion":"","dialogue":"","durationSec":2,"characterNames":["<A>"],"hiddenAnchors":["<the pendant>"]},',
+  '  {"shotType":"ots","cameraMove":"dolly","action":"over <B> as <A> climbs the last three steps, collar open at her bare throat","emotion":"chin lifted","dialogue":"You came.","durationSec":5,"characterNames":["<A>","<B>"],"hiddenAnchors":[]}',
   ']',
   '</example>',
 ] as const
@@ -316,6 +333,7 @@ function check(
   sceneCount: number,
   targetDurationSec: number,
   minShotSec: number,
+  anchors: ReadonlySet<string>,
 ): { draft: ShotlistDraft; warnings: string[] } | { errors: string[] } {
   let parsed: unknown
   try {
@@ -333,13 +351,15 @@ function check(
   }
 
   // L2 集级 lint
-  const lint = lintShotlist(decoded.data, { sceneCount, targetDurationSec, minShotSec })
+  const lint = lintShotlist(decoded.data, { sceneCount, targetDurationSec, minShotSec, anchors })
   if (lint.errors.length > 0) return { errors: lint.errors }
   return { draft: decoded.data, warnings: lint.warnings }
 }
 
 export async function callShotlist(input: ShotlistInput, opts: ShotlistOptions): Promise<ShotlistOutcome> {
   const names = input.characters.map((c) => c.name)
+  // E6 的比对基准：全体角色的锚点，小写。现算不落库——它是输入的投影，不是状态
+  const anchors = new Set(input.characters.flatMap((c) => c.anchorTokens.map((a) => a.toLowerCase())))
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt(input) },
     { role: 'user', content: userPrompt(input) },
@@ -355,7 +375,7 @@ export async function callShotlist(input: ShotlistInput, opts: ShotlistOptions):
     costUsd += r.costUsd
     raw = r.content
 
-    const out = check(raw, names, input.scenes.length, input.targetDurationSec, input.minShotSec)
+    const out = check(raw, names, input.scenes.length, input.targetDurationSec, input.minShotSec, anchors)
     if ('draft' in out) return { ...out, repaired: round > 0, costUsd }
 
     last = out
