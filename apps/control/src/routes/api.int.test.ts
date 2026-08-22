@@ -216,7 +216,24 @@ async function cleanup(): Promise<void> {
     await db.delete(s.generationJobs).where(inArray(s.generationJobs.id, ids))
   }
 
-  await db.update(s.shots).set({ status: 'ready', selectedTakeId: null, attemptCount: 0 })
+  /*
+   * **这一行原来没有 `where`。**
+   *
+   * 于是每跑一次 `pnpm test:int`，afterAll 都会把**全库每一个镜头**抹成
+   * `ready` / `selectedTakeId=null` / `attemptCount=0`——包括用户自己那些已经
+   * 花了真钱、已经选片锁定、已经渲染成片的镜头。takes 与 generation_jobs 不动，
+   * `updated_at` 也不动（这里没写它），所以从数据上看不出是谁干的：
+   * 一集片子还在，状态却退回了「待生成」。
+   *
+   * 实测后果：用户一集 11 镜、$4.40 的成片被退回 ready，而
+   * `resolveDependencies` 只看 status——再点一次「生成整集」就是重付一遍。
+   *
+   * 只清本文件自己那一镜。别的用例、别的项目的数据一律不碰。
+   */
+  await db
+    .update(s.shots)
+    .set({ status: 'ready', selectedTakeId: null, attemptCount: 0 })
+    .where(eq(s.shots.id, shotId))
   await queues.generate.drain(true)
 }
 
