@@ -167,7 +167,13 @@ function ShotCard({
   onSelect: (shotId: string) => void
   progress?: ShotProgress
 }): React.ReactElement {
-  const { shot, takeCount, costMicroUsd, mockCostMicroUsd, posterAssetId } = entry
+  const { shot, takeCount, costMicroUsd, mockCostMicroUsd, posterAssetId, lastFailureCode } = entry
+  /*
+   * **可重试的失败会把镜头退回 `ready`**——于是这张卡跟「从没生成过」长得一模
+   * 一样：同一个灰点、同一张黑图。而两者的区别是**这一镜已经花过钱了**。
+   * 实测撞到过：6 张写着「待生成」的卡，底下压着 $2.54。
+   */
+  const retryable = shot.status === 'ready' && lastFailureCode !== null
   return (
     // button 而非 div：焦点环、Enter/Space 触发都是原生的，不用自己补 a11y
     <button
@@ -205,7 +211,16 @@ function ShotCard({
             className="absolute inset-0 h-full w-full object-cover"
           />
         )}
-        <div className="absolute top-1 right-1">
+        <div className="absolute top-1 right-1 flex items-center gap-1">
+          {retryable && (
+            <span
+              className="rounded-sm px-1.5 py-0.5 text-[10px]"
+              style={{ background: 'var(--status-error)', color: '#fff' }}
+              title={`上一次尝试失败（${lastFailureCode}）——这一镜已经花过钱了，重试会再花一次`}
+            >
+              上次失败
+            </span>
+          )}
           <StatusPill status={shot.status} {...(shot.status === 'review' ? { count: takeCount } : {})} />
         </div>
         {takeCount > 0 && (

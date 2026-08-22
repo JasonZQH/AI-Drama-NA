@@ -55,10 +55,27 @@ const base = {
 
 const globalConcurrency = Number(process.env['MAX_GLOBAL_CONCURRENT'] ?? 32)
 
+/**
+ * **生成串行，默认一次一个。**
+ *
+ * 别的队列（轮询、ingest、渲染）不花钱，并发跑没问题；`generate` 每一条都是一笔
+ * 真钱。真机实测：一次把 12 个镜头全发出去，其中 6 个被 provider 的内容过滤拒了
+ * ——**$2.54 在三分钟里烧掉,而人还没来得及看到第一条报错**。串行的话第一条失败
+ * 时后面的还没发出去，人有机会停下来。
+ *
+ * 代价是墙钟时间：12 镜 × 约 2.5 分钟 ≈ 30 分钟，而并发是 5 分钟。要赶时间就调
+ * `MAX_GENERATE_CONCURRENT`——但**默认值站在钱这一边**，与 `RETRYABLE` 白名单
+ * 「默认停下来等人，错的方向便宜得多」是同一个立场。
+ *
+ * FIFO + 并发 1 ⇒ 按入队顺序执行，而 `generate-batch` 是按 `shots.index` 入队的，
+ * 所以就是按镜头顺序一个一个来。
+ */
+const generateConcurrency = Number(process.env['MAX_GENERATE_CONCURRENT'] ?? 1)
+
 const workers = [
   new Worker(QUEUE.generate, (job) => handleGenerate(deps, job.data), {
     ...base,
-    concurrency: globalConcurrency,
+    concurrency: generateConcurrency,
     // 令牌桶，防瞬时打爆
     limiter: { max: 32, duration: 1000 },
   }),

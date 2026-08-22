@@ -762,6 +762,23 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
           order by (t.id = ${s.shots.selectedTakeId}) desc, t.created_at desc
           limit 1
         )`,
+        /*
+         * **最后一次尝试的失败码。**
+         *
+         * `RETRYABLE` 里的失败会把镜头退回 `ready`（`shotMachine` 的
+         * `afterFailure`）——于是它在面板上跟「**从没生成过**」长得一模一样：
+         * 同一个「待生成」灰点，同一张黑卡。真机实测撞到过：一集 12 镜有 6 镜被
+         * provider 的内容过滤拒了、**烧掉 $2.54**，而页头的「失败」筛选显示的是
+         * **0**，六张卡写着「待生成」。
+         *
+         * 状态是对的（它们确实可以重试），但**页面把「重试」和「还没开始」混成了
+         * 同一件事**。所以把这个事实单独回出去，让界面自己决定怎么标。
+         */
+        lastFailureCode: sql<string | null>`(
+          select gj.failure_code from ${s.generationJobs} gj
+          where gj.shot_id = ${s.shots.id}
+          order by gj.attempt desc limit 1
+        )`,
       })
       .from(s.shots)
       .innerJoin(s.scenes, eq(s.shots.sceneId, s.scenes.id))

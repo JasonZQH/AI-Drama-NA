@@ -125,6 +125,11 @@ export interface EpisodeTree {
     mockCostMicroUsd: number
     /** 封面用：选中的 take 优先，否则最后一次生成的产物。null = 还没出过片 */
     posterAssetId: string | null
+    /**
+     * 最后一次尝试的失败码。**可重试的失败会把镜头退回 ready**，于是它在页面上
+     * 跟「从没生成过」长得一模一样——而两者的区别是「已经花过钱」。
+     */
+    lastFailureCode: string | null
   }[]
 }
 

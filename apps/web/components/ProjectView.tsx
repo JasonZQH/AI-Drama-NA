@@ -146,6 +146,8 @@ export function ProjectView({ projectId }: { projectId: string }): React.ReactEl
             <span className="w-44 shrink-0">进度</span>
             <span className="w-20 shrink-0 text-right">待选片</span>
             <span className="w-28 shrink-0 text-right">花费</span>
+            {/* 与行里的成片列同宽：不占一列的话，有片子和没片子的行会错开 */}
+            <span className="w-16 shrink-0" />
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -217,38 +219,26 @@ function Stat({
 function EpisodeRow({ ep }: { ep: EpisodeSummary }): React.ReactElement {
   return (
     /*
-      外层是 div 不是 a：成片入口要能单独点，而链接不能嵌套链接。
-      整行仍然可点（里面那个 a 铺满），播放入口绝对定位压在右侧。
+      外层是 div 不是 a：成片入口要能单独点，而链接不能嵌套链接。整行仍然可点
+      ——里面那个 a 占满除成片列之外的宽度。
+
+      **成片入口是一列，不是浮层。** 原来它 `absolute right-2` 压在行上，正好
+      盖住最右边的「花费」——那一列是这张表上唯一的钱，被一个按钮遮住是最坏的
+      遮法。给它自己的一列之后没有任何重叠，而且有片子和没片子的行也不会错开。
     */
     <div
-      className="relative"
+      className="flex items-center"
       style={{
         borderTop: '1px solid var(--border)',
         // 阶段用左侧 3px 色条强化，扫视时一眼看出整季的分布（07 §6.2）
         borderLeft: `3px solid ${statusColor(ep.status, 'episode')}`,
       }}
     >
-      {/*
-        **成片入口。** 此前唯一通向 /watch 的路径是渲染那一刻的 window.open
-        ——关掉标签页就再也找不到了。分集列表是找片子最自然的地方。
-      */}
-      {ep.hasMaster && (
-        <a
-          href={`/watch/${ep.id}`}
-          target="_blank"
-          rel="noopener"
-          title="看这一集的成片"
-          className="absolute top-1.5 right-2 z-10 rounded-md px-2 py-0.5 text-[11px]"
-          style={{ background: 'var(--accent-subtle)', color: 'var(--accent-text)' }}
-        >
-          ▶ 成片
-        </a>
-      )}
       <a
         href={`/episodes/${ep.id}`}
         target="_blank"
         rel="noopener"
-        className="flex items-center gap-4 px-3 py-2 text-left"
+        className="flex min-w-0 flex-1 items-center gap-4 px-3 py-2 text-left"
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -289,6 +279,28 @@ function EpisodeRow({ ep }: { ep: EpisodeSummary }): React.ReactElement {
           <Cost microUsd={ep.costMicroUsd} mockMicroUsd={ep.mockCostMicroUsd} />
         </div>
       </a>
+
+      {/*
+        **成片入口。** 此前唯一通向 /watch 的路径是渲染那一刻的 window.open
+        ——关掉标签页就再也找不到了。分集列表是找片子最自然的地方。
+
+        没有成片时占位不渲染按钮：留着一个灰掉的「成片」等于告诉人这里有东西
+        可点，而点了什么都不会发生。
+      */}
+      <div className="flex w-16 shrink-0 justify-end pr-2">
+        {ep.hasMaster && (
+          <a
+            href={`/watch/${ep.id}`}
+            target="_blank"
+            rel="noopener"
+            title="看这一集的成片"
+            className="rounded-md px-2 py-0.5 text-[11px]"
+            style={{ background: 'var(--accent-subtle)', color: 'var(--accent-text)' }}
+          >
+            ▶ 成片
+          </a>
+        )}
+      </div>
     </div>
   )
 }
