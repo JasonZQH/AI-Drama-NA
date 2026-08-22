@@ -8,7 +8,7 @@ import {
   userPrompt,
   type ShotlistInput,
 } from './callShotlist.js'
-import { DURATION_TOLERANCE, MAX_CAST_PER_SHOT, SAME_SHOT_TYPE_RUN, SHOT_COUNT } from './shotlist.js'
+import { MAX_CAST_PER_SHOT, SAME_SHOT_TYPE_RUN, SHOT_COUNT } from './shotlist.js'
 
 /**
  * 打桩用 **loopback server，不用 `vi.stubGlobal('fetch')`**。
@@ -23,6 +23,7 @@ const input: ShotlistInput = {
   synopsis: 'She comes home to a city that moved on.',
   episodeBrief: 'She has ten minutes to decide.\nHook: the letter is addressed to someone else.',
   targetDurationSec: 72,
+  minShotSec: 2,
   scenes: [
     // 第一场给自由文本光照，后两场只有枚举——两条回落分支都要被 userPrompt 覆盖到
     { summary: 'Lena returns', timeOfDay: 'night', lighting: 'one bare bulb over the door' },
@@ -112,13 +113,27 @@ describe('callShotlist', () => {
     expect(msgs.at(-1)!.content).toMatch(/Batman|characterNames|scenes\.0\.shots\.0/)
   })
 
+  /**
+   * 用 E1（场次数对不上）而不是时长：**时长已经是 W3 了**，偏差只标黄不重试
+   * ——一集多长由剧本决定。E1 仍是硬错：场次对不上说明模型没按输入结构走，
+   * 后面全会错位。
+   */
   it('L2 的集级错误同样触发修复，且错误原文进了对话', async () => {
-    // 12 镜 × 4s = 48s vs 目标 72s → E3
-    const short = { scenes: goodDraft.scenes.map((s) => ({ shots: s.shots.slice(0, 4) })) }
-    const r = await run(JSON.stringify(short), JSON.stringify(goodDraft))
+    // 输入 3 场，只返回 2 场 → E1
+    const missing = { scenes: goodDraft.scenes.slice(0, 2) }
+    const r = await run(JSON.stringify(missing), JSON.stringify(goodDraft))
     expect(r.repaired).toBe(true)
     const msgs = bodies[1]!['messages'] as { role: string; content: string }[]
-    expect(msgs.at(-1)!.content).toMatch(/总时长 48\.0 秒/)
+    expect(msgs.at(-1)!.content).toMatch(/输入有 3 场，你返回了 2 场/)
+  })
+
+  /** 时长偏差**不该**触发那一轮修复——那正是「模型在解算术题」的来源 */
+  it('总时长偏离目标不触发修复，只回 warning', async () => {
+    const short = { scenes: goodDraft.scenes.map((s) => ({ shots: s.shots.slice(0, 4) })) }
+    const r = await run(JSON.stringify(short), JSON.stringify(goodDraft))
+    expect(r.repaired, '偏长偏短都不该白烧一轮修复').toBe(false)
+    expect(bodies, '只该发一次请求').toHaveLength(1)
+    expect(r.warnings.join()).toMatch(/总时长 48\.0 秒/)
   })
 
   it('两轮都不过就抛 ShotlistRejected，不会一直烧钱', async () => {
@@ -187,6 +202,7 @@ describe('systemPrompt 的硬规则与判据同源', () => {
     synopsis: null,
     episodeBrief: null,
     targetDurationSec: 72,
+    minShotSec: 2,
     scenes: [
       { summary: null, timeOfDay: null, lighting: null },
       { summary: null, timeOfDay: null, lighting: null },
@@ -198,9 +214,17 @@ describe('systemPrompt 的硬规则与判据同源', () => {
     expect(p).toContain(`${SHOT_COUNT.min} to ${SHOT_COUNT.max} shots total`)
   })
 
-  it('时长容差取自 DURATION_TOLERANCE，且是百分数不是小数', () => {
-    expect(p).toContain(`within ${DURATION_TOLERANCE * 100}%`)
-    expect(p, '别把 0.15 直接印出去').not.toContain('within 0.15')
+  /**
+   * **目标时长现在是一句 roughly，不再是配额。**
+   *
+   * 原来发的是「must sum to about N (within 15%)」，配一条 error 级判据。真机
+   * 实测的后果：目标 30 秒的一集，模型交出 `3.0×8 + 2.0×3 = 30.0`——精确到
+   * 小数点后一位，它在解算术题不是在导戏。
+   */
+  it('目标时长是预期不是配额，容差不再发给模型', () => {
+    expect(p).toContain(`land roughly around ${input.targetDurationSec} seconds`)
+    expect(p, '「不许为凑数字加戏减戏」要明说').toMatch(/do not pad or compress to hit a number/)
+    expect(p, '容差是 lint 侧的事，发给模型只会让它去解算术').not.toMatch(/within 15%|within 0\.15/)
   })
 
   it('同框人数取自 MAX_CAST_PER_SHOT', () => {
@@ -220,9 +244,31 @@ describe('systemPrompt 的硬规则与判据同源', () => {
    * `shots_duration_ck`）刻意不同：一个是「该怎么写」，一个是「不许越过」。
    * 这条钉住这个区别，免得下一个人"顺手统一"成 1-10。
    */
-  it('单镜时长仍是建议区间 2-8，不是 schema 的硬上限 1-10', () => {
-    expect(p).toContain('Each shot 2-8 seconds')
-    expect(p).not.toContain('1-10 seconds')
+  /**
+   * **下限从 provider 的档位取，上限仍是 03 §S3 的建议值 8 秒。**
+   *
+   * 写死 `2-8` 的那一版在 seedance 上是错的：它全系最短 4 秒，模型照着写 2 秒，
+   * 每一镜都被 `snapDuration` 静默抬档，而整集是按写的那个数算的——真机实测
+   * 目标 30 秒的一集出了 44.5 秒的成片。
+   *
+   * 上限不跟 schema 的 10 秒合并：一个是「该怎么写」，一个是「不许越过」。
+   */
+  it('单镜时长下限取自 provider 档位，上限仍是建议值 8', () => {
+    expect(p, '夹具的 minShotSec 是 2').toContain('from 2 to 8')
+    expect(p, '硬上限不该当建议值发出去').not.toContain('1-10 seconds')
+    expect(p, '小数会被向上取整到要付钱的那一整秒——说清楚').toMatch(/Whole seconds only/)
+
+    const seedance = systemPrompt({
+      scriptMd: 'x',
+      synopsis: null,
+      episodeBrief: null,
+      targetDurationSec: 72,
+      minShotSec: 4,
+      scenes: [{ summary: null, timeOfDay: null, lighting: null }],
+      characters: [],
+    })
+    expect(seedance, '换成 4 秒起的模型，这句话要跟着变').toContain('from 4 to 8')
+    expect(seedance, '要说清楚这是硬地板，不是建议').toMatch(/hard floor/)
   })
 })
 
@@ -287,6 +333,7 @@ describe('systemPrompt 里那条案例', () => {
     synopsis: null,
     episodeBrief: null,
     targetDurationSec: 72,
+    minShotSec: 2,
     scenes: [{ summary: null, timeOfDay: null, lighting: null }],
     characters: [],
   })

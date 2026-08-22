@@ -585,6 +585,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
           synopsis: null,
           episodeBrief: null,
           targetDurationSec: sample.targetDurationSec,
+          minShotSec: poolMinShotSec(),
           scenes: Array.from({ length: sample.scenes }, () => ({
             summary: null,
             timeOfDay: null,
@@ -811,6 +812,21 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
    * ponytail: `usage.cost` 只随响应返回、不落账。要按文本模型出成本报表时再建
    * 一张表——现在建就是为一个不存在的报表付表结构的成本。
    */
+  /**
+   * 池里最宽松的那家 provider 的单镜时长下限。
+   *
+   * **取最小值不是最大值**：同时配了 wan（2 秒起）和 seedance（4 秒起）时，
+   * 2 秒的镜头是可以买到的——只要那一镜路由到 wan。真正买不到的由适配器的
+   * `validate()` 在提交前拦，不必在分镜层一刀切成最严的那家。
+   *
+   * 排除 mock：它宣称 1 秒起，把它算进来这道闸就永远是 1，等于没有。
+   */
+  const poolMinShotSec = (): number => {
+    const real = deps.providers.filter((p) => p.id !== 'mock')
+    const mins = (real.length > 0 ? real : deps.providers).map((p) => p.capabilities.minDurationSec)
+    return mins.length > 0 ? Math.min(...mins) : 1
+  }
+
   app.post('/api/episodes/:id/shotlist', async (req, reply) => {
     const { id } = Uuid.parse(req.params)
 
@@ -825,12 +841,15 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       )
 
     /*
-     * 目标时长本身可不可能被满足——在花那两轮 LLM 之前问。不问的话报错是
-     * 「总时长不对」，人读不出真正的原因是这一集的目标时长压根不可达。
-     * `episodes.target_duration_sec` 没有 CHECK，PATCH 也放到 600。
+     * 目标时长够不够得着——在花那两轮 LLM 之前算一次。
+     *
+     * **不再拦人。** 时长是输出不是输入（见 shotlist.ts 的 W3）：一集多长由剧本
+     * 决定，目标只用来告诉人「你预想的和实际能做的差多少」。硬约束只剩单镜时长
+     * 必须是这家 provider 真能产出的值（E8）。
+     *
+     * 但要在**生成之前**说，而不是等 W3 事后告诉他偏了 48%——那时钱已经花了。
      */
-    const unreachable = targetOutOfReach(ep.targetDurationSec)
-    if (unreachable) throw new ApiError('VALIDATION_FAILED', unreachable)
+    const unreachable = targetOutOfReach(ep.targetDurationSec, poolMinShotSec())
 
     const sceneRows = await db
       .select()
@@ -881,6 +900,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
             .filter(Boolean)
             .join('\n') || null,
         targetDurationSec: ep.targetDurationSec,
+        minShotSec: poolMinShotSec(),
         // `sceneRows` 本来就是整行，`lighting` 一直在手里被丢掉——「光照太单一」在这一层的直接原因
         scenes: sceneRows.map((sc) => ({
           summary: sc.summary,
@@ -955,7 +975,11 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
       shots: rows.length,
       scenes: out.draft.scenes.length,
       repaired: out.repaired,
-      warnings: out.warnings,
+      /*
+       * 目标够不着那条排在最前面：它是**生成之前**就知道的，而 W3 是事后量出来的。
+       * 两条一起给人看，他才分得清「我的预期本来就不现实」和「这一集碰巧长了」。
+       */
+      warnings: unreachable ? [unreachable, ...out.warnings] : out.warnings,
       costUsd: out.costUsd,
     })
   })

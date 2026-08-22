@@ -145,6 +145,27 @@ export function runContractSuite(
       expect(v.ok).toBe(false)
     })
 
+    /**
+     * **时长下限也要是真的。**
+     *
+     * 契约一度只建模天花板，而咬人的是地板：seedance 全系最短 4 秒，分镜规划
+     * 2 秒不会报错，`snapDuration` 静默抬到 4 秒——片子按 4 秒出、钱按 4 秒付，
+     * 而整集是按 2 秒那份计划算的。真机实测目标 30 秒的一集出了 44.5 秒成片。
+     *
+     * 这一条盯的是「下限确实是这家能接的最短值」：`minDurationSec` 本身要能过
+     * `validate`，而适配器声明的下限如果取错了端（拿上限当下限），这条就红。
+     */
+    it('minDurationSec 是真能产出的最短时长，且不大于上限', () => {
+      const p = make()
+      const { minDurationSec: lo, maxDurationSec: hi } = p.capabilities
+      expect(lo, `下限 ${lo} 比上限 ${hi} 还大——多半是取错了端`).toBeLessThanOrEqual(hi)
+      expect(lo, '下限得是个正数').toBeGreaterThan(0)
+      expect(
+        p.validate(makeRequest({ durationSec: lo })),
+        `声明最短 ${lo} 秒，validate 却拒绝了它`,
+      ).toMatchObject({ ok: true })
+    })
+
     /*
      * 此处曾有一条「不发起网络调用」的断言，用 health().queueDepth 前后比对来
      * 证明。删掉的原因有两个：`queueDepth` 在契约里是 optional，云适配器不填

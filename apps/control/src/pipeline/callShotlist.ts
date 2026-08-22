@@ -1,11 +1,5 @@
 import { shotlistDraft, shotlistJsonSchema, type ShotlistDraft, type TimeOfDay } from '@ai-drama/contracts'
-import {
-  DURATION_TOLERANCE,
-  MAX_CAST_PER_SHOT,
-  SAME_SHOT_TYPE_RUN,
-  SHOT_COUNT,
-  lintShotlist,
-} from './shotlist.js'
+import { MAX_CAST_PER_SHOT, SAME_SHOT_TYPE_RUN, SHOT_COUNT, lintShotlist } from './shotlist.js'
 
 /**
  * 剧本 → 分镜表（`03-pipeline.md` S3）。**一个函数，一个实现。**
@@ -70,6 +64,14 @@ export interface ShotlistInput {
    */
   readonly episodeBrief: string | null
   readonly targetDurationSec: number
+  /**
+   * 池里最宽松的那家 provider 的单镜时长下限。
+   *
+   * 各家时长是**档位**不是连续值（seedance 全系最短 4 秒）。不发这个数，模型会
+   * 规划一堆买不到的 2 秒镜头——`snapDuration` 静默抬到 4 秒，钱按 4 秒付，
+   * 而整集按 2 秒那份计划算，成片跟面板上每一个数都对不上。
+   */
+  readonly minShotSec: number
   /** 顺序即场次号。模型必须一一对应，不能增删合并 */
   readonly scenes: readonly {
     readonly summary: string | null
@@ -150,7 +152,22 @@ export function systemPrompt(input: ShotlistInput): string {
     'Hard rules:',
     `- Return exactly ${input.scenes.length} scene objects, in the same order as the input scenes. Do not add, drop, or merge scenes.`,
     `- ${SHOT_COUNT.min} to ${SHOT_COUNT.max} shots total across all scenes. Typical is 18.`,
-    `- Shot durations must sum to about ${input.targetDurationSec} seconds (within ${DURATION_TOLERANCE * 100}%). Each shot 2-8 seconds.`,
+    /*
+     * **时长是输出不是输入。**
+     *
+     * 原来这里写的是「must sum to about N (within 15%)」，配一条 error 级的判据。
+     * 真机实测的后果：目标 30 秒的一集，模型交出 `3.0×8 + 2.0×3 = 30.0`，精确到
+     * 小数点后一位——它不是在导戏，是在解算术题。而那 30 秒**根本不可达**
+     * （seedance 最短 4 秒 × 至少 10 镜 = 40 秒），于是它被逼着写下一堆买不到的
+     * 数字，而 E3 给了满分。
+     *
+     * 现在硬约束只剩「单镜必须是这家 provider 真能产出的整秒数」。一集多长由
+     * 剧本决定，目标降级成一句 roughly。成本不靠它兜底：批量生成前有 dryRun
+     * 估价 + 预算闸门 + 确认弹窗三道。
+     */
+    `- Give each shot the length its action actually needs. Let the scene decide how many shots it takes; do not pad or compress to hit a number.`,
+    `- Whole seconds only, from ${input.minShotSec} to 8. **${input.minShotSec} is a hard floor** — the video model physically cannot make anything shorter, and a fraction of a second is rounded up to the next whole second you have to pay for.`,
+    `- The episode should land roughly around ${input.targetDurationSec} seconds. That is the author's expectation, not a quota — if the script needs more or fewer shots, follow the script.`,
     `- At most ${MAX_CAST_PER_SHOT} characters per shot. More than that interacting reliably breaks the video model.`,
     '- Every shot with dialogue must list its speaker in characterNames.',
     `- Vary shotType; never use the same one ${SAME_SHOT_TYPE_RUN} shots in a row.`,
@@ -298,6 +315,7 @@ function check(
   names: readonly string[],
   sceneCount: number,
   targetDurationSec: number,
+  minShotSec: number,
 ): { draft: ShotlistDraft; warnings: string[] } | { errors: string[] } {
   let parsed: unknown
   try {
@@ -315,7 +333,7 @@ function check(
   }
 
   // L2 集级 lint
-  const lint = lintShotlist(decoded.data, { sceneCount, targetDurationSec })
+  const lint = lintShotlist(decoded.data, { sceneCount, targetDurationSec, minShotSec })
   if (lint.errors.length > 0) return { errors: lint.errors }
   return { draft: decoded.data, warnings: lint.warnings }
 }
@@ -337,7 +355,7 @@ export async function callShotlist(input: ShotlistInput, opts: ShotlistOptions):
     costUsd += r.costUsd
     raw = r.content
 
-    const out = check(raw, names, input.scenes.length, input.targetDurationSec)
+    const out = check(raw, names, input.scenes.length, input.targetDurationSec, input.minShotSec)
     if ('draft' in out) return { ...out, repaired: round > 0, costUsd }
 
     last = out

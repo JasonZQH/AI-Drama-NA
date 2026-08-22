@@ -10,6 +10,7 @@ import { routeProvider } from './route.js'
 
 const caps = (over: Partial<ProviderCapabilities> = {}): ProviderCapabilities => ({
   modes: ['t2v'],
+  minDurationSec: 1,
   maxDurationSec: 10,
   resolutions: ['720p'],
   aspectRatios: ['9:16'],

@@ -33,6 +33,26 @@ describe('OpenRouter 能力快照', () => {
     expect(snapDuration(WAN, 2.5)).toBe(3)
   })
 
+  /**
+   * **能力里的时长下限就是档位表里最小的那个。**
+   *
+   * 契约一度只建模天花板（`maxDurationSec`），而咬人的是地板。三家的地板都不同：
+   * veo-lite 4 秒、wan 2 秒、seedance 4 秒——分镜规划 2 秒在 wan 上买得到，
+   * 在 seedance 上会被 `snapDuration` **静默抬到 4 秒**：片子按 4 秒出、钱按
+   * 4 秒付，而整集是按 2 秒那份计划算的。真机实测目标 30 秒的一集出了 44.5 秒。
+   *
+   * 断言到具体数字而不是 `toBeLessThanOrEqual(max)`：取错端（拿上限当下限）时
+   * `min === max` 是自洽的，范围断言看不出来。
+   */
+  it('minDurationSec 取档位表最小值，不是最大值', () => {
+    const cap = (m: typeof VEO_LITE) => make(m).capabilities
+    expect(cap(VEO_LITE).minDurationSec, 'veo-lite 是 [4,6,8]').toBe(4)
+    expect(cap(WAN).minDurationSec, 'wan 档位密，2 秒起').toBe(2)
+    expect(cap(SEEDANCE).minDurationSec, 'seedance 全系 4 秒起').toBe(4)
+    // 与上限确实是两端，不是同一个数
+    expect(cap(WAN).minDurationSec).toBeLessThan(cap(WAN).maxDurationSec)
+  })
+
   it('计价族按键名前缀判定', () => {
     expect(pricingFamily(VEO_LITE)).toBe('per_second')
     expect(pricingFamily(WAN)).toBe('per_second')

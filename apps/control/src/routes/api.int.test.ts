@@ -1041,7 +1041,14 @@ describe('POST /api/episodes/:id/shotlist', () => {
      * 294 秒时**没有任何分镜表能同时过 E2 与 E3**。不提前拦的话是两轮 LLM 的
      * 钱花完，然后给一句「总时长不对」，人看不出真正的原因。
      */
-    it('目标时长本身不可达 → 调模型之前就拦下', async () => {
+    /**
+     * **目标够不着不拦生成，但要在生成结果里说清楚。**
+     *
+     * 时长是输出不是输入（见 `shotlist.ts` 的 W3）：一集多长由剧本决定。目标只
+     * 用来告诉人「你预想的和实际能做的差多少」——而这句话要在**第一次拿到分镜时**
+     * 就看见，不是等他渲染完发现成片比预期长 48% 才回头猜。
+     */
+    it('目标时长够不着 → 照常生成，但 warning 里要说明白', async () => {
       await clearShots()
       await db.update(s.episodes).set({ targetDurationSec: 600 }).where(eq(s.episodes.id, epId))
       let called = false
@@ -1050,9 +1057,10 @@ describe('POST /api/episodes/:id/shotlist', () => {
         return Promise.resolve({ draft: draftOf(charNames), warnings: [], repaired: false, costUsd: 0 })
       })
       const res = await post(app2, epId)
-      expect(res.statusCode).toBe(422)
-      expect(called, '钱不该花出去').toBe(false)
-      expect((res.json() as { error: { message: string } }).error.message).toMatch(/不可能达成/)
+      expect(res.statusCode, '够不着不是错误——剧情需要多长就多长').toBe(201)
+      expect(called, '模型该照常被调用').toBe(true)
+      const warnings = (res.json() as { warnings: string[] }).warnings
+      expect(warnings.join(), '够不着这件事要排在最前面').toMatch(/^这一集会明显短于你的预期/)
       await db.update(s.episodes).set({ targetDurationSec: 72 }).where(eq(s.episodes.id, epId))
     })
 
