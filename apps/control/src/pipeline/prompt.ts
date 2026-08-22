@@ -88,6 +88,12 @@ export interface PromptIntent {
    * （「路灯刚亮」和「深夜」在画面上完全是两回事）。枚举留作粗分桶与统计。
    */
   readonly lighting: string | null
+  /**
+   * 到这一镜为止已经不在角色身上的锚点（`shots.hidden_anchors` 的投影）。
+   *
+   * 见 `characterClause`。空数组 = 没有任何东西被拿走。
+   */
+  readonly hiddenTraits: readonly string[]
 }
 
 export interface PromptAssets {
@@ -140,8 +146,25 @@ function traits(parts: readonly string[]): string[] {
  * 会被当成要说的话），拿它分隔角色描述，有把整串特征当台词烧进画面的风险。
  * 两家官方例句里角色都是同位语形式。
  */
-function characterClause(c: PromptCharacter): string {
-  return `${c.name}, ${traits([c.description, ...c.anchorTokens]).join(', ')}`
+function characterClause(c: PromptCharacter, hidden: ReadonlySet<string>): string {
+  /*
+   * **剧情把东西拿走之后，锚点就从一致性手段变成了自相矛盾。**
+   *
+   * 真机实测：角色锚点里配了 `brass key on a cord at her neck`，剧本第 2 镜她把
+   * 钥匙摘下放到桌上。拼出来的 prompt 在同一句里既有那串锚点、又有「她把钥匙
+   * 放到桌上」；而摘下之后的第 3、5、6、8、9、11 镜照旧带着它。成片上肉眼可见：
+   * 第 2 镜末帧钥匙在桌上，第 3 镜又回到脖子上。
+   *
+   * **逐镜状态赢。** 锚点是默认值，`hiddenTraits` 是这一镜的事实。
+   *
+   * 过滤放在这里而不是 `resolvePrompt`：`traits()` 会把 `description` 也按逗号
+   * 拆开，只过滤 `anchorTokens` 会漏掉写在描述结尾的那一项。
+   *
+   * **精确匹配不做子串**：子串会把 `scar` 当成 `scarf` 吃掉——与 `dedupe` 收窄
+   * 成全等是同一个理由，而锚点里出现这种短词是常态。
+   */
+  const t = traits([c.description, ...c.anchorTokens]).filter((x) => !hidden.has(x.toLowerCase()))
+  return `${c.name}, ${t.join(', ')}`
 }
 
 /**
@@ -172,7 +195,8 @@ export function buildPrompt(intent: PromptIntent, assets: PromptAssets): BuiltPr
    *
    * 其余（地点、时间、风格）保持句号分隔：它们是环境，不是主体。
    */
-  const subject = [framing, ...assets.characters.map(characterClause), action]
+  const hidden = new Set(intent.hiddenTraits.map((h) => h.trim().toLowerCase()))
+  const subject = [framing, ...assets.characters.map((c) => characterClause(c, hidden)), action]
     .filter((x) => x.length > 0)
     .join(', ')
 

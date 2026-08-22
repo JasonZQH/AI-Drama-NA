@@ -52,6 +52,12 @@ export interface LintContext {
    * 2 秒的镜头是**可以**买到的，只要路由到 wan。真正买不到的由 `validate()` 拦。
    */
   readonly minShotSec: number
+  /**
+   * 全体角色的锚点（小写)。`hiddenAnchors` 只能逐字引用其中之一。
+   *
+   * 空集 = 这个项目还没配锚点，那么任何 `hiddenAnchors` 都是模型编的。
+   */
+  readonly anchors: ReadonlySet<string>
 }
 
 /**
@@ -241,6 +247,25 @@ export function lintShotlist(draft: ShotlistDraft, ctx: LintContext): LintResult
         `${at(l)} 时长 ${l.s.durationSec} 秒低于当前 provider 的档位下限 ${ctx.minShotSec} 秒。` +
           `低于下限的会被静默抬到下一档：片子按 ${ctx.minShotSec} 秒出、钱按 ${ctx.minShotSec} 秒付，` +
           `而整集时长是按你写的那个数算的。改成 ${ctx.minShotSec} 秒或更长。`,
+      )
+    }
+
+    /*
+     * E6 · `hiddenAnchors` 里出现了锚点表里没有的项。
+     *
+     * `characterClause` 的 filter 是**精确匹配**，所以模型自由发挥出来的近义词
+     * （`the pendant`、`her necklace`）永远匹配不上任何锚点：**filter 静默失效，
+     * prompt 照旧带着那件道具，而四层校验全绿**——正是这个字段要修的那个 bug
+     * 换了个入口又回来了。这类错必须在 L2 拦住。
+     *
+     * 是 E 不是 W：那一轮免费的修复正好用来换掉它，比事后对着成片猜便宜。
+     */
+    for (const a of l.s.hiddenAnchors) {
+      if (ctx.anchors.has(a.trim().toLowerCase())) continue
+      errors.push(
+        `${at(l)} 的 hiddenAnchors 里有「${a}」，但角色锚点表里没有这一项。` +
+          `只能逐字引用给定的锚点：${[...ctx.anchors].join('、') || '(这个项目还没有配锚点)'}。` +
+          `不要改写、不要加冠词、不要用近义词——写错的那一项会被静默忽略。`,
       )
     }
 

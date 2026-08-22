@@ -757,6 +757,99 @@ describe('空 timeline 要回填，不能永久复用', () => {
  * 补上写入口之后，分镜才有真剧本可读，而不是在 200 字的 hook+logline 上
  * 让模型自己编情节。
  */
+/**
+ * **投影：存事件，读时算累计。**
+ *
+ * `shots.hidden_anchors` 存的是「这一镜发生的移除」，「到这一镜为止哪些已经不在」
+ * 由 `resolvePrompt` 按 index 聚合前序算出来。
+ *
+ * 存累计集会快一点，但 `PATCH /api/shots/:id` 改了前面某一镜之后，后面每一行存
+ * 着的那份都是陈旧的——每条编辑路径都要手写一遍失效传播，漏一条就静默错，
+ * 而错法恰好就是这个字段要修的那个 bug（道具又回到身上）。
+ */
+describe('hiddenAnchors：事件入库，投影在读时算', () => {
+  let charId = ''
+  let shotIds: string[] = []
+  const ANCHOR = 'brass key on a cord at her neck'
+
+  beforeAll(async () => {
+    const [c] = await db
+      .insert(s.characters)
+      .values({
+        projectId,
+        name: 'MAYA-hidden',
+        description: 'woman in her twenties',
+        anchorTokens: ['faded blue scrubs', ANCHOR],
+      })
+      .returning({ id: s.characters.id })
+    charId = c!.id
+    const [sc] = await db
+      .insert(s.scenes)
+      .values({ episodeId, index: 950, summary: 'hidden-anchor 用例' })
+      .returning({ id: s.scenes.id })
+    const rows = await db
+      .insert(s.shots)
+      .values(
+        [1, 2, 3].map((i) => ({
+          sceneId: sc!.id,
+          index: 950 + i,
+          shotType: 'ms' as const,
+          action: `hidden anchor fixture ${i}`,
+          characterIds: [charId],
+          status: 'ready' as const,
+        })),
+      )
+      .returning({ id: s.shots.id })
+    shotIds = rows.map((r) => r.id)
+  })
+
+  afterAll(async () => {
+    await db.delete(s.shots).where(inArray(s.shots.id, shotIds))
+    await db.delete(s.scenes).where(eq(s.scenes.index, 950))
+    await db.delete(s.characters).where(eq(s.characters.id, charId))
+  })
+
+  const promptOf = async (i: number) => (await resolvePrompt(db, shotIds[i]!))!.prompt
+
+  it('没有移除事件时，锚点每一镜都在', async () => {
+    for (const i of [0, 1, 2]) expect(await promptOf(i)).toContain(ANCHOR)
+  })
+
+  it('第 2 镜报一次，第 2 镜起就不再带着它', async () => {
+    await db
+      .update(s.shots)
+      .set({ hiddenAnchors: [ANCHOR] })
+      .where(eq(s.shots.id, shotIds[1]!))
+
+    expect(await promptOf(0), '移除之前那一镜不受影响').toContain(ANCHOR)
+    expect(await promptOf(1), '就在这一镜摘的——同一句里不该既有它又有摘它的动作').not.toContain(ANCHOR)
+    expect(await promptOf(2), '后面的镜头自动继承，不用再报一次').not.toContain(ANCHOR)
+    expect(await promptOf(2), '别的锚点是身份，不能跟着没').toContain('faded blue scrubs')
+  })
+
+  it('撤销第 2 镜的移除，第 3 镜自动跟着回来——这就是不存投影的理由', async () => {
+    await db
+      .update(s.shots)
+      .set({ hiddenAnchors: [ANCHOR] })
+      .where(eq(s.shots.id, shotIds[1]!))
+    expect(await promptOf(2)).not.toContain(ANCHOR)
+
+    // 只改第 2 镜这一行，不碰第 3 镜
+    await db.update(s.shots).set({ hiddenAnchors: [] }).where(eq(s.shots.id, shotIds[1]!))
+    expect(await promptOf(2), '存累计集的话这里还是旧值——而没有任何东西会去重算').toContain(ANCHOR)
+  })
+
+  it('预览要透出 hiddenTraits，否则少一个词看起来就像 bug', async () => {
+    await db
+      .update(s.shots)
+      .set({ hiddenAnchors: [ANCHOR] })
+      .where(eq(s.shots.id, shotIds[1]!))
+    const r = await resolvePrompt(db, shotIds[2]!)
+    expect(r!.inputs.hiddenTraits).toContain(ANCHOR)
+    await db.update(s.shots).set({ hiddenAnchors: [] }).where(eq(s.shots.id, shotIds[1]!))
+  })
+})
+
 describe('PATCH /api/episodes/:id', () => {
   const patch = (body: Record<string, unknown>) =>
     app.inject({
@@ -857,6 +950,7 @@ describe('POST /api/episodes/:id/shotlist', () => {
         dialogue: i % 2 === 0 ? '' : 'You did.',
         durationSec: 4,
         characterNames: i % 2 === 0 ? [] : [names[0]!],
+        hiddenAnchors: [] as string[],
       })),
     })),
   })
@@ -1048,6 +1142,45 @@ describe('POST /api/episodes/:id/shotlist', () => {
      * 用来告诉人「你预想的和实际能做的差多少」——而这句话要在**第一次拿到分镜时**
      * 就看见，不是等他渲染完发现成片比预期长 48% 才回头猜。
      */
+    /**
+     * **落库存的是事件，不是累计集。**
+     *
+     * 累计集是投影，由 `resolvePrompt` 按 index 聚合前序算。存投影的话，
+     * `PATCH /api/shots/:id` 改了第 2 镜之后，后面每一行存着的那份都是陈旧的——
+     * 而没有任何东西会去重算，错法恰好就是这个字段要修的 bug（道具又回到身上）。
+     *
+     * 这条必须走**真实的分镜落库**：直接写列的用例绕过了这一步，改成前向填充
+     * 也照样绿。
+     */
+    it('hiddenAnchors 原样落事件，后续镜头不跟着复制一份', async () => {
+      await clearShots()
+      const [char] = await db
+        .select({ anchorTokens: s.characters.anchorTokens })
+        .from(s.characters)
+        .where(and(eq(s.characters.projectId, projectId), eq(s.characters.name, charNames[0]!)))
+      const token = char!.anchorTokens[0]
+      expect(token, '前提：夹具角色得有锚点，否则 E6 会先把这一份判死').toBeTruthy()
+
+      const d = draftOf(charNames)
+      // 第 1 场第 2 镜报一次移除
+      d.scenes[0]!.shots[1] = { ...d.scenes[0]!.shots[1]!, hiddenAnchors: [token!] }
+
+      const res = await post(
+        withStub(() => Promise.resolve({ draft: d, warnings: [], repaired: false, costUsd: 0 })),
+        epId,
+      )
+      expect(res.statusCode, (res.json() as { error?: { message: string } }).error?.message).toBe(201)
+
+      const rows = await db
+        .select({ index: s.shots.index, hidden: s.shots.hiddenAnchors })
+        .from(s.shots)
+        .where(inArray(s.shots.sceneId, sceneIds))
+        .orderBy(s.shots.index)
+      expect(rows[1]!.hidden, '报的那一镜要存下来').toEqual([token])
+      for (const r of rows.filter((x) => x.index !== 2))
+        expect(r.hidden, `第 ${r.index} 镜不该复制一份——那是投影，读时算`).toEqual([])
+    })
+
     it('目标时长够不着 → 照常生成，但 warning 里要说明白', async () => {
       await clearShots()
       await db.update(s.episodes).set({ targetDurationSec: 600 }).where(eq(s.episodes.id, epId))

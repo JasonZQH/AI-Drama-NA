@@ -14,6 +14,7 @@ const intent = (over: Partial<PromptIntent> = {}): PromptIntent => ({
   emotion: null,
   timeOfDay: null,
   lighting: null,
+  hiddenTraits: [],
   ...over,
 })
 
@@ -218,6 +219,81 @@ describe('buildPrompt', () => {
       assets({ location: { description: 'city rooftop at night', interior: false, anchorTokens: [] } }),
     ).prompt
     expect(r.match(/night/g), '光照与地点写了同一个词，不该拼两遍').toHaveLength(1)
+  })
+
+  /**
+   * **锚点被剧情拿走之后就不该再拼进来。**
+   *
+   * 真机实测：角色锚点里配了 `brass key on a cord at her neck`，剧本第 2 镜她把
+   * 钥匙摘下放到桌上。拼出来的 prompt 在同一句里既有那串锚点、又有「她把钥匙
+   * 放到桌上」；摘下之后的第 3、5、6、8、9、11 镜照旧带着它。成片上肉眼可见：
+   * 第 2 镜末帧钥匙在桌上，第 3 镜又回到脖子上。
+   */
+  it('hiddenTraits 里的锚点被摘掉，其余的留着', () => {
+    const cast = {
+      characters: [
+        {
+          name: 'MAYA',
+          description: 'woman in her twenties, tired eyes',
+          anchorTokens: ['faded blue scrubs', 'brass key on a cord at her neck'],
+        },
+      ],
+    }
+    const before = buildPrompt(intent(), assets(cast)).prompt
+    expect(before, '没摘之前该在').toContain('brass key on a cord at her neck')
+
+    const after = buildPrompt(
+      intent({ hiddenTraits: ['brass key on a cord at her neck'] }),
+      assets(cast),
+    ).prompt
+    expect(after, '摘了就不该再拼进来').not.toContain('brass key')
+    expect(after, '别的锚点是身份，不能跟着一起没了').toContain('faded blue scrubs')
+    expect(after, '角色本人还在').toContain('MAYA')
+    expect(after, '不该拼出空洞或双逗号').not.toMatch(/,\s*,|,\s*\./)
+  })
+
+  /**
+   * 写在 `description` 结尾的那一项也要摘得掉。
+   *
+   * `traits()` 会把 `description` 也按逗号拆开，所以只过滤 `anchorTokens` 会漏——
+   * 这正是过滤点放在 `characterClause` 而不是 `resolvePrompt` 的理由。
+   */
+  it('description 里的那一项同样摘得掉', () => {
+    const p = buildPrompt(
+      intent({ hiddenTraits: ['gold wedding band'] }),
+      assets({
+        characters: [
+          { name: 'MAYA', description: 'woman in her twenties, gold wedding band', anchorTokens: [] },
+        ],
+      }),
+    ).prompt
+    expect(p).not.toContain('gold wedding band')
+    expect(p).toContain('woman in her twenties')
+  })
+
+  /**
+   * **精确匹配，不做子串。** 子串会把 `scar` 当成 `scarf` 吃掉——与 `dedupe`
+   * 收窄成全等是同一个理由，而锚点里出现这种短词是常态。
+   */
+  it('精确匹配：摘 scar 不该把 scarf 一起摘了', () => {
+    const p = buildPrompt(
+      intent({ hiddenTraits: ['scar'] }),
+      assets({
+        characters: [{ name: 'MAYA', description: 'tired eyes', anchorTokens: ['scarf', 'scar'] }],
+      }),
+    ).prompt
+    expect(p, 'scarf 是另一样东西').toContain('scarf')
+    expect(p.match(/\bscar\b/), '独立的 scar 该没了').toBeNull()
+  })
+
+  it('大小写与首尾空格不影响匹配——模型的输出不保证规整', () => {
+    const p = buildPrompt(
+      intent({ hiddenTraits: ['  Brass Key  '] }),
+      assets({
+        characters: [{ name: 'MAYA', description: 'tired eyes', anchorTokens: ['brass key'] }],
+      }),
+    ).prompt
+    expect(p).not.toContain('brass key')
   })
 
   /**

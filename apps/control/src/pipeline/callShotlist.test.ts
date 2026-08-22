@@ -47,6 +47,7 @@ const goodDraft = {
       dialogue: '',
       durationSec: 4,
       characterNames: ['Lena'],
+      hiddenAnchors: [] as string[],
     })),
   })),
 }
@@ -433,10 +434,11 @@ describe('shotlistJsonSchema（发出去的那份）', () => {
       'emotion',
       'dialogue',
       'durationSec',
+      'hiddenAnchors',
       'characterNames',
     ])
     // properties 的键是字段名，不能被白名单筛掉
-    expect(Object.keys(shot['properties'] as object)).toHaveLength(7)
+    expect(Object.keys(shot['properties'] as object)).toHaveLength(8)
   })
 
   it('角色名 enum 与 shotType enum 都还在', () => {

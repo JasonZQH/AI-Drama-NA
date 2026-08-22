@@ -962,6 +962,16 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
           // 列是 numeric(4,1)。显式取整，别让 Postgres 悄悄替你截
           durationSec: i.durationSec.toFixed(1),
           characterIds: castIds(i.characterNames),
+          /*
+           * **原样落事件，不在这里前向填充成累计集。**
+           *
+           * 累计集是**投影**，由 `resolvePrompt` 读时按 index 聚合前序算出来。
+           * 存投影的话，`PATCH /api/shots/:id` 改了第 2 镜之后，第 3–11 镜存着
+           * 的那份就是陈旧的，而没有任何东西会去重算——每一条编辑路径都要手写
+           * 一遍失效传播，漏一条就静默错，而错的表现是「prompt 里那件道具又
+           * 回来了」，跟这个字段要修的 bug 一模一样。
+           */
+          hiddenAnchors: i.hiddenAnchors,
         }
       }),
     )
