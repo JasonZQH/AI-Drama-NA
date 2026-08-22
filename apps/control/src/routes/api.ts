@@ -1,4 +1,4 @@
-import { ShotStatus, TERMINAL_JOB_STATUSES, TimeOfDay } from '@ai-drama/contracts'
+import { CameraMove, ShotStatus, ShotType, TERMINAL_JOB_STATUSES, TimeOfDay } from '@ai-drama/contracts'
 import { and, desc, eq, notInArray, sql } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
@@ -196,6 +196,54 @@ const scenePatch = (b: z.infer<typeof sceneBody>): Record<string, unknown> => ({
   ...(b.timeOfDay === undefined ? {} : { timeOfDay: b.timeOfDay ?? null }),
   ...(b.lighting === undefined ? {} : { lighting: blankToNull(b.lighting) }),
   ...(b.locationId === undefined ? {} : { locationId: b.locationId ?? null }),
+})
+
+/**
+ * 可改的镜头字段。
+ *
+ * **`index` / `sceneId` 不开**：换场次、调顺序是时间线的事，而 `shots_scene_idx`
+ * 是唯一约束——从这里改就是把撞号变成用户的问题。
+ * **`status` / `attemptCount` / `selectedTakeId` 不开**：那是状态机的账本。
+ */
+const shotBody = z.object({
+  shotType: ShotType.optional(),
+  cameraMove: CameraMove.nullish(),
+  action: z.string().min(4).optional(),
+  emotion: z.string().nullish(),
+  dialogue: z.string().nullish(),
+  /** 上下界与 `shots_duration_ck` 对齐；低于 provider 档位下限由 E8/`validate` 管 */
+  durationSec: z.number().min(0.1).max(10).optional(),
+  characterIds: z.array(z.string().uuid()).optional(),
+  /**
+   * 人工旁路：写了就整段原样发给 provider，`buildPrompt` 的拼装被完全跳过。
+   *
+   * 这一列有三处读取方却**零写入方**——「我知道该怎么写，别拼了」这件事在产品上
+   * 至今不存在。空串落 NULL 回到自动拼装。
+   */
+  promptOverride: z.string().nullish(),
+  /**
+   * 在这一镜发生的锚点移除**事件**（不是累计集）。
+   *
+   * 人工改它的场景是真实的：模型漏报了「她把钥匙摘了」，或者报了个近义词被 E6
+   * 判死之后想直接填对。投影由 `resolvePrompt` 读时算，所以改这一行就够——
+   * 后面每一镜自动跟着变，这正是存事件不存投影换来的。
+   */
+  hiddenAnchors: z.array(z.string()).optional(),
+})
+
+const shotPatch = (b: z.infer<typeof shotBody>): Record<string, unknown> => ({
+  ...(b.shotType === undefined ? {} : { shotType: b.shotType }),
+  ...(b.cameraMove === undefined ? {} : { cameraMove: b.cameraMove ?? null }),
+  ...(b.action === undefined ? {} : { action: b.action.trim() }),
+  ...(b.emotion === undefined ? {} : { emotion: blankToNull(b.emotion) }),
+  ...(b.dialogue === undefined ? {} : { dialogue: blankToNull(b.dialogue) }),
+  ...(b.durationSec === undefined ? {} : { durationSec: String(b.durationSec) }),
+  ...(b.characterIds === undefined ? {} : { characterIds: b.characterIds }),
+  ...(b.promptOverride === undefined ? {} : { promptOverride: blankToNull(b.promptOverride) }),
+  ...(b.hiddenAnchors === undefined
+    ? {}
+    : { hiddenAnchors: b.hiddenAnchors.map((a) => a.trim()).filter(Boolean) }),
+  ...(Object.keys(b).length > 0 ? { updatedAt: new Date() } : {}),
 })
 
 /**
@@ -1074,6 +1122,48 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps): void {
    *
    * 传 null 清掉，回到自动路由。
    */
+  /**
+   * **改一个镜头的内容。**
+   *
+   * 在这之前 `shots` 上唯一能写的字段是 `provider_hint`——`action` / `emotion` /
+   * `shotType` / `cameraMove` / `durationSec` / `characterIds` / `prompt_override`
+   * 面板改不了、API 也改不了。**分镜一旦生成就是只读的**：第 3 镜写错一个词，
+   * 你只有两条路——redo（同一个 prompt 重掷骰子，改不了内容）或者删掉整集重来。
+   *
+   * ## 为什么走 `intent.edited` 而不是裸 UPDATE
+   *
+   * 改了内容，已经花钱生成的 take 就不再对应这一镜了。`intent.edited` 从第一版
+   * 就在状态机里管这件事（`review`/`locked`/`failed` → `ready` + 归档 take +
+   * 清 `selectedTakeId`），但**全仓零发射方**——于是这条语义空转了整个 M1。
+   *
+   * 顺带把「改内容」和「重复计费闸」接上：归档之后那道闸自动放行，人可以直接
+   * 重新生成；不归档的话改完还是生成不了。
+   *
+   * ## 顺序：先迁移，后写列
+   *
+   * `generating` 上 `intent.edited` 会被状态机拒（409）——**在飞的镜头不许改**，
+   * 否则产物回来时对应的是一份已经不存在的 intent。先迁移的话被拒时一个字段
+   * 都没动；反过来先写列的话，改的是一次正在计费的生成的规格。
+   *
+   * `draft` 例外：状态机只接 `intent.completed`，而 draft 本来就还没生成过、
+   * 没有 take 要归档，跳过事件直接写列。
+   */
+  app.patch('/api/shots/:id', async (req) => {
+    const { id } = Uuid.parse(req.params)
+    const b = shotBody.parse(req.body ?? {})
+    const patch = shotPatch(b)
+    if (Object.keys(patch).length === 0)
+      throw new ApiError('VALIDATION_FAILED', '空 body：没有任何字段要改。')
+
+    const [row] = await db.select({ status: s.shots.status }).from(s.shots).where(eq(s.shots.id, id))
+    if (!row) throw new ApiError('NOT_FOUND', `shot ${id} 不存在`)
+
+    if (row.status !== 'draft') await applyTransition(deps, id, { type: 'intent.edited' })
+
+    const [updated] = await db.update(s.shots).set(patch).where(eq(s.shots.id, id)).returning()
+    return { shot: updated }
+  })
+
   app.patch('/api/shots/:id/provider', async (req) => {
     const { id } = Uuid.parse(req.params)
     const { providerHint } = z.object({ providerHint: z.string().nullable() }).parse(req.body ?? {})
