@@ -16,18 +16,26 @@ import { api } from '@/lib/api'
 export function ScriptEditor({
   episodeId,
   initial,
+  brief,
   onSaved,
   onClose,
 }: {
   episodeId: string
   initial: string
+  /** 戏剧目标三行。它们拼成 `episodeBrief` 进分镜提示词——见 callShotlist.ts */
+  brief: { logline: string | null; hook: string | null; cliffhanger: string | null }
   onSaved: (scriptMd: string) => void
   onClose: () => void
 }): React.ReactElement {
   const [text, setText] = useState(initial)
+  const [b, setB] = useState(brief)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const dirty = text !== initial
+  const dirty =
+    text !== initial ||
+    b.logline !== brief.logline ||
+    b.hook !== brief.hook ||
+    b.cliffhanger !== brief.cliffhanger
 
   // Esc 关闭。改过没存时不关——手滑丢一整集剧本是不可接受的
   useEffect(() => {
@@ -44,7 +52,12 @@ export function ScriptEditor({
     try {
       await api(`/api/episodes/${episodeId}`, {
         method: 'PATCH',
-        body: JSON.stringify({ scriptMd: text }),
+        body: JSON.stringify({
+          scriptMd: text,
+          logline: b.logline,
+          hook: b.hook,
+          cliffhanger: b.cliffhanger,
+        }),
       })
       onSaved(text)
       onClose()
@@ -108,6 +121,45 @@ export function ScriptEditor({
             ✕ {err}
           </div>
         )}
+
+        {/*
+          **戏剧目标三行。** 这三列 S1 就写好落库了，而在这之前面板上**没有任何
+          写入口**——只有建集对话框能填 logline，hook / cliffhanger 只能 curl。
+          而它们现在正是 `episodeBrief` 的来源：不填的话，模型拿到的是一份不知道
+          要往哪儿走的剧本。
+        */}
+        <div
+          className="flex flex-col gap-2 px-4 pb-3 pt-1"
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          {(
+            [
+              ['logline', '一句话', '她回到一座已经不认识她的城市'],
+              ['hook', '钩子', '前 3 秒要留住人的那件事'],
+              ['cliffhanger', '悬念', '这一集结尾把人钉在下一集的那件事'],
+            ] as const
+          ).map(([k, label, ph]) => (
+            <label key={k} className="grid grid-cols-[52px_1fr] items-baseline gap-x-3">
+              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                {label}
+              </span>
+              <input
+                value={b[k] ?? ''}
+                onChange={(e) => setB((x) => ({ ...x, [k]: e.target.value }))}
+                placeholder={ph}
+                className="w-full rounded-md px-2 py-1 text-[13px] outline-none"
+                style={{
+                  background: 'var(--bg-base)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--text-primary)',
+                }}
+              />
+            </label>
+          ))}
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            这三行会拼成 &lt;episode&gt; 进分镜提示词——它们是这一集的戏剧目标，剧本是过程
+          </span>
+        </div>
 
         <textarea
           value={text}

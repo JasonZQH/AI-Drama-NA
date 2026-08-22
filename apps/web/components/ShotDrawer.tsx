@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from 'react'
  * 整行 shot，再发一次请求纯属浪费；也没有单镜头端点可用。
  */
 export interface ShotIntent {
+  id?: string
   index: number
   shotType: string
   action: string
@@ -25,6 +26,9 @@ export interface ShotIntent {
   dialogue?: string | null
   cameraMove?: string | null
   emotion?: string | null
+  promptOverride?: string | null
+  /** **本镜自己报的**移除事件，不是投影。投影由服务端读时算 */
+  hiddenAnchors?: string[]
 }
 
 const SHOT_TYPE: Record<string, string> = {
@@ -129,22 +133,28 @@ interface Props {
   /** 镜头意图。调用方（镜头网格）手上已有这行数据，直接传下来 */
   shot?: ShotIntent | null
   onClose: () => void
+  /** 改完要让父组件重取——`shot` 是它给的，抽屉自己没有数据源 */
+  onChanged: () => void
 }
 
-export function ShotDrawer({ shotId, shot, onClose }: Props): React.ReactElement | null {
+export function ShotDrawer({ shotId, shot, onClose, onChanged }: Props): React.ReactElement | null {
   if (!shotId) return null
   // key 让换镜头时整块重挂载：复制反馈、details 展开态都跟着重置，
   // 省掉一整套「shotId 变了要清哪些 state」的手工同步
-  return <Panel key={shotId} shotId={shotId} {...(shot ? { shot } : {})} onClose={onClose} />
+  return (
+    <Panel key={shotId} shotId={shotId} {...(shot ? { shot } : {})} onClose={onClose} onChanged={onChanged} />
+  )
 }
 
 function Panel({
   shotId,
   shot,
   onClose,
+  onChanged,
 }: {
   shotId: string
   shot?: ShotIntent
+  onChanged: () => void
   onClose: () => void
 }): React.ReactElement {
   const [jobs, setJobs] = useState<JobRow[] | null>(null)
@@ -241,7 +251,7 @@ function Panel({
         </header>
 
         <div className="flex-1 overflow-y-auto">
-          {shot && <Intent shot={shot} />}
+          {shot && <Intent shot={shot} onSaved={onChanged} />}
 
           <Section title="Prompt 检视器" hint={jobs ? `${jobs.length} 次尝试 · 合计 ${usd(spent)}` : ''}>
             {/*
@@ -254,6 +264,8 @@ function Panel({
                 shotId={shotId}
                 canGenerate={shot?.status === 'ready'}
                 onGenerated={() => setReload((n) => n + 1)}
+                ownEvents={shot?.hiddenAnchors ?? []}
+                onChanged={onChanged}
               />
               {/*
                 锁定之后唯一的出路。`redo.requested` 从第一版就在状态机里，但一直
@@ -339,7 +351,177 @@ function Panel({
   )
 }
 
-function Intent({ shot }: { shot: ShotIntent }): React.ReactElement {
+/**
+ * Intent **可编辑**。
+ *
+ * 在这之前 `shots` 上唯一能写的字段是 `provider_hint`，这一格是纯展示——分镜
+ * 一旦生成就是只读的，第 3 镜写错一个词只有 redo（同一个 prompt 重掷骰子）或者
+ * 删掉整集重来两条路。
+ *
+ * ## 为什么是「编辑模式 + 显式保存」，不是 SceneEditor 那种失焦即存
+ *
+ * 保存会走 `intent.edited`：**已经花钱生成的 take 会被归档，镜头回到待生成**。
+ * 场次那边失焦即存是安全的（改摘要不销毁任何产物），这里不是——一次误触的失焦
+ * 就把选好的成片作废了。所以要显式点保存，而且在 `review`/`locked` 上先把后果
+ * 写在按钮旁边。
+ */
+function Intent({ shot, onSaved }: { shot: ShotIntent; onSaved: () => void }): React.ReactElement {
+  const [editing, setEditing] = useState(false)
+  const [v, setV] = useState(shot)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  // 外部刷新（重新生成、别处改了）要能盖回来
+  useEffect(() => setV(shot), [shot])
+
+  const set = (patch: Partial<ShotIntent>): void => setV((x) => ({ ...x, ...patch }))
+  const destructive = shot.status === 'review' || shot.status === 'locked'
+
+  async function save(): Promise<void> {
+    if (!shot.id) return
+    setBusy(true)
+    setErr(null)
+    try {
+      await api(`/api/shots/${shot.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          shotType: v.shotType,
+          cameraMove: v.cameraMove ?? null,
+          action: v.action,
+          emotion: v.emotion ?? null,
+          dialogue: v.dialogue ?? null,
+          durationSec: Number(v.durationSec),
+          promptOverride: v.promptOverride ?? null,
+        }),
+      })
+      setEditing(false)
+      onSaved()
+    } catch (e) {
+      // 报错留在表单里，别关闭——关了人刚敲的就没了
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (editing)
+    return (
+      <Section title="Intent">
+        <div
+          className="flex flex-col gap-2 rounded-md p-3"
+          style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-strong)' }}
+        >
+          {err !== null && (
+            <div className="text-[12px]" style={{ color: 'var(--danger-text)' }}>
+              ✕ {err}
+            </div>
+          )}
+          <Row label="景别">
+            <select value={v.shotType} onChange={(e) => set({ shotType: e.target.value })} style={CTL}>
+              {Object.entries(SHOT_TYPE).map(([k, label]) => (
+                <option key={k} value={k}>
+                  {label} {k.toUpperCase()}
+                </option>
+              ))}
+            </select>
+          </Row>
+          <Row label="运镜">
+            <select
+              value={v.cameraMove ?? ''}
+              onChange={(e) => set({ cameraMove: e.target.value || null })}
+              style={CTL}
+            >
+              <option value="">未定</option>
+              {Object.entries(CAMERA_MOVE).map(([k, label]) => (
+                <option key={k} value={k}>
+                  {label} {k}
+                </option>
+              ))}
+            </select>
+          </Row>
+          <Row label="动作">
+            <textarea
+              value={v.action}
+              onChange={(e) => set({ action: e.target.value })}
+              rows={2}
+              style={CTL}
+              className="resize-none leading-6"
+            />
+          </Row>
+          <Row label="情绪">
+            <input
+              value={v.emotion ?? ''}
+              onChange={(e) => set({ emotion: e.target.value })}
+              placeholder="可见的表情或体态，不写内心感受"
+              style={CTL}
+            />
+          </Row>
+          <Row label="台词">
+            <input
+              value={v.dialogue ?? ''}
+              onChange={(e) => set({ dialogue: e.target.value })}
+              placeholder="只写说的话，不写说话人"
+              style={CTL}
+            />
+          </Row>
+          <Row label="时长">
+            <input
+              type="number"
+              step={1}
+              min={1}
+              max={10}
+              value={v.durationSec}
+              onChange={(e) => set({ durationSec: e.target.value })}
+              style={CTL}
+              className="tnum w-24"
+            />
+          </Row>
+          <Row label="旁路">
+            <textarea
+              value={v.promptOverride ?? ''}
+              onChange={(e) => set({ promptOverride: e.target.value })}
+              rows={2}
+              placeholder="填了就整段原样发给 provider，上面的拼装被完全跳过。留空 = 自动拼"
+              style={CTL}
+              className="resize-none leading-6"
+            />
+          </Row>
+
+          {destructive && (
+            <div className="text-[11px]" style={{ color: 'var(--status-review)' }}>
+              ⚠ 这一镜已经有成片了。保存会把它归档、镜头回到「待生成」——已经花的钱不退，
+              产物不删，但要重新生成一次才有新的。
+            </div>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={busy || v.action.trim().length < 4}
+              title={v.action.trim().length < 4 ? '动作至少 4 个字符' : ''}
+              className="rounded-md px-3 py-1 text-[12px] font-medium disabled:opacity-40"
+              style={{ background: 'var(--accent)', color: '#fff' }}
+            >
+              {busy ? '保存中…' : destructive ? '保存并作废现有成片' : '保存'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setV(shot)
+                setErr(null)
+                setEditing(false)
+              }}
+              disabled={busy}
+              className="rounded-md px-3 py-1 text-[12px] disabled:opacity-40"
+              style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      </Section>
+    )
+
   const rows: [string, string][] = [
     ['景别', SHOT_TYPE[shot.shotType] ?? shot.shotType.toUpperCase()],
     ['运镜', shot.cameraMove ? (CAMERA_MOVE[shot.cameraMove] ?? shot.cameraMove) : '—'],
@@ -347,9 +529,24 @@ function Intent({ shot }: { shot: ShotIntent }): React.ReactElement {
     ['情绪', shot.emotion ?? '—'],
     ['台词', shot.dialogue ?? '—'],
     ['时长', `${Number(shot.durationSec).toFixed(1)}s`],
+    ...(shot.promptOverride ? ([['旁路', shot.promptOverride]] as [string, string][]) : []),
   ]
   return (
-    <Section title="Intent">
+    <Section
+      title="Intent"
+      action={
+        shot.id ? (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="rounded-md px-2 py-0.5 text-[11px]"
+            style={{ border: '1px solid var(--border-strong)', color: 'var(--text-secondary)' }}
+          >
+            编辑
+          </button>
+        ) : null
+      }
+    >
       <div
         className="rounded-md"
         style={{
@@ -602,10 +799,13 @@ function TakeCard({ row }: { row: TakeRow }): React.ReactElement {
 function Section({
   title,
   hint,
+  action,
   children,
 }: {
   title: string
   hint?: string
+  /** 右上角的动作按钮（Intent 的「编辑」） */
+  action?: React.ReactNode
   children: React.ReactNode
 }): React.ReactElement {
   return (
@@ -617,11 +817,41 @@ function Section({
             {hint}
           </span>
         )}
+        {action && (
+          <>
+            <span className="flex-1" />
+            {action}
+          </>
+        )}
       </h3>
       {children}
     </section>
   )
 }
+
+/** Intent 编辑表单的一行：左标签右控件，与只读态的 dl 对齐 */
+function Row({ label, children }: { label: string; children: React.ReactNode }): React.ReactElement {
+  return (
+    <label className="grid grid-cols-[52px_1fr] items-baseline gap-x-3">
+      <span className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+        {label}
+      </span>
+      {children}
+    </label>
+  )
+}
+
+const CTL = {
+  background: 'var(--bg-base)',
+  border: '1px solid var(--border)',
+  color: 'var(--text-primary)',
+  borderRadius: '6px',
+  padding: '4px 8px',
+  fontSize: '13px',
+  fontFamily: 'inherit',
+  outline: 'none',
+  width: '100%',
+} as const
 
 /** 空白等于「坏了」。骨架 + 明确文案，让人知道是在等而不是在卡 */
 function Skeleton({ lines, label }: { lines: number; label: string }): React.ReactElement {

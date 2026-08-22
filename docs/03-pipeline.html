@@ -127,16 +127,53 @@ CHEN MO: 我等你三个小时了。
 <code>lintShotlist()</code>，纯函数零 IO。四层校验里的第二层——L0 是 <code>strict</code> json_schema
 的转向、L1 是 <code>shotlistDraft().safeParse</code> 的闸门、L3 是数据库 <code>shots_duration_ck</code>
 的硬底）：
-- 镜头时长总和 ≈ 目标时长（±15%）。<strong>落集级不落场级</strong>：<code>scenes</code> 表没有
-  target_duration 列，加一列等于让 S2 决定每场配多少秒，那不是 S3 的事；而
-  <code>callShotlist()</code> 本来就是一次生成整集，这三条判据全是集级量。取
-  <code>episodes.target_duration_sec</code>。
-- 单集镜头数在 10–25 之间（60–90 秒 / 2–8 秒每镜，典型 18 镜 × 4 秒）。
+- 镜头时长总和 ≈ 目标时长（±15%）。<strong>warning 不是 error——时长是输出不是输入。</strong>
+  原来是 error，真机实测的后果是：目标 30 秒的一集，模型交出
+  <code>3.0×8 + 2.0×3 = 30.0</code>，精确到小数点后一位——它不是在导戏，是在解一道算术题。
+  更糟的是那 30 秒<strong>根本不可达</strong>（seedance 最短 4 秒 × 至少 10 镜 = 40 秒），
+  于是模型被逼着写下一堆买不到的数字，而这条判据给了满分，一直到成片 44.5 秒
+  才露出来。现在它只告诉人偏了多少、要不要把目标改成实际值。
+  <strong>落集级不落场级</strong>：<code>scenes</code> 表没有 target_duration 列，加一列等于让 S2 决定
+  每场配多少秒，那不是 S3 的事。取 <code>episodes.target_duration_sec</code>。
+- 单集镜头数在 10–25 之间（典型 18 镜）。
+- <strong>单镜时长必须是这家 provider 真能产出的整秒数</strong>（error）。各家的时长是
+  <strong>档位不是连续值</strong>：seedance <code>[4..15]</code>、wan <code>[2..10]</code>、minimax/hailuo-3
+  <code>[5..15]</code>。低于档位下限会被 <code>snapDuration</code> <strong>静默抬到下一档</strong>——片子按 4 秒出、
+  钱按 4 秒付，而整集是按你写的那个数算的。下限取池里最宽松那家的
+  <code>ProviderCapabilities.minDurationSec</code>（同时配了 wan 与 seedance 时，2 秒的镜头
+  是买得到的，只要路由到 wan）。
 - 景别有变化：连续三个同景别标黄（<strong>warning，不触发重试</strong>——原文就是「标黄」）。
   跨场次也算：观众看到的是连续画面流，一场的末镜与下一场的首镜在成片里是相邻的。</p>
-<p>另有四条同层校验：场次数与输入不符、有台词但无说话人（S6 的 TTS 取不到
+<p>另有六条同层校验：场次数与输入不符、有台词但无说话人（S6 的 TTS 取不到
 <code>voiceId</code>）、单镜 ≥3 个角色（<code>13 §4.5</code>「必然崩」）、否定式画面描述（同上，
-「最贵的一条教训」，warning）。</p>
+「最贵的一条教训」，warning）、<code>hiddenAnchors</code> 不是逐字引用锚点表（见下）、
+以及抄了示例里的占位符（<code>&lt;A&gt;</code> 进 <code>action</code> 没有任何一层拦得住，而它会一路进库、
+进 t2v prompt，烧掉 $2–11 的视频钱）。</p>
+<h3 id="锚点被剧情拿走之后hiddenanchors">锚点被剧情拿走之后（<code>hiddenAnchors</code>）<a aria-label="链接到此节" class="anchor" href="#锚点被剧情拿走之后hiddenanchors">#</a></h3>
+<p>锚点是跨镜一致性的载体（ADR-0008）：每一镜都带同一串，模型才有机会把人画成
+同一个。这对<strong>身份</strong>成立（发型、脸、那件一直穿着的外套），对<strong>道具</strong>不成立
+——道具会被剧情拿走。<strong>一个字段混了两种语义。</strong></p>
+<p>真机实测：角色锚点里配了 <code>brass key on a cord at her neck</code>，剧本第 2 镜她把钥匙
+摘下放到桌上。拼出来的 prompt 在同一句里既有那串锚点、又有「她把钥匙放到桌上」；
+而摘下之后的第 3、5、6、8、9、11 镜照旧带着它。成片上肉眼可见。</p>
+<p>修法是给每一镜加一个 <code>hiddenAnchors</code>：<strong>从这一镜起不再出现的锚点，逐字取自输入
+里给的锚点表</strong>。四个要点：</p>
+<ol>
+<li><strong>LLM 只报一次，跨镜记忆由代码承担。</strong> <code>buildPrompt</code> 是纯函数、每镜独立拼装，
+   这是唯一与现有架构相容的形状。</li>
+<li><strong>存事件，投影在读时算。</strong> <code>shots.hidden_anchors</code> 只存「这一镜发生的移除」，
+   「到这一镜为止哪些已经不在」由 <code>resolvePrompt</code> 按 index 聚合前序。存累计集的话，
+   <code>PATCH /api/shots/:id</code> 改了前面某一镜之后，后面每一行都是陈旧的，而没有任何
+   东西会去重算——每条编辑路径都要手写一遍失效传播，<strong>漏一条就静默错，错法恰好
+   就是这个字段要修的那个 bug</strong>。</li>
+<li><strong><code>characterClause</code> 做精确匹配的 filter，不做子串</strong>（子串会把 <code>scar</code> 当
+   <code>scarf</code> 吃掉）。过滤点在 <code>characterClause</code> 而不是 <code>resolvePrompt</code>，因为
+   <code>traits()</code> 会把 <code>description</code> 也按逗号拆开，只过滤 <code>anchorTokens</code> 会漏。</li>
+<li><strong>用删除表达消失，不用否定词。</strong> 不拼「不再戴着项链」——<code>13 §最贵的一条教训</code>
+   就是写「No held object」模型偏偏塞了把武器。</li>
+</ol>
+<p>配套的 lint 拦逐字写错：filter 是精确匹配，模型自由发挥的 <code>the pendant</code> 永远
+匹配不上任何锚点，<strong>filter 静默失效而四层校验全绿</strong>——同一个 bug 换个入口又回来。</p>
 <p><code>db/seed.ts</code> 的 12 镜夹具<strong>过不了这里的时长判据</strong>（42.5 秒 vs 75 秒，−43%）
 ——那是刻意的，它自称「最小夹具，不是规模口径」。<strong>lint 只校验 LLM 的输出。</strong></p>
 <h3 id="s4-assets">S4 · ASSETS<a aria-label="链接到此节" class="anchor" href="#s4-assets">#</a></h3>
@@ -347,6 +384,7 @@ function planBatch(shots: Shot[]): { runnable: Shot[]; blocked: Shot[] } {
 <a class="lvl-3" href="#s1-story">S1 · STORY</a>
 <a class="lvl-3" href="#s2-script">S2 · SCRIPT</a>
 <a class="lvl-3" href="#s3-shotlist">S3 · SHOTLIST</a>
+<a class="lvl-3" href="#锚点被剧情拿走之后hiddenanchors">锚点被剧情拿走之后（hiddenAnchors）</a>
 <a class="lvl-3" href="#s4-assets">S4 · ASSETS</a>
 <a class="lvl-3" href="#s5-generate">S5 · GENERATE</a>
 <a class="lvl-3" href="#s6-audio">S6 · AUDIO</a>

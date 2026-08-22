@@ -362,7 +362,16 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
         <ScriptEditor
           episodeId={episodeId}
           initial={tree.episode.scriptMd ?? ''}
-          onSaved={(md) => setTree((t) => (t ? { ...t, episode: { ...t.episode, scriptMd: md } } : t))}
+          brief={{
+            logline: tree.episode.logline,
+            hook: tree.episode.hook,
+            cliffhanger: tree.episode.cliffhanger,
+          }}
+          onSaved={(md) => {
+            setTree((t) => (t ? { ...t, episode: { ...t.episode, scriptMd: md } } : t))
+            // brief 三行也变了，重取一次才不会下次打开还是旧值
+            void load()
+          }}
           onClose={() => setScriptOpen(false)}
         />
       )}
@@ -438,7 +447,12 @@ export default function EpisodeView({ episodeId }: { episodeId: string }): React
           <ShotGrid groups={groups} selectedId={selectedId} onSelect={setSelectedId} progress={progress} />
         )}
 
-        <ShotDrawer shotId={selectedId} shot={selected?.shot ?? null} onClose={() => setSelectedId(null)} />
+        <ShotDrawer
+          shotId={selectedId}
+          shot={selected?.shot ?? null}
+          onClose={() => setSelectedId(null)}
+          onChanged={() => void load()}
+        />
       </div>
 
       {plan && (
